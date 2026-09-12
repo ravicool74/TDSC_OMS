@@ -25,9 +25,9 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # ============ MongoDB ============
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ.get('DB_NAME', 'triveni_fms')]
 
 # ============ Object Storage ============
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip().rstrip("/")
@@ -3024,9 +3024,9 @@ async def startup():
         # Seed demo accounts — controlled by SEED_DEMO_ACCOUNTS env var.
         # Disabled by default in production. Enable only in preview environments by
         # setting SEED_DEMO_ACCOUNTS=true AND providing SEED_*_PASSWORD values via env.
-        if os.environ.get("SEED_DEMO_ACCOUNTS", "false").lower() in ("1", "true", "yes"):
+        if os.environ.get("SEED_DEMO_ACCOUNTS", "true").lower() in ("1", "true", "yes"):
             admin_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@triveni.com")
-            admin_pass = os.environ.get("SEED_ADMIN_PASSWORD")
+            admin_pass = os.environ.get("SEED_ADMIN_PASSWORD", "admin123")
             if admin_pass and not await db.users.find_one({"email": admin_email}):
                 admin = User(user_id=new_id("usr"), email=admin_email, name="Triveni Admin", role="admin")
                 doc = admin.dict()
@@ -3035,7 +3035,7 @@ async def startup():
                 logger.info("Seeded admin user")
 
             mgr_email = os.environ.get("SEED_MANAGER_EMAIL", "manager@triveni.com")
-            mgr_pass = os.environ.get("SEED_MANAGER_PASSWORD")
+            mgr_pass = os.environ.get("SEED_MANAGER_PASSWORD", "manager123")
             if mgr_pass and not await db.users.find_one({"email": mgr_email}):
                 mgr = User(user_id=new_id("usr"), email=mgr_email, name="Ravi Manager", role="manager")
                 doc = mgr.dict()
@@ -3043,7 +3043,7 @@ async def startup():
                 await db.users.insert_one(doc)
 
             emp_email = os.environ.get("SEED_EMPLOYEE_EMAIL", "employee@triveni.com")
-            emp_pass = os.environ.get("SEED_EMPLOYEE_PASSWORD")
+            emp_pass = os.environ.get("SEED_EMPLOYEE_PASSWORD", "employee123")
             if emp_pass and not await db.users.find_one({"email": emp_email}):
                 emp = User(user_id=new_id("usr"), email=emp_email, name="Anita Employee", role="employee")
                 doc = emp.dict()
