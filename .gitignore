@@ -28,6 +28,11 @@ frontend/.metro-cache/
 .metro-cache/
 dist/
 web-build/
+frontend/public/_expo/
+frontend/public/assets/
+frontend/public/index.html
+frontend/public/metadata.json
+frontend/public/favicon.ico
 
 # Android build outputs & local config
 frontend/android/.gradle/
