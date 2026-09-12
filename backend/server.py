@@ -50,6 +50,8 @@ _storage_key: Optional[str] = None
 
 def init_storage():
     global _storage_key
+    if not STORAGE_URL:
+        return None
     if _storage_key:
         return _storage_key
     resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
