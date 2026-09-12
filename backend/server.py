@@ -11,7 +11,7 @@ import httpx
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from invoice_pdf import build_invoice_pdf
 from customer_pdf import build_customer_pdf
@@ -77,6 +77,15 @@ def get_object(path: str):
 # ============ App ============
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+
+@app.get("/download-apk")
+@api_router.get("/download-apk")
+async def download_apk():
+    apk_path = ROOT_DIR.parent / "TDSC-Office-Manager.apk"
+    if apk_path.exists():
+        return FileResponse(apk_path, media_type="application/vnd.android.package-archive", filename="TDSC-Office-Manager.apk")
+    raise HTTPException(status_code=404, detail="APK not found")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
