@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import bcrypt
+import certifi
 import httpx
 import requests
 from dotenv import load_dotenv
@@ -28,7 +29,10 @@ load_dotenv(ROOT_DIR / '.env')
 # ============ MongoDB ============
 raw_mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 mongo_url = re.sub(r'[\x00-\x20\x7f-\x9f]', '', raw_mongo_url)
-client = AsyncIOMotorClient(mongo_url)
+client_kwargs = {}
+if "mongodb+srv://" in mongo_url or "tls=true" in mongo_url.lower():
+    client_kwargs["tlsCAFile"] = certifi.where()
+client = AsyncIOMotorClient(mongo_url, **client_kwargs)
 raw_db_name = os.environ.get('DB_NAME', 'triveni_fms')
 db_name = re.sub(r'[\x00-\x20\x7f-\x9f]', '', raw_db_name)
 db = client[db_name]
