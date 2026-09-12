@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import logging
 import secrets
@@ -25,9 +26,12 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # ============ MongoDB ============
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+raw_mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+mongo_url = re.sub(r'[\x00-\x20\x7f-\x9f]', '', raw_mongo_url)
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'triveni_fms')]
+raw_db_name = os.environ.get('DB_NAME', 'triveni_fms')
+db_name = re.sub(r'[\x00-\x20\x7f-\x9f]', '', raw_db_name)
+db = client[db_name]
 
 # ============ Object Storage ============
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip().rstrip("/")
