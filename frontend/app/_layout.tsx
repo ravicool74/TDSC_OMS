@@ -7,6 +7,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider, useAuth } from "@/src/AuthContext";
+import { AppUpdateProvider } from "@/src/AppUpdateModal";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
@@ -46,7 +47,9 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <AuthGate />
+          <AppUpdateProvider>
+            <AuthGate />
+          </AppUpdateProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

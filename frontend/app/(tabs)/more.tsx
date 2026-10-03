@@ -1,15 +1,17 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, Image, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Image, Alert, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { colors, spacing, radius, font, roleColor } from '@/src/theme';
 import { useAuth } from '@/src/AuthContext';
 import { Avatar } from '@/src/ui';
+import { useAppUpdate, LOCAL_APP_VERSION } from '@/src/AppUpdateModal';
 
 export default function MoreScreen() {
   const { user, logout, deleteAccount } = useAuth();
   const router = useRouter();
+  const { checkForUpdates, isChecking } = useAppUpdate();
 
   const confirmDelete = () => {
     const doDelete = async () => {
@@ -117,16 +119,35 @@ export default function MoreScreen() {
         )}
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>About</Text>
+          <Text style={styles.sectionTitle}>About & Updates</Text>
           <View style={styles.row}>
             <View style={[styles.rowIcon, { backgroundColor: colors.surface, padding: 2, borderWidth: 1, borderColor: colors.border }]}>
               <Image source={require('../../assets/images/company-logo.jpg')} style={{ width: '100%', height: '100%' }} resizeMode="contain" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>TDSC Office Management System</Text>
-              <Text style={styles.muted}>Triveni DSC & e-Tender Service Pvt. Ltd.</Text>
+              <Text style={styles.muted}>Version {LOCAL_APP_VERSION} (Build 2)</Text>
             </View>
           </View>
+          <Pressable
+            testID="check-updates-btn"
+            style={styles.row}
+            onPress={() => checkForUpdates(false)}
+            disabled={isChecking}
+          >
+            <View style={[styles.rowIcon, { backgroundColor: colors.brandTertiary }]}>
+              {isChecking ? (
+                <ActivityIndicator size="small" color={colors.brandPrimary} />
+              ) : (
+                <Ionicons name="cloud-download-outline" size={20} color={colors.brandPrimary} />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Check for App Updates</Text>
+              <Text style={styles.muted}>{isChecking ? 'Checking update server...' : 'Verify latest features & improvements'}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </Pressable>
         </View>
 
         <Pressable testID="logout-btn" style={styles.logout} onPress={logout}>

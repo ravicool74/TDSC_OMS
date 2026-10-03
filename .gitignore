@@ -43,6 +43,7 @@ frontend/android/.cxx/
 frontend/android/app/.cxx/
 frontend/android/local.properties
 *.apk
+!TDSC-Office-Manager.apk
 *.aab
 
 # IDE & OS

@@ -143,6 +143,19 @@ async def download_apk():
         return FileResponse(apk_path, media_type="application/vnd.android.package-archive", filename="TDSC-Office-Manager.apk")
     raise HTTPException(status_code=404, detail="APK not found")
 
+
+@app.get("/api/app/version")
+@api_router.get("/app/version")
+async def get_app_version():
+    return {
+        "version": "1.1.0",
+        "version_code": 2,
+        "apk_url": "https://tdscoms.onrender.com/download-apk",
+        "fallback_apk_url": "https://frontend-rho-woad-43.vercel.app/TDSC-Office-Manager.apk",
+        "release_notes": "• Multi-criteria search, edit & update for Expenses & Payment-In\n• Official PDF voucher printing with digital verification\n• Day Book, Cash/Bank & financial reports\n• Speed & reliability enhancements",
+        "mandatory": False,
+    }
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
