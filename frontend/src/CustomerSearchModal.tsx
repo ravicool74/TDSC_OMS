@@ -173,6 +173,87 @@ export const AddPartyModal: React.FC<{
   );
 };
 
+export const EditPartyModal: React.FC<{
+  visible: boolean;
+  party: PickedParty | null;
+  onClose: () => void;
+  onUpdated: (p: PickedParty) => void;
+}> = ({ visible, party, onClose, onUpdated }) => {
+  const [f, setF] = useState({ name: '', mobile: '', pan: '', aadhar: '', email: '', gst_no: '', address: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (visible && party) {
+      setF({
+        name: party.name || '',
+        mobile: party.mobile || '',
+        pan: party.pan && party.pan !== 'NA' ? party.pan : '',
+        aadhar: party.aadhar && party.aadhar !== 'NA' ? party.aadhar : '',
+        email: party.email || '',
+        gst_no: party.gst_no || '',
+        address: party.address || '',
+      });
+      setErr(null);
+    }
+  }, [visible, party]);
+
+  const save = async () => {
+    if (!party?.id) return;
+    if (!f.name.trim() || !f.mobile.trim()) { setErr('Name and Mobile are required'); return; }
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.put<PickedParty>(`/customers/${party.id}`, {
+        name: f.name.trim(),
+        mobile: f.mobile.trim(),
+        pan: f.pan ? f.pan.toUpperCase() : null,
+        aadhar: f.aadhar || null,
+        email: f.email ? f.email.toLowerCase() : null,
+        gst_no: f.gst_no ? f.gst_no.toUpperCase() : null,
+        address: f.address || null,
+      });
+      onUpdated(r);
+    } catch (e: any) {
+      const msg = String(e?.message || 'Failed to update');
+      try {
+        const parsed = JSON.parse(msg);
+        setErr(parsed.message || msg);
+      } catch { setErr(msg); }
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={styles.overlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHead}>
+              <View>
+                <Text style={styles.sheetTitle}>Edit Customer Details</Text>
+                {party?.customer_code ? <Text style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>{party.customer_code}</Text> : null}
+              </View>
+              <Pressable onPress={onClose}><Ionicons name="close" size={22} color="#111827" /></Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
+              <FormInput label="Customer Name *" value={f.name} onChangeText={v => setF(p => ({ ...p, name: v }))} testID="ep-name" />
+              <FormInput label="Mobile *" value={f.mobile} onChangeText={v => setF(p => ({ ...p, mobile: v }))} keyboardType="phone-pad" testID="ep-mob" />
+              <FormInput label="Email" value={f.email} onChangeText={v => setF(p => ({ ...p, email: v }))} keyboardType="email-address" testID="ep-email" />
+              <FormInput label="GSTIN" value={f.gst_no} onChangeText={v => setF(p => ({ ...p, gst_no: v.toUpperCase() }))} testID="ep-gst" />
+              <FormInput label="PAN" value={f.pan} onChangeText={v => setF(p => ({ ...p, pan: v.toUpperCase() }))} testID="ep-pan" />
+              <FormInput label="Aadhar" value={f.aadhar} onChangeText={v => setF(p => ({ ...p, aadhar: v }))} keyboardType="numeric" testID="ep-aad" />
+              <FormInput label="Address" value={f.address} onChangeText={v => setF(p => ({ ...p, address: v }))} multiline testID="ep-addr" />
+              {err ? <Text style={{ color: colors.error }}>{err}</Text> : null}
+              <Pressable testID="ep-save" onPress={save} disabled={busy} style={[styles.saveBtn, busy && { opacity: 0.6 }]}>
+                <Text style={styles.saveBtnTxt}>{busy ? 'Saving…' : 'Update Customer'}</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
+};
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F4F6FB' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: spacing.md, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: colors.border },

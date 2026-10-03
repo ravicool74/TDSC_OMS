@@ -6,7 +6,7 @@ import { api } from '@/src/api';
 import { Card, ScreenLoader } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 
-const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN')}`;
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 export default function BooksScreen() {
   const [mode, setMode] = useState<'cash' | 'bank'>('cash');

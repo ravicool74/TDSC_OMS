@@ -4,16 +4,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
-import { colors, spacing, radius, font } from '@/src/theme';
+import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 
-const HEADER_BG = '#E8F0FE';  // light blue like Vyapar
-const HEADER_FG = '#1A237E';   // deep indigo
+const HEADER_BG = '#FFFFFF';
+const HEADER_FG = '#0F172A';
 const NAVY = '#00104A';
-const BLUE = '#2075FF';
-const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const BLUE = '#2563EB';
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-type Row = { icon: any; iconColor: string; iconBg: string; label: string; route?: string; comingSoon?: boolean; params?: any };
+type Row = { icon: any; iconColor: string; iconBg: string; label: string; route: string; params?: any };
 type Section = { title: string; rows: Row[]; defaultOpen?: boolean };
 
 const BUSINESS: Section[] = [
@@ -25,12 +25,12 @@ const BUSINESS: Section[] = [
       { icon: 'list', iconColor: '#059669', iconBg: '#DCFCE7', label: 'All Sale Invoices', route: '/accounting/invoices' },
       { icon: 'arrow-down-circle', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Payment-In', route: '/accounting/income/new' },
       { icon: 'list', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'All Payments-In', route: '/accounting/income' },
-      { icon: 'return-down-back', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Sale Return / Credit Note', comingSoon: true },
-      { icon: 'clipboard', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Estimate / Quotation', comingSoon: true },
-      { icon: 'document-text', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Proforma Invoice', comingSoon: true },
-      { icon: 'cart', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale Order', comingSoon: true },
-      { icon: 'car', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Delivery Challan', comingSoon: true },
-      { icon: 'phone-portrait', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Mobile POS', comingSoon: true },
+      { icon: 'return-down-back', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Sale Return / Credit Note', route: '/accounting/invoices/new', params: { type: 'sale_return' } },
+      { icon: 'clipboard', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Estimate / Quotation', route: '/accounting/estimates' },
+      { icon: 'document-text', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Proforma Invoice', route: '/accounting/proforma' },
+      { icon: 'cart', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale Order', route: '/accounting/estimates', params: { type: 'order' } },
+      { icon: 'car', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Delivery Challan', route: '/accounting/delivery-challans' },
+      { icon: 'phone-portrait', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Mobile POS', route: '/accounting/invoices/new', params: { pos: '1' } },
     ],
   },
   {
@@ -40,8 +40,8 @@ const BUSINESS: Section[] = [
       { icon: 'list', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'All Purchase Bills', route: '/accounting/invoices', params: { type: 'purchase' } },
       { icon: 'arrow-up-circle', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Payment-Out', route: '/accounting/expenses/new' },
       { icon: 'list', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'All Payments-Out', route: '/accounting/expenses' },
-      { icon: 'return-up-forward', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Purchase Return / Debit Note', comingSoon: true },
-      { icon: 'cart', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Purchase Order', comingSoon: true },
+      { icon: 'return-up-forward', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Purchase Return / Debit Note', route: '/accounting/invoices/new', params: { type: 'purchase_return' } },
+      { icon: 'cart', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Purchase Order', route: '/accounting/proforma', params: { type: 'purchase_order' } },
     ],
   },
   {
@@ -52,83 +52,110 @@ const BUSINESS: Section[] = [
       { icon: 'grid', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Categories & Items', route: '/accounting/items' },
     ],
   },
-];
-
-// Reports with star support via async-storage (favourites)
-const REPORT_SECTIONS: Section[] = [
   {
-    title: 'TRANSACTION REPORTS',
+    title: 'CASH & BANK',
     defaultOpen: true,
     rows: [
-      { icon: 'trending-up', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Sale Report', route: '/accounting/income' },
-      { icon: 'trending-down', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Purchase Report', comingSoon: true },
-      { icon: 'book', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Day Book (Cash / Bank)', route: '/accounting/books' },
-      { icon: 'reader', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'All Transactions', route: '/accounting/books' },
-      { icon: 'analytics', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Bill Wise Profit', comingSoon: true },
-      { icon: 'stats-chart', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Profit & Loss', route: '/accounting' },
-      { icon: 'time', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Sale Aging Report', comingSoon: true },
-      { icon: 'time', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Purchase Aging Report', comingSoon: true },
-      { icon: 'water', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Cash Flow', route: '/accounting/books' },
-      { icon: 'grid', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Balance Sheet', comingSoon: true },
+      { icon: 'business', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Bank Accounts', route: '/accounting/cash-bank', params: { tab: 'banks' } },
+      { icon: 'cash', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Cash in Hand', route: '/accounting/cash-bank', params: { tab: 'cash' } },
+      { icon: 'newspaper', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Cheques', route: '/accounting/cash-bank', params: { tab: 'cheques' } },
+      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Loan Accounts', route: '/accounting/cash-bank', params: { tab: 'loans' } },
+    ],
+  },
+];
+
+// Reports with star support via async-storage (favourites) - All 9 Categories & 37 Sub-Reports
+const REPORT_SECTIONS: Section[] = [
+  {
+    title: '1. CORE FINANCIAL REPORTS',
+    defaultOpen: true,
+    rows: [
+      { icon: 'trending-up', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Sale Report', route: '/accounting/reports', params: { report: 'sale_report' } },
+      { icon: 'trending-down', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Purchase Report', route: '/accounting/reports', params: { report: 'purchase_report' } },
+      { icon: 'book', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Day Book (Cash / Bank)', route: '/accounting/reports', params: { report: 'day_book' } },
+      { icon: 'reader', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'All Transactions', route: '/accounting/reports', params: { report: 'all_transactions' } },
+      { icon: 'analytics', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Bill Wise Profit', route: '/accounting/reports', params: { report: 'bill_profit' } },
+      { icon: 'stats-chart', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Profit & Loss', route: '/accounting/reports', params: { report: 'pnl' } },
+      { icon: 'time', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Sale Aging Report', route: '/accounting/reports', params: { report: 'sale_aging' } },
+      { icon: 'hourglass', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Purchase Aging Report', route: '/accounting/reports', params: { report: 'purchase_aging' } },
+      { icon: 'water', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Cashflow', route: '/accounting/reports', params: { report: 'cashflow' } },
+      { icon: 'grid', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Balance Sheet', route: '/accounting/reports', params: { report: 'balance_sheet' } },
     ],
   },
   {
-    title: 'PARTY REPORTS',
+    title: '2. PARTY REPORTS',
     rows: [
-      { icon: 'people', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Party Statement', route: '/accounting/client-ledger' },
-      { icon: 'pie-chart', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Party Wise Profit & Loss', comingSoon: true },
-      { icon: 'list', iconColor: '#059669', iconBg: '#DCFCE7', label: 'All Parties Report', route: '/(tabs)/business' },
-      { icon: 'document', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Party Report by Items', comingSoon: true },
-      { icon: 'swap-horizontal', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Sale/Purchase by Party', comingSoon: true },
-      { icon: 'people-circle', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale/Purchase by Party Groups', comingSoon: true },
+      { icon: 'people', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Party Statement', route: '/accounting/reports', params: { report: 'party_statement' } },
+      { icon: 'pie-chart', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Party wise profit & Loss', route: '/accounting/reports', params: { report: 'party_pnl' } },
+      { icon: 'list', iconColor: '#059669', iconBg: '#DCFCE7', label: 'All Parties Report', route: '/accounting/reports', params: { report: 'all_parties' } },
+      { icon: 'cube', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Party Report by Items', route: '/accounting/reports', params: { report: 'party_items' } },
+      { icon: 'swap-horizontal', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Sale/Purchase by Party', route: '/accounting/reports', params: { report: 'sale_purchase_party' } },
+      { icon: 'people-circle', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale/Purchase By Party Groups', route: '/accounting/reports', params: { report: 'party_groups' } },
     ],
   },
   {
-    title: 'GST REPORTS',
+    title: '3. GST REPORTS',
     rows: [
-      { icon: 'document-text', iconColor: '#059669', iconBg: '#DCFCE7', label: 'GSTR-1 (Outward)', comingSoon: true },
-      { icon: 'document-text', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'GSTR-2 (Inward)', comingSoon: true },
-      { icon: 'document-text', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'GSTR-3B (Monthly Return)', comingSoon: true },
-      { icon: 'swap-horizontal', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'GST Transaction Report', comingSoon: true },
-      { icon: 'document-text', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'GSTR-9 (Annual)', comingSoon: true },
-      { icon: 'pricetags', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale Summary by HSN', comingSoon: true },
-      { icon: 'construct', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'SAC Report', comingSoon: true },
-      { icon: 'analytics', iconColor: '#059669', iconBg: '#DCFCE7', label: 'GST Report', comingSoon: true },
-      { icon: 'analytics', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'GST Rate Report', comingSoon: true },
-      { icon: 'document', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Form No. 27EQ', comingSoon: true },
-      { icon: 'cash', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'TCS Receivable', comingSoon: true },
-      { icon: 'cash', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'TDS Payable', comingSoon: true },
-      { icon: 'cash', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'TDS Receivable', comingSoon: true },
+      { icon: 'document-attach', iconColor: '#059669', iconBg: '#DCFCE7', label: 'GSTR-1', route: '/accounting/reports', params: { report: 'gstr1' } },
+      { icon: 'document-text', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'GSTR-2', route: '/accounting/reports', params: { report: 'gstr2' } },
+      { icon: 'calculator', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'GSTR-3B', route: '/accounting/reports', params: { report: 'gstr3b' } },
+      { icon: 'list-circle', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'GST Transaction Report', route: '/accounting/reports', params: { report: 'gst_transactions' } },
+      { icon: 'calendar', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'GSTR-9', route: '/accounting/reports', params: { report: 'gstr9' } },
+      { icon: 'pricetags', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale Summary by HSN SAC Report', route: '/accounting/reports', params: { report: 'hsn_sac_summary' } },
     ],
   },
   {
-    title: 'EXPENSE REPORTS',
+    title: '4. ITEM / STOCK REPORTS',
     rows: [
-      { icon: 'wallet', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Expense Transaction Report', route: '/accounting/expenses' },
-      { icon: 'grid', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Expense Category Report', comingSoon: true },
-      { icon: 'list', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Expense Item Report', comingSoon: true },
+      { icon: 'cube-outline', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Stock Summary Report', route: '/accounting/reports', params: { report: 'stock_summary' } },
+      { icon: 'share-social', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Item Report Party', route: '/accounting/reports', params: { report: 'item_report_party' } },
+      { icon: 'cash', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Item Wise Profit & Loss', route: '/accounting/reports', params: { report: 'item_pnl' } },
+      { icon: 'warning', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Low Stock Summary Report', route: '/accounting/reports', params: { report: 'low_stock' } },
+      { icon: 'information-circle', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Item Details Report', route: '/accounting/reports', params: { report: 'item_details' } },
+      { icon: 'shapes', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Sale/Purchase by Item Category', route: '/accounting/reports', params: { report: 'sale_purchase_item_cat' } },
+      { icon: 'file-tray-stacked', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Stock Summary By Item Category', route: '/accounting/reports', params: { report: 'stock_by_category' } },
+      { icon: 'layers', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Item Batch Report', route: '/accounting/reports', params: { report: 'item_batch' } },
+      { icon: 'barcode', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Item Serial Report', route: '/accounting/reports', params: { report: 'item_serial' } },
+      { icon: 'pricetag', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Item Wise Discount', route: '/accounting/reports', params: { report: 'item_discount' } },
     ],
   },
   {
-    title: 'SALE / PURCHASE ORDER REPORTS',
+    title: '5. BUSINESS STATUS',
     rows: [
-      { icon: 'cart', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Sale/Purchase Order Transaction Report', comingSoon: true },
-      { icon: 'list', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Sale/Purchase Order Item Report', comingSoon: true },
+      { icon: 'business', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Bank Statement', route: '/accounting/reports', params: { report: 'bank_statement' } },
+      { icon: 'gift', iconColor: '#D97706', iconBg: '#FEF3C7', label: 'Discount Report', route: '/accounting/reports', params: { report: 'discount_report' } },
     ],
   },
   {
-    title: 'LOAN REPORTS',
+    title: '6. TAXES',
     rows: [
-      { icon: 'card', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Loan Statement', comingSoon: true },
+      { icon: 'checkmark-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: 'GST Report', route: '/accounting/reports', params: { report: 'gst_report' } },
+      { icon: 'speedometer', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'GST Rate Report', route: '/accounting/reports', params: { report: 'gst_rate_report' } },
+      { icon: 'document', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Form No. 27EQ', route: '/accounting/reports', params: { report: 'form_27eq' } },
+      { icon: 'wallet', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'TCS Receivable', route: '/accounting/reports', params: { report: 'tcs_receivable' } },
+      { icon: 'arrow-up-circle', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'TDS Payable', route: '/accounting/reports', params: { report: 'tds_payable' } },
+      { icon: 'arrow-down-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: 'TDS Receivable', route: '/accounting/reports', params: { report: 'tds_receivable' } },
     ],
   },
   {
-    title: 'ITEM / STOCK REPORTS',
+    title: '7. EXPENSE REPORTS',
     rows: [
-      { icon: 'cube', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Stock Summary Report', comingSoon: true },
-      { icon: 'people', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Item Report by Party', comingSoon: true },
-      { icon: 'analytics', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Item Wise Profit & Loss', comingSoon: true },
-      { icon: 'warning', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Low Stock Summary Report', comingSoon: true },
+      { icon: 'receipt-outline', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Expense Transaction Report', route: '/accounting/reports', params: { report: 'expense_transaction' } },
+      { icon: 'pie-chart-outline', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Expense Category Report', route: '/accounting/reports', params: { report: 'expense_category' } },
+      { icon: 'basket', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Expense Item Report', route: '/accounting/reports', params: { report: 'expense_item' } },
+    ],
+  },
+  {
+    title: '8. SALE / PURCHASE ORDER REPORTS',
+    rows: [
+      { icon: 'cart-outline', iconColor: '#4F46E5', iconBg: '#EEF2FF', label: 'Sale/Purchase Order Transaction Report', route: '/accounting/reports', params: { report: 'order_transaction' } },
+      { icon: 'reorder-four', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Sale/Purchase Order Item Report', route: '/accounting/reports', params: { report: 'order_item' } },
+    ],
+  },
+  {
+    title: '9. LONE STATEMENT',
+    rows: [
+      { icon: 'wallet-outline', iconColor: '#0284C7', iconBg: '#E0F2FE', label: 'Loan Statement', route: '/accounting/reports', params: { report: 'loan_statement' } },
     ],
   },
 ];
@@ -145,15 +172,15 @@ const SETTINGS_SECTIONS: Section[] = [
     title: 'SETTINGS',
     defaultOpen: true,
     rows: [
-      { icon: 'options', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'General', comingSoon: true },
-      { icon: 'swap-horizontal', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Transaction', comingSoon: true },
-      { icon: 'print', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Invoice Print', comingSoon: true },
-      { icon: 'receipt', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Taxes & GST', comingSoon: true },
-      { icon: 'people', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'User Management', comingSoon: true },
-      { icon: 'chatbubbles', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Transaction SMS', comingSoon: true },
-      { icon: 'notifications', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Reminders', comingSoon: true },
-      { icon: 'person', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Party', route: '/(tabs)/business' },
-      { icon: 'cube', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Item', route: '/accounting/items' },
+      { icon: 'options', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'General Settings', route: '/admin/settings' },
+      { icon: 'swap-horizontal', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Transaction Settings', route: '/admin/settings' },
+      { icon: 'print', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Invoice Print Settings', route: '/admin/settings' },
+      { icon: 'receipt', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Taxes & GST Center', route: '/accounting/reports/gst' },
+      { icon: 'people', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'User Directory & Roles', route: '/admin/users' },
+      { icon: 'chatbubbles', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Transaction SMS', route: '/admin/settings' },
+      { icon: 'notifications', iconColor: '#DB2777', iconBg: '#FCE7F3', label: 'Document Expiry Reminders', route: '/customers/expiry-alerts' },
+      { icon: 'person', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Parties Directory', route: '/(tabs)/business' },
+      { icon: 'cube', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Item Master Catalog', route: '/accounting/items' },
     ],
   },
 ];
@@ -176,23 +203,23 @@ export default function AccountingMenu() {
   };
 
   const go = (r: Row) => {
-    if (r.comingSoon) return Alert.alert(r.label, 'Yeh feature Phase 2 mein add hoga. Underlying data already Accounts Dashboard mein track ho raha hai.');
     if (r.route) router.push({ pathname: r.route, params: r.params } as any);
   };
 
   return (
     <View style={styles.root} testID="acc-menu">
-      <SafeAreaView edges={['top']} style={{ backgroundColor: HEADER_BG }}>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: HEADER_BG, borderBottomWidth: 1, borderBottomColor: colors.border }}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={10}>
-            <Ionicons name="chevron-back" size={26} color={HEADER_FG} />
+          {/* Prominent Circular Back Button */}
+          <Pressable onPress={() => router.back()} style={styles.headerBackBtn} hitSlop={8} testID="menu-back-btn">
+            <Ionicons name="arrow-back" size={20} color={HEADER_FG} />
           </Pressable>
           <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={styles.headerTitle}>Accounts</Text>
-            <Text style={styles.headerSub}>TDSC • Vyapar-style</Text>
+            <Text style={styles.headerTitle}>Accounting & Billing</Text>
+            <Text style={styles.headerSub}>TDSC • Vyapar-Style Financial Suite</Text>
           </View>
           <Pressable onPress={() => router.push('/accounting' as any)} hitSlop={10} style={styles.headerBtn}>
-            <Ionicons name="stats-chart" size={20} color={HEADER_FG} />
+            <Ionicons name="stats-chart" size={18} color={HEADER_FG} />
           </Pressable>
         </View>
       </SafeAreaView>
@@ -216,6 +243,22 @@ export default function AccountingMenu() {
         <BankPanel />
       ) : (
         <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl }}>
+          {tab === 'reports' && (
+            <Pressable
+              onPress={() => router.push('/accounting/reports' as any)}
+              style={styles.masterReportsBanner}
+              testID="master-reports-banner"
+            >
+              <View style={styles.masterReportsIcon}>
+                <Ionicons name="bar-chart" size={20} color="#FFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.masterReportsTitle}>Open Master Reports Hub</Text>
+                <Text style={styles.masterReportsSub}>All 9 Categories, Live Search, Date Filters & Export</Text>
+              </View>
+              <Ionicons name="arrow-forward-circle" size={24} color={BLUE} />
+            </Pressable>
+          )}
           {(tab === 'home' ? BUSINESS : tab === 'reports' ? REPORT_SECTIONS : SETTINGS_SECTIONS).map(s => (
             <SectionBlock key={s.title} section={s} onPress={go} showStar={tab === 'reports'} favs={favs} onFav={toggleFav} />
           ))}
@@ -243,7 +286,6 @@ const SectionBlock: React.FC<{ section: Section; onPress: (r: Row) => void; show
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowLabel}>{r.label}</Text>
-                {r.comingSoon ? <Text style={styles.soonTag}>COMING SOON</Text> : null}
               </View>
               {showStar ? (
                 <Pressable onPress={() => onFav?.(r.label)} hitSlop={8} style={{ padding: 6 }} testID={`fav-${r.label}`}>
@@ -269,7 +311,6 @@ const BankPanel: React.FC = () => {
       const b = await api.get<any[]>('/bank-accounts');
       setBanks(b);
       const dash = await api.get<any>('/accounting/dashboard').catch(() => null);
-      // Best-effort: use opening as running balance placeholder if bank_balances not present in dashboard
       const map: Record<string, number> = {};
       for (const x of b) map[x.id] = Number(x.opening_balance || 0);
       if (dash?.bank_balances) Object.assign(map, dash.bank_balances);
@@ -293,10 +334,16 @@ const BankPanel: React.FC = () => {
     <View style={{ flex: 1 }}>
       <View style={styles.bankHeader}>
         <Text style={styles.bankTitle}>Bank Accounts</Text>
-        <Pressable testID="add-bank-btn" onPress={() => router.push('/accounting/banks' as any)} style={styles.bankAdd}>
-          <Ionicons name="add" size={16} color="#FFF" />
-          <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Add Bank</Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', gap: 6 }}>
+          <Pressable testID="open-cash-bank-hub" onPress={() => router.push('/accounting/cash-bank' as any)} style={[styles.bankAdd, { backgroundColor: NAVY }]}>
+            <Ionicons name="swap-vertical" size={14} color="#FFF" />
+            <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Cash & Bank Hub</Text>
+          </Pressable>
+          <Pressable testID="add-bank-btn" onPress={() => router.push('/accounting/banks' as any)} style={styles.bankAdd}>
+            <Ionicons name="add" size={16} color="#FFF" />
+            <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Add Bank</Text>
+          </Pressable>
+        </View>
       </View>
       {banks.length === 0 ? (
         <View style={{ alignItems: 'center', padding: 32 }}>
@@ -332,7 +379,7 @@ const BankPanel: React.FC = () => {
                   <Text style={[styles.bankBal, { color: pos ? '#059669' : '#DC2626' }]}>{pos ? '' : '-'}{inr(Math.abs(bal))}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                  <Pressable onPress={() => router.push({ pathname: '/accounting/books', params: { bank: item.id } } as any)} style={styles.bankBtn}>
+                  <Pressable onPress={() => router.push({ pathname: '/accounting/day-book', params: { bank: item.id } } as any)} style={styles.bankBtn}>
                     <Ionicons name="book" size={14} color={colors.brandPrimary} />
                     <Text style={styles.bankBtnTxt}>Bank Book</Text>
                   </Pressable>
@@ -352,10 +399,11 @@ const BankPanel: React.FC = () => {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F4F6FB' },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingBottom: spacing.sm, paddingTop: 6 },
-  headerTitle: { color: HEADER_FG, fontSize: font.xl, fontWeight: '900' },
-  headerSub: { color: HEADER_FG + 'aa', fontSize: 11, fontWeight: '600' },
-  headerBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFFFFFcc', alignItems: 'center', justifyContent: 'center' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: 10 },
+  headerBackBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 2, elevation: 2 },
+  headerTitle: { color: HEADER_FG, fontSize: font.lg, fontWeight: '900' },
+  headerSub: { color: colors.muted, fontSize: 11, fontWeight: '600', marginTop: 1 },
+  headerBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
   tabRow: { flexDirection: 'row', backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: colors.border },
   tabItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderBottomWidth: 3, borderBottomColor: 'transparent', gap: 4 },
   tabItemActive: { borderBottomColor: BLUE },
@@ -367,7 +415,6 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingHorizontal: spacing.lg, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
   rowIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   rowLabel: { fontSize: font.base, color: '#111827', fontWeight: '600' },
-  soonTag: { color: '#9CA3AF', fontSize: 9, fontWeight: '800', letterSpacing: 0.5, marginTop: 2 },
   bankHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: colors.border },
   bankTitle: { fontSize: font.lg, fontWeight: '800', color: '#111827' },
   bankAdd: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: BLUE, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill },
@@ -380,4 +427,8 @@ const styles = StyleSheet.create({
   bankBal: { fontSize: font.xxl, fontWeight: '900', marginTop: 4 },
   bankBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#EFF6FF', paddingVertical: 8, borderRadius: radius.md },
   bankBtnTxt: { color: colors.brandPrimary, fontWeight: '700', fontSize: 12 },
+  masterReportsBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', marginHorizontal: spacing.lg, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: '#BFDBFE', gap: 12 },
+  masterReportsIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' },
+  masterReportsTitle: { fontSize: font.base, fontWeight: '800', color: '#1E3A8A' },
+  masterReportsSub: { fontSize: 11, color: '#3B82F6', marginTop: 2 },
 });

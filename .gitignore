@@ -28,6 +28,7 @@ frontend/.metro-cache/
 .metro-cache/
 dist/
 web-build/
+backend/public/
 frontend/public/_expo/
 frontend/public/assets/
 frontend/public/index.html
@@ -53,3 +54,8 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local database and uploaded files
+*.db
+backend/uploads/
+

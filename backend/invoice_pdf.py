@@ -1,14 +1,17 @@
 """Invoice PDF generation matching the TDSC reference layout."""
 from io import BytesIO
 from datetime import datetime
+from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors as rl_colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm, cm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, Image as RLImage
 )
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "images" / "company-logo.jpg"
 
 # ---- Company constants (as per reference PDF) ------------------------
 COMPANY = {
@@ -62,9 +65,39 @@ def number_to_indian_words(n: float) -> str:
     return " ".join(parts).strip() + " Rupees only"
 
 
+# ---- TrueType Font registration for genuine Rupee (₹) and Hindi support ----
+FONT_REG = "Helvetica"
+FONT_BOLD = "Helvetica-Bold"
+FONT_DEV = "Helvetica-Bold"
+
+try:
+    import os
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    win_fonts = os.environ.get("WINDIR", "C:\\Windows") + "\\Fonts"
+    segoe_path = os.path.join(win_fonts, "segoeui.ttf")
+    segoeb_path = os.path.join(win_fonts, "segoeuib.ttf")
+    nirmala_path = os.path.join(win_fonts, "Nirmala.ttc")
+
+    if os.path.exists(segoe_path) and os.path.exists(segoeb_path):
+        pdfmetrics.registerFont(TTFont("SegoeUI", segoe_path))
+        pdfmetrics.registerFont(TTFont("SegoeUI-Bold", segoeb_path))
+        FONT_REG = "SegoeUI"
+        FONT_BOLD = "SegoeUI-Bold"
+
+    if os.path.exists(nirmala_path):
+        pdfmetrics.registerFont(TTFont("Nirmala", nirmala_path, subfontIndex=0))
+        FONT_DEV = "Nirmala"
+    else:
+        FONT_DEV = FONT_BOLD
+except Exception:
+    pass
+
+
 # ---- Table helpers --------------------------------------------------
 def _rupee(amt: float) -> str:
-    return f"₹ {amt:,.2f}"
+    return f"₹{amt:,.2f}"
 
 
 def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
@@ -77,26 +110,44 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
     )
 
     styles = getSampleStyleSheet()
-    body = ParagraphStyle("body", parent=styles["BodyText"], fontName="Helvetica", fontSize=9, leading=11)
-    small = ParagraphStyle("small", parent=body, fontSize=8, leading=10)
-    company_hdr = ParagraphStyle("ch", parent=body, fontName="Helvetica-Bold", fontSize=13, leading=15, textColor=rl_colors.HexColor("#0F172A"))
-    doc_title = ParagraphStyle("dt", parent=body, fontName="Helvetica-Bold", fontSize=16, leading=18, alignment=TA_RIGHT, textColor=rl_colors.HexColor("#0F172A"))
-    lbl_right = ParagraphStyle("lr", parent=small, alignment=TA_RIGHT)
-    lbl_left = ParagraphStyle("ll", parent=small, alignment=TA_LEFT)
-    bill_to = ParagraphStyle("bt", parent=body, fontName="Helvetica-Bold", fontSize=10, backColor=rl_colors.HexColor("#EEF2FF"), borderPadding=4)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontName=FONT_REG, fontSize=9, leading=11)
+    small = ParagraphStyle("small", parent=body, fontName=FONT_REG, fontSize=8, leading=10)
+    company_hdr = ParagraphStyle("ch", parent=body, fontName=FONT_BOLD, fontSize=13, leading=15, textColor=rl_colors.HexColor("#0F172A"))
+    doc_title = ParagraphStyle("dt", parent=body, fontName=FONT_BOLD, fontSize=16, leading=18, alignment=TA_RIGHT, textColor=rl_colors.HexColor("#0F172A"))
+    lbl_right = ParagraphStyle("lr", parent=small, fontName=FONT_REG, alignment=TA_RIGHT)
+    lbl_left = ParagraphStyle("ll", parent=small, fontName=FONT_REG, alignment=TA_LEFT)
+    bill_to = ParagraphStyle("bt", parent=body, fontName=FONT_BOLD, fontSize=10, backColor=rl_colors.HexColor("#EEF2FF"), borderPadding=4)
 
     elems = []
 
     # -------- Header: company (left) vs Tax Invoice + meta (right) ----
-    left_cell = [
+    logo_elem = None
+    if LOGO_PATH.exists():
+        try:
+            logo_elem = RLImage(str(LOGO_PATH), width=20 * mm, height=20 * mm)
+        except Exception:
+            logo_elem = None
+
+    company_lines = [
         Paragraph(COMPANY["name"], company_hdr),
         Paragraph(COMPANY["address_l1"], small),
         Paragraph(COMPANY["address_l2"], small),
-        Paragraph(f"<b>Phone no.:</b> {COMPANY['phone']}", small),
-        Paragraph(f"<b>Email:</b> {COMPANY['email']}", small),
-        Paragraph(f"<b>GSTIN:</b> {COMPANY['gstin']}", small),
-        Paragraph(f"<b>State:</b> {COMPANY['state']}", small),
+        Paragraph(f"<b>Phone:</b> {COMPANY['phone']} &nbsp;|&nbsp; <b>Email:</b> {COMPANY['email']}", small),
+        Paragraph(f"<b>GSTIN:</b> {COMPANY['gstin']} &nbsp;|&nbsp; <b>State:</b> {COMPANY['state']}", small),
     ]
+
+    if logo_elem:
+        left_sub_tbl = Table([[logo_elem, company_lines]], colWidths=[24 * mm, 86 * mm])
+        left_sub_tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        left_cell = [left_sub_tbl]
+    else:
+        left_cell = company_lines
     meta_rows = [
         ["Invoice No.", str(inv.get("invoice_no") or "-")],
         ["Place of Supply", COMPANY["state"]],
@@ -105,7 +156,7 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
     ]
     meta_tbl = Table(meta_rows, colWidths=[28 * mm, 40 * mm])
     meta_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTNAME", (0, 0), (-1, -1), FONT_REG),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("ALIGN", (0, 0), (0, -1), "LEFT"),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
@@ -177,7 +228,7 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
     items_tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#0F172A")),
         ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ALIGN", (3, 0), (5, -1), "RIGHT"),
@@ -185,7 +236,7 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#CBD5E1")),
         ("BACKGROUND", (0, -1), (-1, -1), rl_colors.HexColor("#F1F5F9")),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTNAME", (0, -1), (-1, -1), FONT_BOLD),
     ]))
     elems.append(items_tbl)
     elems.append(Spacer(1, 6))
@@ -203,14 +254,14 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
     ]
     amounts_tbl = Table(amounts_rows, colWidths=[35 * mm, 40 * mm])
     amounts_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTNAME", (0, 0), (-1, -1), FONT_REG),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("LINEABOVE", (0, 1), (-1, 1), 0.3, rl_colors.HexColor("#CBD5E1")),
         ("LINEABOVE", (0, 3), (-1, 3), 0.4, rl_colors.HexColor("#0F172A")),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("FONTNAME", (0, 3), (-1, 3), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, 1), FONT_BOLD),
+        ("FONTNAME", (0, 3), (-1, 3), FONT_BOLD),
         ("TEXTCOLOR", (0, 3), (-1, 3), rl_colors.HexColor("#DC2626")),
     ]))
     words_para = Paragraph(
@@ -224,7 +275,46 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     elems.append(words_tbl)
-    elems.append(Spacer(1, 8))
+    elems.append(Spacer(1, 6))
+
+    # -------- Payments History / Receipts (if any) ---------------------
+    payments = inv.get("payments") or []
+    if payments and len(payments) > 0:
+        pay_rows = [
+            [
+                Paragraph("<b>Date</b>", small),
+                Paragraph("<b>Voucher / Receipt Ref</b>", small),
+                Paragraph("<b>Mode & Type</b>", small),
+                Paragraph("<b>Paid Amount</b>", small),
+                Paragraph("<b>Balance Left</b>", small),
+            ]
+        ]
+        for p in payments:
+            pay_date = str(p.get("date") or "-")
+            pno = str(p.get("payment_no") or "-")
+            pmode = f"{str(p.get('payment_mode') or '').upper()} ({p.get('payment_type') or 'Payment'})"
+            pamt = _rupee(float(p.get("amount") or 0))
+            pbal = _rupee(float(p.get("balance_after") or 0))
+            pay_rows.append([
+                Paragraph(pay_date, small),
+                Paragraph(pno, small),
+                Paragraph(pmode, small),
+                Paragraph(f"<b>{pamt}</b>", small),
+                Paragraph(pbal, small),
+            ])
+        pay_tbl = Table(pay_rows, colWidths=[26 * mm, 46 * mm, 50 * mm, 32 * mm, 32 * mm])
+        pay_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#F8FAFC")),
+            ("BOX", (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#CBD5E1")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#E2E8F0")),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ("ALIGN", (3, 0), (4, -1), "RIGHT"),
+        ]))
+        elems.append(Paragraph("<b>Payment Receipts & Timeline</b>", small))
+        elems.append(Spacer(1, 2))
+        elems.append(pay_tbl)
+        elems.append(Spacer(1, 6))
 
     # -------- Notes + Terms + Signatory --------------------------------
     notes = inv.get("notes") or ""
@@ -247,12 +337,38 @@ def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
         Paragraph("<b>Terms and conditions</b>", small),
         Paragraph("Thanks for doing business with us!", small),
     ]
+    signatory_name = inv.get("signatory_name") or SIGNATORY
+    include_sig = inv.get("include_signature", True)
     signatory_lines = [
         Paragraph(f"For: <b>{COMPANY['name']}</b>", small),
-        Spacer(1, 30),
-        Paragraph(SIGNATORY, ParagraphStyle("sig", parent=body, fontName="Helvetica-Bold", fontSize=11, alignment=TA_RIGHT)),
-        Paragraph("Authorized Signatory", ParagraphStyle("sig2", parent=small, alignment=TA_RIGHT)),
     ]
+    if include_sig:
+        sig_url = inv.get("signature_url")
+        sig_img_path = None
+        if sig_url and "/api/invoices/signatures/" in sig_url:
+            fname = sig_url.split("/")[-1]
+            local_p = Path(__file__).resolve().parent / "uploads" / "signatures" / fname
+            if local_p.exists():
+                sig_img_path = local_p
+
+        if sig_img_path:
+            signatory_lines.append(Spacer(1, 4))
+            try:
+                signatory_lines.append(RLImage(str(sig_img_path), width=35 * mm, height=14 * mm))
+            except Exception:
+                pass
+            signatory_lines.append(Spacer(1, 4))
+        else:
+            stamp_html = f"<font color='#059669'><b>✔ DIGITALLY VERIFIED</b></font><br/><font size='7' color='#64748B'>Authorized: {signatory_name}</font>"
+            signatory_lines.append(Spacer(1, 8))
+            signatory_lines.append(Paragraph(stamp_html, ParagraphStyle("stamp", parent=small, fontName=FONT_DEV, alignment=TA_RIGHT)))
+            signatory_lines.append(Spacer(1, 4))
+    else:
+        signatory_lines.append(Spacer(1, 24))
+
+    signatory_lines.append(Paragraph(f"<b>{signatory_name}</b>", ParagraphStyle("sig", parent=body, fontName=FONT_DEV, fontSize=10, alignment=TA_RIGHT)))
+    signatory_lines.append(Paragraph("Authorized Signatory", ParagraphStyle("sig2", parent=small, fontName=FONT_REG, alignment=TA_RIGHT)))
+
     bottom_tbl = Table([[desc_lines, terms_lines, signatory_lines]],
                       colWidths=[70 * mm, 55 * mm, 61 * mm])
     bottom_tbl.setStyle(TableStyle([

@@ -1,0 +1,340 @@
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, spacing, radius, font, shadow } from '@/src/theme';
+import { api } from '@/src/api';
+import { ScreenHeader } from '@/src/ScreenHeader';
+import { PrimaryButton } from '@/src/ui';
+import { CustomerSearchModal, PickedParty } from '@/src/CustomerSearchModal';
+import { ItemSearchModal, PickedItem } from '@/src/ItemSearchModal';
+
+const today = () => new Date().toISOString().slice(0, 10);
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+
+interface ItemRow {
+  key: string;
+  item_id?: string;
+  name: string;
+  qty: string;
+  rate: string;
+  discount: string;
+  tax_rate: string;
+}
+
+export default function NewEstimate() {
+  const router = useRouter();
+  const [date, setDate] = useState(today());
+  const [party, setParty] = useState<PickedParty | null>(null);
+  const [showPartyPick, setShowPartyPick] = useState(false);
+  const [items, setItems] = useState<ItemRow[]>([]);
+  const [showItemPick, setShowItemPick] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const addItemFromCatalog = (item: PickedItem) => {
+    setItems(prev => [
+      ...prev,
+      {
+        key: `${Date.now()}_${Math.random()}`,
+        item_id: item.id,
+        name: item.name,
+        qty: '1',
+        rate: String(item.sale_price || 0),
+        discount: '0',
+        tax_rate: String(item.tax_rate ?? 18),
+      },
+    ]);
+  };
+
+  const addManualItem = () => {
+    setItems(prev => [
+      ...prev,
+      {
+        key: `${Date.now()}_${Math.random()}`,
+        name: '',
+        qty: '1',
+        rate: '0',
+        discount: '0',
+        tax_rate: '18',
+      },
+    ]);
+  };
+
+  const updateItem = (key: string, patch: Partial<ItemRow>) => {
+    setItems(prev => prev.map(it => it.key === key ? { ...it, ...patch } : it));
+  };
+
+  const removeItem = (key: string) => {
+    setItems(prev => prev.filter(it => it.key !== key));
+  };
+
+  // Calculations
+  const calculated = items.map(it => {
+    const q = Number(it.qty || 0);
+    const r = Number(it.rate || 0);
+    const d = Number(it.discount || 0);
+    const tx = Number(it.tax_rate || 0);
+    const amt = q * r;
+    const taxable = Math.max(0, amt - d);
+    const taxAmt = taxable * (tx / 100);
+    const tot = taxable + taxAmt;
+    return { amt, d, taxAmt, tot };
+  });
+
+  const subtotal = calculated.reduce((s, x) => s + x.amt, 0);
+  const totalDiscount = calculated.reduce((s, x) => s + x.d, 0);
+  const totalTax = calculated.reduce((s, x) => s + x.taxAmt, 0);
+  const grandTotal = calculated.reduce((s, x) => s + x.tot, 0);
+
+  const save = async () => {
+    if (!party) {
+      Alert.alert('Customer Required', 'Please select a customer for this estimate.');
+      return;
+    }
+    if (items.length === 0) {
+      Alert.alert('Items Required', 'Please add at least one line item to the quotation.');
+      return;
+    }
+    for (const it of items) {
+      if (!it.name.trim()) {
+        Alert.alert('Item Name Required', 'Please provide a name for all line items.');
+        return;
+      }
+    }
+
+    setSaving(true);
+    try {
+      const payload = {
+        date,
+        customer_id: party.id,
+        items: items.map(it => ({
+          item_id: it.item_id,
+          name: it.name,
+          qty: Number(it.qty || 1),
+          rate: Number(it.rate || 0),
+          discount: Number(it.discount || 0),
+          tax_rate: Number(it.tax_rate || 18),
+        })),
+        notes: notes.trim() || undefined,
+        status: 'draft',
+      };
+
+      const res: any = await api.post('/accounting/estimates', payload);
+      Alert.alert('Estimate Created', `Quotation ${res.estimate_no} saved successfully.`);
+      router.replace('/accounting/estimates' as any);
+    } catch (e: any) {
+      Alert.alert('Failed', e?.message || 'Unable to save estimate');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View style={styles.root}>
+      <ScreenHeader title="New Estimate / Quotation" />
+
+      <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}>
+        {/* Basic Meta */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Customer & Date</Text>
+          <View style={{ marginTop: spacing.sm }}>
+            <Text style={styles.lbl}>Quotation Date</Text>
+            <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" />
+          </View>
+
+          <View style={{ marginTop: spacing.sm }}>
+            <Text style={styles.lbl}>Customer / Contractor *</Text>
+            {party ? (
+              <View style={styles.partyPicked}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.partyName}>{party.name}</Text>
+                  <Text style={styles.partySub}>{party.mobile || party.pan || 'Selected Client'}</Text>
+                </View>
+                <Pressable onPress={() => setShowPartyPick(true)} style={styles.changePartyBtn}>
+                  <Text style={styles.changePartyTxt}>Change</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable onPress={() => setShowPartyPick(true)} style={styles.pickPartyBtn}>
+                <Ionicons name="person-add" size={18} color={colors.brandPrimary} />
+                <Text style={styles.pickPartyTxt}>Select Customer / Party</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+
+        {/* Line Items */}
+        <View style={styles.card}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.cardTitle}>Items & Services</Text>
+            <View style={{ flexDirection: 'row', gap: 6 }}>
+              <Pressable onPress={() => setShowItemPick(true)} style={styles.addItemBtn}>
+                <Ionicons name="cart" size={14} color="#FFF" />
+                <Text style={styles.addItemTxt}>From Catalog</Text>
+              </Pressable>
+              <Pressable onPress={addManualItem} style={[styles.addItemBtn, { backgroundColor: '#475569' }]}>
+                <Ionicons name="add" size={14} color="#FFF" />
+                <Text style={styles.addItemTxt}>Manual Item</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          {items.length === 0 ? (
+            <View style={styles.emptyItems}>
+              <Ionicons name="clipboard-outline" size={32} color={colors.muted} />
+              <Text style={styles.muted}>No items added. Pick services from catalog or add manually.</Text>
+            </View>
+          ) : (
+            <View style={{ marginTop: spacing.md, gap: spacing.md }}>
+              {items.map((it, idx) => {
+                const cal = calculated[idx];
+                return (
+                  <View key={it.key} style={styles.itemBox}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={styles.itemIndex}>#{idx + 1}</Text>
+                      <Pressable onPress={() => removeItem(it.key)}>
+                        <Ionicons name="trash-outline" size={18} color={colors.error} />
+                      </Pressable>
+                    </View>
+
+                    <TextInput
+                      style={[styles.input, { fontWeight: '700' }]}
+                      placeholder="Item name / Service description *"
+                      value={it.name}
+                      onChangeText={v => updateItem(it.key, { name: v })}
+                    />
+
+                    <View style={styles.itemGrid}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.gridLbl}>Qty</Text>
+                        <TextInput
+                          style={styles.gridInput}
+                          keyboardType="numeric"
+                          value={it.qty}
+                          onChangeText={v => updateItem(it.key, { qty: v })}
+                        />
+                      </View>
+                      <View style={{ flex: 1.5 }}>
+                        <Text style={styles.gridLbl}>Rate (₹)</Text>
+                        <TextInput
+                          style={styles.gridInput}
+                          keyboardType="numeric"
+                          value={it.rate}
+                          onChangeText={v => updateItem(it.key, { rate: v })}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.gridLbl}>Disc (₹)</Text>
+                        <TextInput
+                          style={styles.gridInput}
+                          keyboardType="numeric"
+                          value={it.discount}
+                          onChangeText={v => updateItem(it.key, { discount: v })}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.gridLbl}>GST %</Text>
+                        <TextInput
+                          style={styles.gridInput}
+                          keyboardType="numeric"
+                          value={it.tax_rate}
+                          onChangeText={v => updateItem(it.key, { tax_rate: v })}
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.itemTotalRow}>
+                      <Text style={styles.itemTotalLbl}>Item Total (inc. Tax)</Text>
+                      <Text style={styles.itemTotalVal}>{inr(cal?.tot || 0)}</Text>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        {/* Totals Summary */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Bill Summary</Text>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLbl}>Subtotal</Text>
+            <Text style={styles.summaryVal}>{inr(subtotal)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLbl}>Total Discount</Text>
+            <Text style={styles.summaryVal}>- {inr(totalDiscount)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLbl}>GST Tax Amount</Text>
+            <Text style={styles.summaryVal}>+ {inr(totalTax)}</Text>
+          </View>
+          <View style={[styles.summaryRow, styles.grandRow]}>
+            <Text style={styles.grandLbl}>Grand Total</Text>
+            <Text style={styles.grandVal}>{inr(grandTotal)}</Text>
+          </View>
+        </View>
+
+        {/* Notes */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Terms & Notes</Text>
+          <TextInput
+            style={[styles.input, { minHeight: 60, marginTop: 8 }]}
+            multiline
+            placeholder="Payment terms, quotation validity, or specific terms..."
+            value={notes}
+            onChangeText={setNotes}
+          />
+        </View>
+
+        <PrimaryButton label="Save Estimate / Quotation" onPress={save} loading={saving} />
+      </ScrollView>
+
+      <CustomerSearchModal
+        visible={showPartyPick}
+        onClose={() => setShowPartyPick(false)}
+        onPick={p => { setParty(p); setShowPartyPick(false); }}
+      />
+
+      <ItemSearchModal
+        visible={showItemPick}
+        onClose={() => setShowItemPick(false)}
+        onPick={it => { addItemFromCatalog(it); setShowItemPick(false); }}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#F8FAFC' },
+  card: { backgroundColor: '#FFF', borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, ...shadow.card },
+  cardTitle: { fontSize: font.base, fontWeight: '800', color: '#0F172A' },
+  lbl: { fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 4 },
+  input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: 8, fontSize: font.sm, backgroundColor: '#FFF' },
+  pickPartyBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.brandPrimary, borderStyle: 'dashed', backgroundColor: '#EFF6FF', justifyContent: 'center' },
+  pickPartyTxt: { color: colors.brandPrimary, fontWeight: '700', fontSize: font.sm },
+  partyPicked: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: radius.md, backgroundColor: '#F1F5F9' },
+  partyName: { fontSize: font.sm, fontWeight: '800', color: '#0F172A' },
+  partySub: { fontSize: 11, color: colors.muted, marginTop: 1 },
+  changePartyBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: '#E2E8F0' },
+  changePartyTxt: { fontSize: 11, fontWeight: '700', color: '#334155' },
+  addItemBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.brandPrimary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill },
+  addItemTxt: { color: '#FFF', fontWeight: '700', fontSize: 11 },
+  emptyItems: { alignItems: 'center', padding: spacing.xl, gap: 6 },
+  muted: { color: colors.muted, fontSize: font.sm, textAlign: 'center' },
+  itemBox: { padding: spacing.md, borderRadius: radius.md, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.divider, gap: 8 },
+  itemIndex: { fontSize: 11, fontWeight: '900', color: colors.brandPrimary },
+  itemGrid: { flexDirection: 'row', gap: 8 },
+  gridLbl: { fontSize: 10, fontWeight: '700', color: '#64748B' },
+  gridInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 6, padding: 6, fontSize: font.sm, backgroundColor: '#FFF', marginTop: 2 },
+  itemTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
+  itemTotalLbl: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  itemTotalVal: { fontSize: font.sm, fontWeight: '900', color: '#059669' },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  summaryLbl: { fontSize: font.sm, color: '#475569' },
+  summaryVal: { fontSize: font.sm, fontWeight: '700', color: '#0F172A' },
+  grandRow: { marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#E2E8F0' },
+  grandLbl: { fontSize: font.base, fontWeight: '900', color: '#0F172A' },
+  grandVal: { fontSize: font.lg, fontWeight: '900', color: '#059669' },
+});

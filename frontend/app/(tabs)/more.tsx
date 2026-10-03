@@ -33,18 +33,32 @@ export default function MoreScreen() {
     ]);
   };
 
-  const rows = [
-    { icon: 'wallet', label: 'Accounting', route: '/accounting/menu', color: colors.success, testID: 'row-accounting' },
-    { icon: 'document-text', label: 'Tender Library', route: '/tenders', color: colors.error, testID: 'row-tenders' },
-    { icon: 'people', label: 'Employees', route: '/employees', color: colors.brandPrimary, testID: 'row-employees' },
-    { icon: 'calendar', label: 'Attendance & Leaves', route: '/hr', color: colors.success, testID: 'row-hr' },
-    { icon: 'cash', label: 'Simple Accounts', route: '/(tabs)/business', color: colors.warning, testID: 'row-accounts' },
+  const operationalRows = [
+    { icon: 'wallet', label: 'Accounting & Invoices', route: '/accounting/menu', color: colors.success, testID: 'row-accounting' },
+    { icon: 'bar-chart', label: 'Financial & Accounting Reports', route: '/accounting/reports', color: '#2563EB', testID: 'row-reports' },
+    { icon: 'construct', label: 'Service Master', route: '/services', color: colors.brandPrimary, testID: 'row-services' },
+    { icon: 'alert-circle', label: 'Document Expiry Alerts', route: '/customers/expiry-alerts', color: colors.warning, testID: 'row-expiry' },
+    { icon: 'navigate', label: 'Field Staff GPS Tracking', route: '/gps/tracking', color: colors.info, testID: 'row-gps' },
+    { icon: 'folder-open', label: 'Document Library', route: '/documents', color: colors.warning, testID: 'row-documents' },
+    { icon: 'document-text', label: 'Tender Management', route: '/tenders', color: colors.error, testID: 'row-tenders' },
+    { icon: 'call', label: 'Tender Calling & Follow-up', route: '/tenders?tab=calling', color: '#ea580c', testID: 'row-tender-calling' },
+    { icon: 'cash', label: 'Simple Accounts', route: '/(tabs)/business', color: colors.brandSecondary, testID: 'row-accounts' },
   ];
 
-  const adminRows = user?.role === 'admin' ? [
-    { icon: 'business', label: 'Offices (Geofence)', route: '/offices', color: colors.brandSecondary, testID: 'row-offices' },
-    { icon: 'wallet', label: 'Payroll', route: '/payroll', color: colors.success, testID: 'row-payroll' },
-    { icon: 'settings', label: 'Attendance Settings', route: '/attendance-settings', color: colors.info, testID: 'row-att-settings' },
+  const hrRows = [
+    { icon: 'people', label: 'Employees Directory', route: '/employees', color: colors.brandPrimary, testID: 'row-employees' },
+    { icon: 'calendar', label: 'Attendance & Leaves', route: '/hr', color: colors.success, testID: 'row-hr' },
+    { icon: 'card', label: 'Payroll', route: '/payroll', color: colors.brandSecondary, testID: 'row-payroll' },
+    { icon: 'time', label: 'Attendance Settings', route: '/attendance-settings', color: colors.info, testID: 'row-att-settings' },
+  ];
+
+  const adminRows = (user?.role === 'admin' || user?.role === 'manager') ? [
+    { icon: 'business', label: 'Branch Management', route: '/admin/branches', color: colors.brandSecondary, testID: 'row-branches' },
+    { icon: 'ribbon', label: 'Post / Designations', route: '/admin/posts', color: colors.warning, testID: 'row-posts' },
+    { icon: 'person-add', label: 'System User Directory', route: '/admin/users', color: colors.brandPrimary, testID: 'row-users' },
+    { icon: 'shield-checkmark', label: 'Roles & RBAC Matrix', route: '/admin/roles', color: colors.info, testID: 'row-roles' },
+    { icon: 'finger-print', label: 'Security Audit Trail', route: '/admin/audit-logs', color: colors.error, testID: 'row-audit' },
+    { icon: 'settings', label: 'System Settings & Backup', route: '/admin/settings', color: colors.muted, testID: 'row-settings' },
   ] : [];
 
   return (
@@ -62,8 +76,21 @@ export default function MoreScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Modules</Text>
-          {rows.map(r => (
+          <Text style={styles.sectionTitle}>Operations & Services</Text>
+          {operationalRows.map(r => (
+            <Pressable key={r.label} testID={r.testID} style={styles.row} onPress={() => router.push(r.route as any)}>
+              <View style={[styles.rowIcon, { backgroundColor: r.color + '20' }]}>
+                <Ionicons name={r.icon as any} size={20} color={r.color} />
+              </View>
+              <Text style={styles.rowLabel}>{r.label}</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Human Resources</Text>
+          {hrRows.map(r => (
             <Pressable key={r.label} testID={r.testID} style={styles.row} onPress={() => router.push(r.route as any)}>
               <View style={[styles.rowIcon, { backgroundColor: r.color + '20' }]}>
                 <Ionicons name={r.icon as any} size={20} color={r.color} />
@@ -76,7 +103,7 @@ export default function MoreScreen() {
 
         {adminRows.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Admin</Text>
+            <Text style={styles.sectionTitle}>Enterprise Administration</Text>
             {adminRows.map(r => (
               <Pressable key={r.label} testID={r.testID} style={styles.row} onPress={() => router.push(r.route as any)}>
                 <View style={[styles.rowIcon, { backgroundColor: r.color + '20' }]}>

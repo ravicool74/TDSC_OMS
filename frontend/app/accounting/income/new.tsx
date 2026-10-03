@@ -1,141 +1,1820 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useEffect, useState, useMemo } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform,
+  Pressable, TextInput, ActivityIndicator, Alert, Modal, Linking
+} from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput, OptionRow } from '@/src/forms';
 import { PrimaryButton } from '@/src/ui';
 import { api } from '@/src/api';
 import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
+import { CustomerSearchModal, AddPartyModal, EditPartyModal, PickedParty } from '@/src/CustomerSearchModal';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-export default function NewIncome() {
+const inr = (n: any) => {
+  const val = Number(n || 0);
+  return `₹${val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+export type PaymentInItem = {
+  sl: number;
+  item: string;
+  qty: number;
+  rate: number;
+  amount: number;
+};
+
+export type LinkedVoucher = {
+  voucher_id: string;
+  voucher_no: string;
+  voucher_date: string;
+  total_amount: number;
+  previous_paid: number;
+  outstanding_balance: number;
+  allocated_amount: number;
+  payment_mode: string;
+  payment_type: string;
+  remarks?: string;
+};
+
+export default function NewPaymentIn() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ customer_id?: string }>();
+
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [meta, setMeta] = useState<any>({ income_categories: [], payment_modes: ['cash', 'bank', 'upi', 'cheque'] });
-  const [banks, setBanks] = useState<any[]>([]);
-  const [clients, setClients] = useState<any[]>([]);
-  const [employees, setEmployees] = useState<any[]>([]);
-  const [f, setF] = useState({
-    date: today(), client_id: '', client_name: '', client_mobile: '',
-    service_category: '', service_name: '', amount: '',
-    payment_mode: 'cash', bank_account_id: '',
-    employee_id: '', employee_name: '', remarks: '',
-  });
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const set = (k: string) => (v: string) => setF(p => ({ ...p, [k]: v }));
 
+  // Voucher details
+  const [voucherNo, setVoucherNo] = useState<string>('PAYIN-0001 (preview)');
+  const [date, setDate] = useState<string>(today());
+
+  // Customer State & Modals
+  const [showPartyPick, setShowPartyPick] = useState(false);
+  const [showAddParty, setShowAddParty] = useState(false);
+  const [showEditParty, setShowEditParty] = useState(false);
+  const [selectedParty, setSelectedParty] = useState<PickedParty | null>(null);
+
+  // Previous Sale Vouchers
+  const [loadingVouchers, setLoadingVouchers] = useState(false);
+  const [saleVouchers, setSaleVouchers] = useState<any[]>([]);
+
+  // Itemized Particulars (Sl., Item, Qty, Rate, Amount)
+  const [items, setItems] = useState<PaymentInItem[]>([
+    { sl: 1, item: '', qty: 1, rate: 0, amount: 0 }
+  ]);
+  const [customTotalAmount, setCustomTotalAmount] = useState<string>('');
+
+  // Linked Vouchers state
+  const [linkedVouchers, setLinkedVouchers] = useState<LinkedVoucher[]>([]);
+
+  // "Link Voucher" Modal State
+  const [linkModalVisible, setLinkModalVisible] = useState(false);
+  const [linkingVoucher, setLinkingVoucher] = useState<any | null>(null);
+  const [linkAllocatedAmount, setLinkAllocatedAmount] = useState<string>('');
+  const [linkPaymentMode, setLinkPaymentMode] = useState<string>('bank');
+  const [linkPaymentType, setLinkPaymentType] = useState<string>('Part Payment');
+  const [linkRemarks, setLinkRemarks] = useState<string>('');
+  const [linkErr, setLinkErr] = useState<string | null>(null);
+
+  // "View Link History" Modal State
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyData, setHistoryData] = useState<any | null>(null);
+
+  // Success & Print Modal State
+  const [createdVoucher, setCreatedVoucher] = useState<any | null>(null);
+  const [successModalVisible, setSuccessModalVisible] = useState(false);
+
+  // Metadata & Options
+  const [meta, setMeta] = useState<any>({
+    income_categories: ['DSC Services', 'E-Tender Services', 'Railway Registration', 'Contractor Registration', 'GST/Tax Services', 'Other Services'],
+    payment_modes: ['cash', 'bank', 'upi', 'cheque']
+  });
+  const [banks, setBanks] = useState<any[]>([]);
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [serviceCategory, setServiceCategory] = useState<string>('Other Services');
+  const [serviceName, setServiceName] = useState<string>('');
+  const [paymentMode, setPaymentMode] = useState<string>('cash');
+  const [bankAccountId, setBankAccountId] = useState<string>('');
+  const [employeeId, setEmployeeId] = useState<string>('');
+  const [employeeName, setEmployeeName] = useState<string>('');
+  const [remarks, setRemarks] = useState<string>('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+
+  // Load next voucher number and meta on mount
   useEffect(() => {
     (async () => {
       try {
-        const [m, b, c, e] = await Promise.all([api.get<any>('/accounting/meta'), api.get<any[]>('/bank-accounts'), api.get<any[]>('/customers'), api.get<any[]>('/employees')]);
-        setMeta(m); setBanks(b); setClients(c); setEmployees(e);
-        if (m.income_categories?.[0]) setF(p => ({ ...p, service_category: m.income_categories[0] }));
+        const [nextRes, m, b, e] = await Promise.all([
+          api.get<any>('/income/next-no').catch(() => null),
+          api.get<any>('/accounting/meta').catch(() => null),
+          api.get<any[]>('/bank-accounts').catch(() => []),
+          api.get<any[]>('/employees').catch(() => []),
+        ]);
+        if (nextRes?.next_no) setVoucherNo(`${nextRes.next_no} (preview)`);
+        if (m) setMeta(m);
+        if (b) setBanks(b);
+        if (e) setEmployees(e);
       } catch {}
     })();
   }, []);
 
-  const save = async () => {
-    const amt = parseFloat(f.amount);
-    if (!f.client_name.trim() || Number.isNaN(amt) || amt <= 0) { setErr('Client name and valid amount required'); return; }
-    if (!f.service_category) { setErr('Service category required'); return; }
-    setErr(null); setBusy(true);
+  // Fetch sale vouchers for selected customer
+  const loadCustomerVouchers = async (partyId: string) => {
+    setLoadingVouchers(true);
     try {
-      const created: any = await api.post('/income', {
-        date: f.date,
-        client_id: f.client_id || null,
-        client_name: f.client_name.trim(),
-        client_mobile: f.client_mobile || null,
-        service_category: f.service_category,
-        service_name: f.service_name || null,
-        amount: amt,
-        payment_mode: f.payment_mode,
-        bank_account_id: f.payment_mode !== 'cash' ? (f.bank_account_id || null) : null,
-        employee_id: f.employee_id || null,
-        employee_name: f.employee_name || null,
-        remarks: f.remarks || null,
+      const invs = await api.get<any[]>(`/invoices?invoice_type=sale&party_id=${partyId}`);
+      setSaleVouchers(invs || []);
+    } catch {
+      setSaleVouchers([]);
+    } finally {
+      setLoadingVouchers(false);
+    }
+  };
+
+  const handleSelectCustomer = (party: PickedParty) => {
+    setSelectedParty(party);
+    setLinkedVouchers([]);
+    loadCustomerVouchers(party.id);
+  };
+
+  const handleDeleteCustomer = () => {
+    if (!selectedParty) return;
+    Alert.alert(
+      'Delete Customer?',
+      `Are you sure you want to delete customer "${selectedParty.name}"? This action cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.del(`/customers/${selectedParty.id}`);
+              setSelectedParty(null);
+              setSaleVouchers([]);
+              setLinkedVouchers([]);
+              Alert.alert('Deleted', 'Customer was deleted successfully.');
+            } catch (e: any) {
+              Alert.alert('Cannot Delete', e?.message || 'Failed to delete customer.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Itemized particulars manipulation
+  const updateItem = (index: number, field: keyof PaymentInItem, val: any) => {
+    setItems(prev => {
+      const next = [...prev];
+      const cur = { ...next[index], [field]: val };
+      if (field === 'qty' || field === 'rate') {
+        const q = parseFloat(field === 'qty' ? val : cur.qty) || 0;
+        const r = parseFloat(field === 'rate' ? val : cur.rate) || 0;
+        cur.amount = Math.round(q * r * 100) / 100;
+      }
+      next[index] = cur;
+      return next;
+    });
+  };
+
+  const addItemRow = () => {
+    setItems(prev => [
+      ...prev,
+      { sl: prev.length + 1, item: '', qty: 1, rate: 0, amount: 0 }
+    ]);
+  };
+
+  const removeItemRow = (index: number) => {
+    if (items.length <= 1) return;
+    setItems(prev => prev.filter((_, i) => i !== index).map((it, idx) => ({ ...it, sl: idx + 1 })));
+  };
+
+  // Calculate items total
+  const itemsSum = useMemo(() => {
+    return items.reduce((acc, it) => acc + (Number(it.amount) || 0), 0);
+  }, [items]);
+
+  // Total allocated to linked vouchers
+  const totalAllocated = useMemo(() => {
+    return linkedVouchers.reduce((acc, lv) => acc + (Number(lv.allocated_amount) || 0), 0);
+  }, [linkedVouchers]);
+
+  // Effective payment in amount
+  const effectiveTotalAmount = useMemo(() => {
+    if (customTotalAmount && !Number.isNaN(parseFloat(customTotalAmount))) {
+      return parseFloat(customTotalAmount);
+    }
+    if (itemsSum > 0) return itemsSum;
+    if (totalAllocated > 0) return totalAllocated;
+    return 0;
+  }, [customTotalAmount, itemsSum, totalAllocated]);
+
+  // Open "Link Voucher" modal
+  const openLinkModal = (voucher: any) => {
+    setLinkingVoucher(voucher);
+    const prevAlloc = linkedVouchers.find(l => l.voucher_id === voucher.id);
+    const baseOutstanding = voucher.balance ?? Math.max(0, (voucher.total_amount || 0) - (voucher.paid_amount || 0));
+    // If already linked, outstanding should add back prevAlloc
+    const availableToAllocate = prevAlloc ? (baseOutstanding + prevAlloc.allocated_amount) : baseOutstanding;
+    setLinkAllocatedAmount(prevAlloc ? String(prevAlloc.allocated_amount) : String(availableToAllocate));
+    setLinkPaymentMode(paymentMode || 'bank');
+    setLinkPaymentType('Part Payment');
+    setLinkRemarks('');
+    setLinkErr(null);
+    setLinkModalVisible(true);
+  };
+
+  // Save linked voucher allocation with live validation & dynamic balance reduction
+  const handleSaveLinkVoucher = () => {
+    if (!linkingVoucher) return;
+    const alloc = parseFloat(linkAllocatedAmount);
+    const prevAlloc = linkedVouchers.find(l => l.voucher_id === linkingVoucher.id);
+    const baseOutstanding = linkingVoucher.balance ?? Math.max(0, (linkingVoucher.total_amount || 0) - (linkingVoucher.paid_amount || 0));
+    const maxAvailable = prevAlloc ? (baseOutstanding + prevAlloc.allocated_amount) : baseOutstanding;
+
+    if (Number.isNaN(alloc) || alloc <= 0) {
+      setLinkErr('Please enter a valid allocated payment amount.');
+      return;
+    }
+    if (alloc > maxAvailable) {
+      setLinkErr(`Allocated amount (${inr(alloc)}) cannot exceed the outstanding balance (${inr(maxAvailable)}).`);
+      return;
+    }
+
+    const newLink: LinkedVoucher = {
+      voucher_id: linkingVoucher.id,
+      voucher_no: linkingVoucher.invoice_no,
+      voucher_date: linkingVoucher.date || today(),
+      total_amount: linkingVoucher.total_amount || 0,
+      previous_paid: linkingVoucher.paid_amount || 0,
+      outstanding_balance: maxAvailable,
+      allocated_amount: alloc,
+      payment_mode: linkPaymentMode,
+      payment_type: linkPaymentType,
+      remarks: linkRemarks || undefined,
+    };
+
+    setLinkedVouchers(prev => {
+      const filtered = prev.filter(l => l.voucher_id !== linkingVoucher.id);
+      return [...filtered, newLink];
+    });
+
+    // Dynamically update saleVouchers state so the balance decreases immediately on screen
+    setSaleVouchers(prev => prev.map(sv => {
+      if (sv.id === linkingVoucher.id) {
+        const remaining = Math.max(0, Math.round((maxAvailable - alloc) * 100) / 100);
+        const originalPaid = prevAlloc ? (sv.paid_amount - prevAlloc.allocated_amount) : (sv.paid_amount || 0);
+        const newPaid = Math.round((originalPaid + alloc) * 100) / 100;
+        return {
+          ...sv,
+          balance: remaining,
+          paid_amount: newPaid,
+          status: remaining <= 0 ? 'paid' : 'partial'
+        };
+      }
+      return sv;
+    }));
+
+    setLinkModalVisible(false);
+  };
+
+  const handleRemoveLinkedVoucher = (voucherId: string) => {
+    const toRemove = linkedVouchers.find(l => l.voucher_id === voucherId);
+    if (toRemove) {
+      setSaleVouchers(prev => prev.map(sv => {
+        if (sv.id === voucherId) {
+          const restoredBal = Math.round(((sv.balance || 0) + toRemove.allocated_amount) * 100) / 100;
+          const restoredPaid = Math.max(0, Math.round(((sv.paid_amount || 0) - toRemove.allocated_amount) * 100) / 100);
+          return {
+            ...sv,
+            balance: restoredBal,
+            paid_amount: restoredPaid,
+            status: restoredBal <= 0 ? 'paid' : (restoredPaid > 0 ? 'partial' : 'unpaid')
+          };
+        }
+        return sv;
+      }));
+    }
+    setLinkedVouchers(prev => prev.filter(l => l.voucher_id !== voucherId));
+  };
+
+  // Open "View Link History" modal
+  const openHistoryModal = async (voucher: any) => {
+    setHistoryModalVisible(true);
+    setHistoryLoading(true);
+    setHistoryData(null);
+    try {
+      const data = await api.get<any>(`/invoices/${voucher.id}/payment-history`);
+      setHistoryData(data);
+    } catch {
+      // Fallback
+      setHistoryData({
+        invoice_no: voucher.invoice_no,
+        invoice_date: voucher.date,
+        party_name: selectedParty?.name || voucher.party_name,
+        total_amount: voucher.total_amount || 0,
+        paid_amount: voucher.paid_amount || 0,
+        balance: voucher.balance ?? Math.max(0, (voucher.total_amount || 0) - (voucher.paid_amount || 0)),
+        status: voucher.status || 'unpaid',
+        payments: voucher.payments || [
+          {
+            date: voucher.date || 'Initial',
+            payment_no: `INITIAL-${voucher.invoice_no}`,
+            amount: voucher.paid_amount || 0,
+            payment_mode: voucher.payment_mode || 'cash',
+            payment_type: 'Initial Payment',
+            balance_after: voucher.balance || 0,
+          }
+        ]
       });
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // Print Payment-In voucher as official PDF
+  const printIncomePdf = async (incomeId?: string) => {
+    const targetId = incomeId || createdVoucher?.id;
+    if (!targetId) return;
+    try {
+      const url = await api.incomePdfUrl(targetId);
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.open(url, '_blank');
+      } else {
+        await Linking.openURL(url);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Unable to open PDF voucher');
+    }
+  };
+
+  // Save Payment-In voucher
+  const savePaymentIn = async (printAfterSave = false) => {
+    if (!selectedParty?.name?.trim()) {
+      setErr('Customer / Party selection is required.');
+      return;
+    }
+    const finalAmount = effectiveTotalAmount;
+    if (finalAmount <= 0) {
+      setErr('Please specify payment amount or add line items / linked vouchers.');
+      return;
+    }
+
+    setErr(null);
+    setBusy(true);
+
+    try {
+      const payload = {
+        voucher_no: voucherNo.includes('preview') ? undefined : voucherNo,
+        date,
+        client_id: selectedParty.id,
+        client_name: selectedParty.name.trim(),
+        client_mobile: selectedParty.mobile || null,
+        service_category: serviceCategory,
+        service_name: serviceName || (items[0]?.item ? items[0].item : 'Payment-In Receipt'),
+        amount: finalAmount,
+        payment_mode: paymentMode,
+        bank_account_id: paymentMode !== 'cash' ? (bankAccountId || null) : null,
+        employee_id: employeeId || null,
+        employee_name: employeeName || null,
+        remarks: remarks || null,
+        items: items.filter(it => it.item.trim() || it.amount > 0),
+        linked_vouchers: linkedVouchers,
+      };
+
+      const created: any = await api.post('/income', payload);
+
+      // Upload any attachments
       for (const a of attachments) {
         if (a.pending && a.uri) {
-          try { await api.uploadVoucherFile('income', created.id, { uri: a.uri, name: a.name, type: a.type || 'application/octet-stream' }); } catch {}
+          try {
+            await api.uploadVoucherFile('income', created.id, {
+              uri: a.uri,
+              name: a.name,
+              type: a.type || 'application/octet-stream'
+            });
+          } catch {}
         }
       }
-      router.back();
-    } catch (e: any) { setErr(e?.message || 'Failed'); } finally { setBusy(false); }
+
+      setCreatedVoucher(created);
+      setSuccessModalVisible(true);
+
+      if (printAfterSave) {
+        printIncomePdf(created.id);
+      }
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to save Payment-In');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-income">
-      <ScreenHeader title="Add Income" />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xxxl }}>
-          <FormInput label="Date" value={f.date} onChangeText={set('date')} placeholder="YYYY-MM-DD" testID="in-date" />
-          <FormInput label="Client Name *" value={f.client_name} onChangeText={set('client_name')} testID="in-client" />
-          <FormInput label="Mobile" value={f.client_mobile} onChangeText={set('client_mobile')} keyboardType="phone-pad" testID="in-mobile" />
-          {clients.length > 0 && (
-            <View>
-              <Text style={styles.muted}>Or pick existing customer:</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
-                {clients.slice(0, 20).map(c => (
-                  <Pressable key={c.id} onPress={() => setF(p => ({ ...p, client_id: c.id, client_name: c.name, client_mobile: c.mobile || '' }))} style={[styles.chip, f.client_id === c.id && styles.chipActive]}>
-                    <Text style={[styles.chipText, f.client_id === c.id && { color: colors.onBrandPrimary }]}>{c.name}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
+    <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-payment-in">
+      <ScreenHeader title="Payment-In (Add Income)" />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 60 }}>
+
+          {/* Section 1: Auto-Generated Voucher Number & Date */}
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="document-text-outline" size={20} color="#2563EB" />
+                <Text style={styles.sectionTitle}>PAYMENT-IN VOUCHER NUMBER & DATE</Text>
+              </View>
+              <View style={styles.autoBadge}>
+                <Ionicons name="flash" size={12} color="#2563EB" />
+                <Text style={styles.autoBadgeTxt}>Auto Numbering</Text>
+              </View>
             </View>
-          )}
-          <View style={{ gap: 6 }}>
-            <Text style={styles.label}>Service Category</Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-              {(meta.income_categories || []).map((c: string) => (
-                <Pressable key={c} onPress={() => setF(p => ({ ...p, service_category: c }))} style={[styles.chip, f.service_category === c && styles.chipActive]}>
-                  <Text style={[styles.chipText, f.service_category === c && { color: colors.onBrandPrimary }]}>{c}</Text>
-                </Pressable>
-              ))}
+
+            <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
+              <View style={{ flex: 1 }}>
+                <FormInput
+                  label="Payment-In Voucher No. *"
+                  value={voucherNo}
+                  onChangeText={setVoucherNo}
+                  placeholder="PAYIN-0001"
+                  testID="voucher-no"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <FormInput
+                  label="Voucher Date *"
+                  value={date}
+                  onChangeText={setDate}
+                  placeholder="YYYY-MM-DD"
+                  testID="voucher-date"
+                />
+              </View>
             </View>
           </View>
-          <FormInput label="Service Name (optional)" value={f.service_name} onChangeText={set('service_name')} testID="in-svcname" />
-          <FormInput label="Amount (₹) *" value={f.amount} onChangeText={set('amount')} keyboardType="numeric" testID="in-amount" />
-          <OptionRow label="Payment Mode" options={meta.payment_modes || ['cash', 'bank', 'upi', 'cheque']} value={f.payment_mode} onChange={v => setF(p => ({ ...p, payment_mode: v }))} testID="mode" />
-          {f.payment_mode !== 'cash' && banks.length > 0 ? (
-            <View style={{ gap: 6 }}>
-              <Text style={styles.label}>Bank Account</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {banks.map(b => (
-                  <Pressable key={b.id} onPress={() => setF(p => ({ ...p, bank_account_id: b.id }))} style={[styles.chip, f.bank_account_id === b.id && styles.chipActive]}>
-                    <Text style={[styles.chipText, f.bank_account_id === b.id && { color: colors.onBrandPrimary }]}>{b.name}</Text>
-                  </Pressable>
-                ))}
+
+          {/* Section 2: Customer Details Search & CRUD */}
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="person-circle-outline" size={20} color="#059669" />
+                <Text style={styles.sectionTitle}>CUSTOMER DETAILS & MASTER</Text>
               </View>
+              <Pressable
+                testID="btn-search-customer"
+                onPress={() => setShowPartyPick(true)}
+                style={styles.searchPartyBtn}
+              >
+                <Ionicons name="search" size={15} color="#FFF" />
+                <Text style={styles.searchPartyBtnTxt}>Customer Search</Text>
+              </Pressable>
+            </View>
+
+            {selectedParty ? (
+              <View style={styles.customerCard}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.customerName}>{selectedParty.name}</Text>
+                    {selectedParty.customer_code ? (
+                      <Text style={styles.customerCode}>{selectedParty.customer_code}</Text>
+                    ) : null}
+                    <Text style={styles.customerMeta}>📱 Mobile: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{selectedParty.mobile}</Text></Text>
+                    {selectedParty.gst_no ? <Text style={styles.customerMeta}>🏛 GSTIN: {selectedParty.gst_no}</Text> : null}
+                    {selectedParty.pan ? <Text style={styles.customerMeta}>💳 PAN: {selectedParty.pan}</Text> : null}
+                    {selectedParty.address ? <Text style={styles.customerMeta}>📍 Address: {selectedParty.address}</Text> : null}
+                  </View>
+
+                  <View style={styles.customerActions}>
+                    <Pressable
+                      testID="btn-edit-customer"
+                      onPress={() => setShowEditParty(true)}
+                      style={styles.actionChipEdit}
+                    >
+                      <Ionicons name="pencil" size={13} color="#2563EB" />
+                      <Text style={styles.actionChipEditTxt}>Edit</Text>
+                    </Pressable>
+                    <Pressable
+                      testID="btn-delete-customer"
+                      onPress={handleDeleteCustomer}
+                      style={styles.actionChipDelete}
+                    >
+                      <Ionicons name="trash-outline" size={13} color="#DC2626" />
+                      <Text style={styles.actionChipDeleteTxt}>Delete</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setShowAddParty(true)}
+                      style={styles.actionChipNew}
+                    >
+                      <Ionicons name="add" size={14} color="#059669" />
+                      <Text style={styles.actionChipNewTxt}>New</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.noCustomerBox}>
+                <Ionicons name="people-outline" size={32} color="#94A3B8" />
+                <Text style={styles.noCustomerTxt}>No customer selected yet.</Text>
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+                  <Pressable
+                    onPress={() => setShowPartyPick(true)}
+                    style={styles.pickPartyBtn}
+                  >
+                    <Ionicons name="search" size={16} color="#FFF" />
+                    <Text style={styles.pickPartyBtnTxt}>Search Customer</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setShowAddParty(true)}
+                    style={styles.addPartyBtn}
+                  >
+                    <Ionicons name="add-circle-outline" size={16} color="#059669" />
+                    <Text style={styles.addPartyBtnTxt}>+ Add New Customer</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
+          </View>
+
+          {/* Section 3: Previous Sale Vouchers Search & Dynamic Balance Reduction */}
+          {selectedParty ? (
+            <View style={styles.card}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="newspaper-outline" size={20} color="#7C3AED" />
+                  <Text style={styles.sectionTitle}>PREVIOUS SALE VOUCHERS</Text>
+                </View>
+                <Pressable
+                  onPress={() => loadCustomerVouchers(selectedParty.id)}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                >
+                  <Ionicons name="refresh" size={14} color="#64748B" />
+                  <Text style={{ fontSize: 11, color: '#64748B', fontWeight: '600' }}>Refresh</Text>
+                </Pressable>
+              </View>
+
+              {loadingVouchers ? (
+                <View style={{ padding: 20, alignItems: 'center' }}>
+                  <ActivityIndicator color={colors.brandPrimary} />
+                  <Text style={{ color: '#64748B', fontSize: 12, marginTop: 6 }}>Loading sale vouchers…</Text>
+                </View>
+              ) : saleVouchers.length === 0 ? (
+                <View style={styles.emptyVoucherBox}>
+                  <Ionicons name="receipt-outline" size={28} color="#94A3B8" />
+                  <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center' }}>
+                    No previous Sale Vouchers found for this customer.
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ gap: 8 }}>
+                  <Text style={{ fontSize: 11, color: '#64748B', fontWeight: '600' }}>
+                    Customer ke pichle Sale Vouchers me se choose karein aur Link karein:
+                  </Text>
+
+                  {saleVouchers.map(v => {
+                    const isLinked = linkedVouchers.find(l => l.voucher_id === v.id);
+                    const allocatedNow = isLinked ? Number(isLinked.allocated_amount || 0) : 0;
+                    const curOutstanding = Number(v.balance ?? Math.max(0, (v.total_amount || 0) - (v.paid_amount || 0)));
+                    const isFullyPaid = curOutstanding <= 0;
+
+                    return (
+                      <View key={v.id} style={[styles.saleVoucherRow, isLinked && styles.saleVoucherRowLinked]}>
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={styles.svNo}>{v.invoice_no}</Text>
+                            <View style={[styles.svStatusBadge, isFullyPaid ? styles.bgPaid : (isLinked ? styles.bgPartialLinked : styles.bgUnpaid)]}>
+                              <Text style={[styles.svStatusTxt, isFullyPaid ? styles.txtPaid : (isLinked ? styles.txtPartialLinked : styles.txtUnpaid)]}>
+                                {isFullyPaid ? 'PAID (CLEARED)' : (isLinked ? 'PARTIAL (LINKED)' : (v.status || 'unpaid').toUpperCase())}
+                              </Text>
+                            </View>
+                            <Text style={styles.svDate}>📅 {v.date}</Text>
+                          </View>
+
+                          <View style={styles.svAmountsRow}>
+                            <Text style={styles.svAmtTxt}>Total: <Text style={{ fontWeight: '700' }}>{inr(v.total_amount)}</Text></Text>
+                            <Text style={styles.svAmtTxt}>
+                              • Paid: <Text style={{ fontWeight: '700', color: '#059669' }}>{inr(v.paid_amount)}</Text>
+                              {allocatedNow > 0 ? (
+                                <Text style={{ fontSize: 11, color: '#059669', fontWeight: '700' }}> (+{inr(allocatedNow)} linked)</Text>
+                              ) : null}
+                            </Text>
+                            <Text style={styles.svAmtTxt}>
+                              • Outstanding Balance:{' '}
+                              {isFullyPaid ? (
+                                <Text style={{ fontWeight: '900', color: '#059669' }}>
+                                  ₹0.00 (Balance Cleared / Settled ✅)
+                                </Text>
+                              ) : (
+                                <Text style={{ fontWeight: '900', color: '#DC2626' }}>
+                                  {inr(curOutstanding)}
+                                  {allocatedNow > 0 ? (
+                                    <Text style={{ fontSize: 10, color: '#059669', fontWeight: '700' }}> (Reduced)</Text>
+                                  ) : null}
+                                </Text>
+                              )}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.svBtnGroup}>
+                          <Pressable
+                            testID={`btn-link-sv-${v.invoice_no}`}
+                            onPress={() => openLinkModal(v)}
+                            style={[styles.linkBtn, isLinked && styles.linkBtnActive]}
+                          >
+                            <Ionicons name={isLinked ? 'checkmark-circle' : 'link'} size={14} color="#FFF" />
+                            <Text style={styles.linkBtnTxt}>{isLinked ? 'Edit Link' : 'Link Voucher'}</Text>
+                          </Pressable>
+
+                          <Pressable
+                            testID={`btn-history-sv-${v.invoice_no}`}
+                            onPress={() => openHistoryModal(v)}
+                            style={styles.historyBtn}
+                          >
+                            <Ionicons name="time-outline" size={14} color="#0F172A" />
+                            <Text style={styles.historyBtnTxt}>View Link History</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
             </View>
           ) : null}
-          {employees.length > 0 && (
-            <View style={{ gap: 6 }}>
-              <Text style={styles.label}>Received by (Employee)</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {employees.map(e => (
-                  <Pressable key={e.id} onPress={() => setF(p => ({ ...p, employee_id: e.id, employee_name: e.name }))} style={[styles.chip, f.employee_id === e.id && styles.chipActive]}>
-                    <Text style={[styles.chipText, f.employee_id === e.id && { color: colors.onBrandPrimary }]}>{e.name}</Text>
-                  </Pressable>
-                ))}
+
+          {/* Section 4: Linked Vouchers & Date-wise Allocations */}
+          {linkedVouchers.length > 0 && (
+            <View style={[styles.card, { borderColor: '#86EFAC', backgroundColor: '#F0FDF4' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="checkmark-done-circle" size={20} color="#059669" />
+                  <Text style={[styles.sectionTitle, { color: '#065F46' }]}>LINKED SALE VOUCHERS ({linkedVouchers.length})</Text>
+                </View>
+                <Text style={{ fontWeight: '800', color: '#059669', fontSize: 13 }}>
+                  Total Linked: {inr(totalAllocated)}
+                </Text>
+              </View>
+
+              <View style={{ gap: 6, marginTop: 4 }}>
+                {linkedVouchers.map((lv, idx) => {
+                  const rem = Math.max(0, lv.outstanding_balance - lv.allocated_amount);
+                  return (
+                    <View key={lv.voucher_id} style={styles.linkedRowCard}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={{ fontWeight: '800', color: '#0F172A', fontSize: 14 }}>{lv.voucher_no}</Text>
+                          <View style={styles.typePill}><Text style={styles.typePillTxt}>{lv.payment_type}</Text></View>
+                          <Text style={{ fontSize: 11, color: '#64748B' }}>Mode: {lv.payment_mode.toUpperCase()}</Text>
+                        </View>
+
+                        <Text style={{ fontSize: 12, color: '#334155', marginTop: 2 }}>
+                          Allocated Payment: <Text style={{ fontWeight: '800', color: '#059669' }}>{inr(lv.allocated_amount)}</Text>
+                          {' '}(Previous Balance: {inr(lv.outstanding_balance)} → Remaining: <Text style={{ fontWeight: '800', color: rem > 0 ? '#DC2626' : '#059669' }}>{inr(rem)}</Text>)
+                        </Text>
+                      </View>
+
+                      <Pressable
+                        onPress={() => handleRemoveLinkedVoucher(lv.voucher_id)}
+                        hitSlop={6}
+                        style={{ padding: 4 }}
+                      >
+                        <Ionicons name="close-circle" size={20} color="#DC2626" />
+                      </Pressable>
+                    </View>
+                  );
+                })}
               </View>
             </View>
           )}
-          <FormInput label="Remarks" value={f.remarks} onChangeText={set('remarks')} multiline testID="in-remarks" />
-          <AttachmentsSection attachments={attachments} onChange={setAttachments} title="Receipt / Proof Attachments" hint="Receipt / bank slip / photos • Max 10 MB per file" />
-          {err ? <Text style={{ color: colors.error, textAlign: 'center' }}>{err}</Text> : null}
-          <PrimaryButton label="Save Income" onPress={save} loading={busy} testID="save-btn" />
+
+          {/* Section 5: Itemized Particulars Table (Sl., Item, Qty, Rate, Amount) */}
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="list-outline" size={20} color="#0284C7" />
+                <Text style={styles.sectionTitle}>PARTICULARS / ITEMS BREAKDOWN</Text>
+              </View>
+              <Pressable
+                testID="btn-add-item-row"
+                onPress={addItemRow}
+                style={styles.addItemBtn}
+              >
+                <Ionicons name="add" size={14} color="#FFF" />
+                <Text style={styles.addItemBtnTxt}>+ Add Item Row</Text>
+              </Pressable>
+            </View>
+
+            {/* Table Header */}
+            <View style={styles.itemTableHeader}>
+              <Text style={[styles.colHdr, { width: 32 }]}>Sl.</Text>
+              <Text style={[styles.colHdr, { flex: 2 }]}>Item / Particulars</Text>
+              <Text style={[styles.colHdr, { width: 50, textAlign: 'center' }]}>Qty</Text>
+              <Text style={[styles.colHdr, { width: 75, textAlign: 'right' }]}>Rate (₹)</Text>
+              <Text style={[styles.colHdr, { width: 85, textAlign: 'right' }]}>Amount (₹)</Text>
+              <Text style={[styles.colHdr, { width: 30 }]}></Text>
+            </View>
+
+            {/* Rows */}
+            {items.map((row, idx) => (
+              <View key={idx} style={styles.itemTableRow}>
+                <Text style={[styles.cellTxt, { width: 32, textAlign: 'center', fontWeight: '700' }]}>{row.sl}</Text>
+                <TextInput
+                  value={row.item}
+                  onChangeText={v => updateItem(idx, 'item', v)}
+                  placeholder="Service / Particulars"
+                  placeholderTextColor="#94A3B8"
+                  style={[styles.tableInput, { flex: 2 }]}
+                  testID={`item-name-${idx}`}
+                />
+                <TextInput
+                  value={String(row.qty)}
+                  onChangeText={v => updateItem(idx, 'qty', v)}
+                  keyboardType="numeric"
+                  style={[styles.tableInput, { width: 50, textAlign: 'center' }]}
+                  testID={`item-qty-${idx}`}
+                />
+                <TextInput
+                  value={String(row.rate || '')}
+                  onChangeText={v => updateItem(idx, 'rate', v)}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                  style={[styles.tableInput, { width: 75, textAlign: 'right' }]}
+                  testID={`item-rate-${idx}`}
+                />
+                <Text style={[styles.cellTxt, { width: 85, textAlign: 'right', fontWeight: '800', color: '#059669' }]}>
+                  {inr(row.amount)}
+                </Text>
+                <Pressable
+                  onPress={() => removeItemRow(idx)}
+                  hitSlop={6}
+                  style={{ width: 30, alignItems: 'center' }}
+                  disabled={items.length <= 1}
+                >
+                  <Ionicons name="trash-outline" size={16} color={items.length <= 1 ? '#CBD5E1' : '#DC2626'} />
+                </Pressable>
+              </View>
+            ))}
+
+            {/* Total Footer */}
+            <View style={styles.itemTableFooter}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: '#334155' }}>Total Line Items Amount:</Text>
+              <Text style={{ fontSize: 16, fontWeight: '900', color: '#059669' }}>{inr(itemsSum)}</Text>
+            </View>
+          </View>
+
+          {/* Section 6: Payment Details, Bank Account & Service Category */}
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="wallet-outline" size={20} color="#D97706" />
+              <Text style={styles.sectionTitle}>PAYMENT MODE & BANK ACCOUNT</Text>
+            </View>
+
+            <OptionRow
+              label="Payment Mode"
+              options={meta.payment_modes || ['cash', 'bank', 'upi', 'cheque']}
+              value={paymentMode}
+              onChange={setPaymentMode}
+              testID="payment-mode"
+            />
+
+            {paymentMode !== 'cash' && banks.length > 0 && (
+              <View style={{ gap: 6, marginTop: 4 }}>
+                <Text style={styles.fieldLabel}>Deposit into Bank Account</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {banks.map(b => (
+                    <Pressable
+                      key={b.id}
+                      onPress={() => setBankAccountId(b.id)}
+                      style={[styles.chip, bankAccountId === b.id && styles.chipActive]}
+                    >
+                      <Text style={[styles.chipText, bankAccountId === b.id && { color: '#FFF' }]}>{b.name}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            <View style={{ gap: 6, marginTop: 4 }}>
+              <Text style={styles.fieldLabel}>Service Category</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {(meta.income_categories || []).map((cat: string) => (
+                  <Pressable
+                    key={cat}
+                    onPress={() => setServiceCategory(cat)}
+                    style={[styles.chip, serviceCategory === cat && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, serviceCategory === cat && { color: '#FFF' }]}>{cat}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {employees.length > 0 && (
+              <View style={{ gap: 6, marginTop: 4 }}>
+                <Text style={styles.fieldLabel}>Received By (Employee)</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {employees.slice(0, 10).map(e => (
+                    <Pressable
+                      key={e.id}
+                      onPress={() => { setEmployeeId(e.id); setEmployeeName(e.name); }}
+                      style={[styles.chip, employeeId === e.id && styles.chipActive]}
+                    >
+                      <Text style={[styles.chipText, employeeId === e.id && { color: '#FFF' }]}>{e.name}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            <FormInput
+              label="Remarks / Notes (optional)"
+              value={remarks}
+              onChangeText={setRemarks}
+              placeholder="e.g. Part payment against tender consultation"
+              multiline
+              testID="in-remarks"
+            />
+          </View>
+
+          {/* Section 7: Final Amount Summary Card */}
+          <View style={[styles.card, { backgroundColor: '#F8FAFC', borderWidth: 2, borderColor: '#CBD5E1' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: '#0F172A' }}>TOTAL PAYMENT-IN RECEIVED:</Text>
+              <Text style={{ fontSize: 20, fontWeight: '900', color: '#059669' }}>
+                {inr(effectiveTotalAmount)}
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, color: '#64748B' }}>
+                  Override Amount (if different from sum):
+                </Text>
+                <TextInput
+                  value={customTotalAmount}
+                  onChangeText={setCustomTotalAmount}
+                  placeholder={String(effectiveTotalAmount || '0.00')}
+                  keyboardType="numeric"
+                  style={styles.overrideInput}
+                  testID="in-amount-override"
+                />
+              </View>
+              <View style={{ flex: 1, justifyContent: 'center' }}>
+                <Text style={{ fontSize: 11, color: '#64748B' }}>
+                  Linked Vouchers: <Text style={{ fontWeight: '700', color: '#059669' }}>{inr(totalAllocated)}</Text>
+                </Text>
+                <Text style={{ fontSize: 11, color: '#64748B' }}>
+                  Line Items: <Text style={{ fontWeight: '700', color: '#0284C7' }}>{inr(itemsSum)}</Text>
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Section 8: Attachments */}
+          <AttachmentsSection
+            attachments={attachments}
+            onChange={setAttachments}
+            title="Receipt / Bank Slip Attachments"
+            hint="Receipt / bank counterfoil / UPI confirmation • Max 10 MB per file"
+          />
+
+          {err ? (
+            <View style={styles.errorBox}>
+              <Ionicons name="alert-circle" size={16} color="#DC2626" />
+              <Text style={styles.errorTxt}>{err}</Text>
+            </View>
+          ) : null}
+
+          {/* Section 9: Action Buttons (Save & Print PDF Option) */}
+          <View style={{ gap: 10, marginTop: 4 }}>
+            <Pressable
+              testID="btn-save-and-print"
+              onPress={() => savePaymentIn(true)}
+              disabled={busy}
+              style={[styles.saveAndPrintBtn, busy && { opacity: 0.6 }]}
+            >
+              {busy ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="print" size={18} color="#FFF" />
+                  <Text style={styles.saveAndPrintBtnTxt}>Save & Print Official Voucher (PDF)</Text>
+                </>
+              )}
+            </Pressable>
+
+            <PrimaryButton
+              label={`Save Payment-In (${inr(effectiveTotalAmount)})`}
+              onPress={() => savePaymentIn(false)}
+              loading={busy}
+              testID="save-payment-in-btn"
+            />
+          </View>
+
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Customer Search Modal */}
+      <CustomerSearchModal
+        visible={showPartyPick}
+        onClose={() => setShowPartyPick(false)}
+        onPick={handleSelectCustomer}
+        onAddNew={p => { handleSelectCustomer(p); }}
+        title="Select Customer / Party"
+      />
+
+      {/* Add Customer Modal */}
+      <AddPartyModal
+        visible={showAddParty}
+        onClose={() => setShowAddParty(false)}
+        onCreated={p => { setShowAddParty(false); handleSelectCustomer(p); }}
+      />
+
+      {/* Edit Customer Modal */}
+      <EditPartyModal
+        visible={showEditParty}
+        party={selectedParty}
+        onClose={() => setShowEditParty(false)}
+        onUpdated={p => { setShowEditParty(false); setSelectedParty(p); }}
+      />
+
+      {/* ============================================================== */}
+      {/* Modal: "Link Voucher" (वाउचर लिंक करें)                         */}
+      {/* ============================================================== */}
+      <Modal
+        visible={linkModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLinkModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHead}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="link" size={20} color="#2563EB" />
+                <Text style={styles.modalTitle}>Link Payment to Sale Voucher</Text>
+              </View>
+              <Pressable onPress={() => setLinkModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </Pressable>
+            </View>
+
+            {linkingVoucher && (
+              <ScrollView contentContainerStyle={{ gap: 12, paddingVertical: 6 }}>
+                <View style={styles.linkingSummaryBox}>
+                  <Text style={{ fontWeight: '800', color: '#0F172A', fontSize: 14 }}>
+                    Voucher: {linkingVoucher.invoice_no} ({linkingVoucher.date})
+                  </Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                    <Text style={{ fontSize: 12, color: '#475569' }}>Total Bill: <Text style={{ fontWeight: '700' }}>{inr(linkingVoucher.total_amount)}</Text></Text>
+                    <Text style={{ fontSize: 12, color: '#475569' }}>Already Paid: <Text style={{ fontWeight: '700', color: '#059669' }}>{inr(linkingVoucher.paid_amount)}</Text></Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 2, borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 4 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: '#0F172A' }}>Outstanding Balance:</Text>
+                    <Text style={{ fontSize: 15, fontWeight: '900', color: '#DC2626' }}>
+                      {inr(linkingVoucher.balance ?? Math.max(0, (linkingVoucher.total_amount || 0) - (linkingVoucher.paid_amount || 0)))}
+                    </Text>
+                  </View>
+                </View>
+
+                <FormInput
+                  label="Allocated Payment Amount (₹) *"
+                  value={linkAllocatedAmount}
+                  onChangeText={setLinkAllocatedAmount}
+                  keyboardType="numeric"
+                  placeholder="0.00"
+                  testID="link-allocated-amount"
+                />
+
+                <OptionRow
+                  label="Payment Mode"
+                  options={['cash', 'bank', 'upi', 'cheque']}
+                  value={linkPaymentMode}
+                  onChange={setLinkPaymentMode}
+                  testID="link-payment-mode"
+                />
+
+                <View style={{ gap: 6 }}>
+                  <Text style={styles.fieldLabel}>Type of Payment</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                    {['Part Payment', 'Balance Cleared', 'Full Settlement', 'Advance Adjustment'].map(t => (
+                      <Pressable
+                        key={t}
+                        onPress={() => setLinkPaymentType(t)}
+                        style={[styles.chip, linkPaymentType === t && styles.chipActive]}
+                      >
+                        <Text style={[styles.chipText, linkPaymentType === t && { color: '#FFF' }]}>{t}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                <FormInput
+                  label="Remarks / Notes (optional)"
+                  value={linkRemarks}
+                  onChangeText={setLinkRemarks}
+                  placeholder="e.g. Paid via NEFT ref #987654"
+                  testID="link-remarks"
+                />
+
+                {linkErr ? (
+                  <View style={styles.errorBox}>
+                    <Ionicons name="alert-circle" size={15} color="#DC2626" />
+                    <Text style={styles.errorTxt}>{linkErr}</Text>
+                  </View>
+                ) : null}
+
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 6 }}>
+                  <Pressable
+                    onPress={() => setLinkModalVisible(false)}
+                    style={styles.modalCancelBtn}
+                  >
+                    <Text style={styles.modalCancelTxt}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="btn-save-link"
+                    onPress={handleSaveLinkVoucher}
+                    style={styles.modalSaveBtn}
+                  >
+                    <Text style={styles.modalSaveTxt}>Confirm Link</Text>
+                  </Pressable>
+                </View>
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ============================================================== */}
+      {/* Modal: "View Link History" (लिंक इतिहास देखें)                   */}
+      {/* ============================================================== */}
+      <Modal
+        visible={historyModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHistoryModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxWidth: 520 }]}>
+            <View style={styles.modalHead}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="time" size={20} color="#7C3AED" />
+                <Text style={styles.modalTitle}>Sale Voucher Payment History</Text>
+              </View>
+              <Pressable onPress={() => setHistoryModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </Pressable>
+            </View>
+
+            {historyLoading ? (
+              <View style={{ padding: 30, alignItems: 'center' }}>
+                <ActivityIndicator color={colors.brandPrimary} />
+                <Text style={{ marginTop: 8, color: '#64748B', fontSize: 12 }}>Loading payment timeline…</Text>
+              </View>
+            ) : historyData ? (
+              <ScrollView contentContainerStyle={{ gap: 12, paddingVertical: 6 }}>
+                {/* Header Summary */}
+                <View style={styles.historySummaryBox}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontWeight: '900', color: '#0F172A', fontSize: 15 }}>
+                      {historyData.invoice_no}
+                    </Text>
+                    <View style={[styles.svStatusBadge, historyData.status === 'paid' ? styles.bgPaid : styles.bgUnpaid]}>
+                      <Text style={[styles.svStatusTxt, historyData.status === 'paid' ? styles.txtPaid : styles.txtUnpaid]}>
+                        {(historyData.status || 'unpaid').toUpperCase()}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>
+                    Customer: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{historyData.party_name}</Text> • Date: {historyData.invoice_date}
+                  </Text>
+
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#E2E8F0' }}>
+                    <View>
+                      <Text style={{ fontSize: 11, color: '#64748B' }}>Total Bill</Text>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: '#0F172A' }}>{inr(historyData.total_amount)}</Text>
+                    </View>
+                    <View>
+                      <Text style={{ fontSize: 11, color: '#64748B' }}>Cumulative Paid</Text>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: '#059669' }}>{inr(historyData.paid_amount)}</Text>
+                    </View>
+                    <View>
+                      <Text style={{ fontSize: 11, color: '#64748B' }}>Balance Due</Text>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: (historyData.balance || 0) > 0 ? '#DC2626' : '#059669' }}>
+                        {inr(historyData.balance)}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Timeline / Payments Table */}
+                <Text style={{ fontSize: 12, fontWeight: '800', color: '#334155', letterSpacing: 0.5 }}>
+                  DATE-WISE PAYMENT BREAKDOWN:
+                </Text>
+
+                {(historyData.payments || []).length === 0 ? (
+                  <View style={{ padding: 16, alignItems: 'center' }}>
+                    <Text style={{ color: '#94A3B8', fontSize: 12 }}>No payments recorded yet.</Text>
+                  </View>
+                ) : (
+                  <View style={{ gap: 8 }}>
+                    {(historyData.payments || []).map((p: any, pidx: number) => (
+                      <View key={pidx} style={styles.historyItemCard}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="checkmark-circle" size={16} color="#059669" />
+                            <Text style={{ fontWeight: '800', color: '#0F172A', fontSize: 13 }}>
+                              {p.payment_no || `REC-${pidx + 1}`}
+                            </Text>
+                            <View style={{ backgroundColor: '#F1F5F9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                              <Text style={{ fontSize: 10, fontWeight: '700', color: '#475569' }}>{p.date}</Text>
+                            </View>
+                          </View>
+                          <Text style={{ fontSize: 14, fontWeight: '900', color: '#059669' }}>
+                            + {inr(p.amount)}
+                          </Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+                          <Text style={{ fontSize: 11, color: '#64748B' }}>
+                            Mode: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{String(p.payment_mode || 'cash').toUpperCase()}</Text> • Type: <Text style={{ fontWeight: '600' }}>{p.payment_type || 'Part Payment'}</Text>
+                          </Text>
+                          <Text style={{ fontSize: 11, color: '#64748B' }}>
+                            Remaining Balance: <Text style={{ fontWeight: '700', color: (p.balance_after || 0) > 0 ? '#DC2626' : '#059669' }}>{inr(p.balance_after)}</Text>
+                          </Text>
+                        </View>
+
+                        {p.remarks ? (
+                          <Text style={{ fontSize: 11, color: '#64748B', fontStyle: 'italic', marginTop: 2 }}>
+                            "{p.remarks}"
+                          </Text>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                <Pressable
+                  onPress={() => setHistoryModalVisible(false)}
+                  style={[styles.modalSaveBtn, { alignSelf: 'flex-end', marginTop: 8 }]}
+                >
+                  <Text style={styles.modalSaveTxt}>Close History</Text>
+                </Pressable>
+              </ScrollView>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ============================================================== */}
+      {/* Modal: Payment-In Saved Successfully & Print Voucher           */}
+      {/* ============================================================== */}
+      <Modal
+        visible={successModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSuccessModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxWidth: 460, alignItems: 'center' }]}>
+            <View style={styles.successIconCircle}>
+              <Ionicons name="checkmark" size={32} color="#059669" />
+            </View>
+            <Text style={styles.successModalTitle}>Payment-In Saved Successfully!</Text>
+            <Text style={styles.successModalSub}>भुगतान वाउचर सफलतापूर्वक सहेजा गया है।</Text>
+
+            {createdVoucher && (
+              <View style={styles.successDetailsBox}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ color: '#64748B', fontSize: 12 }}>Voucher No:</Text>
+                  <Text style={{ fontWeight: '800', color: '#0F172A', fontSize: 13 }}>
+                    {createdVoucher.voucher_no || createdVoucher.income_no}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                  <Text style={{ color: '#64748B', fontSize: 12 }}>Customer:</Text>
+                  <Text style={{ fontWeight: '700', color: '#0F172A', fontSize: 13 }}>
+                    {createdVoucher.client_name}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                  <Text style={{ color: '#64748B', fontSize: 12 }}>Amount Received:</Text>
+                  <Text style={{ fontWeight: '900', color: '#059669', fontSize: 16 }}>
+                    {inr(createdVoucher.amount)}
+                  </Text>
+                </View>
+                {createdVoucher.linked_vouchers?.length ? (
+                  <View style={{ marginTop: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#E2E8F0' }}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 4 }}>
+                      Reconciled Sale Vouchers:
+                    </Text>
+                    {createdVoucher.linked_vouchers.map((lv: any, idx: number) => {
+                      const rem = Math.max(0, (lv.total_amount || 0) - ((lv.previous_paid || 0) + (lv.allocated_amount || 0)));
+                      return (
+                        <Text key={idx} style={{ fontSize: 11, color: '#059669', marginTop: 2 }}>
+                          ✔ {lv.voucher_no}: Linked +{inr(lv.allocated_amount)} (Balance: {inr(rem)})
+                        </Text>
+                      );
+                    })}
+                  </View>
+                ) : null}
+              </View>
+            )}
+
+            <View style={{ width: '100%', gap: 8, marginTop: 12 }}>
+              <Pressable
+                testID="btn-print-saved-voucher"
+                onPress={() => printIncomePdf(createdVoucher?.id)}
+                style={styles.modalPrintBtn}
+              >
+                <Ionicons name="print" size={18} color="#FFF" />
+                <Text style={styles.modalPrintBtnTxt}>Print Official Voucher / Receipt (PDF)</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  setSuccessModalVisible(false);
+                  if (createdVoucher?.id) router.push(`/accounting/income/${createdVoucher.id}` as any);
+                }}
+                style={styles.modalViewBtn}
+              >
+                <Ionicons name="eye-outline" size={16} color="#0F172A" />
+                <Text style={styles.modalViewBtnTxt}>View Voucher Details</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  setSuccessModalVisible(false);
+                  router.back();
+                }}
+                style={styles.modalDoneBtn}
+              >
+                <Text style={styles.modalDoneBtnTxt}>Done / Back to Accounting</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
+
 const styles = StyleSheet.create({
-  label: { color: colors.muted, fontSize: font.sm, fontWeight: '600' },
-  muted: { color: colors.muted, fontSize: font.sm, marginTop: 2 },
-  chip: { paddingHorizontal: spacing.md, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
-  chipText: { color: colors.onSurface, fontWeight: '600' },
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    gap: 10,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#334155',
+    letterSpacing: 0.8,
+  },
+  autoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+  },
+  autoBadgeTxt: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#2563EB',
+  },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  chipActive: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandPrimary,
+  },
+  chipText: {
+    color: colors.onSurface,
+    fontWeight: '600',
+    fontSize: 12,
+  },
+
+  // Customer Section
+  searchPartyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#059669',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+  },
+  searchPartyBtnTxt: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  customerCard: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.sm,
+    padding: spacing.md,
+  },
+  customerName: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  customerCode: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#2563EB',
+    marginTop: 1,
+  },
+  customerMeta: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 2,
+  },
+  customerActions: {
+    flexDirection: 'column',
+    gap: 6,
+    alignItems: 'flex-end',
+  },
+  actionChipEdit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  actionChipEditTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#2563EB',
+  },
+  actionChipDelete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FEF2F2',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  actionChipDeleteTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
+  actionChipNew: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#ECFDF5',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+  },
+  actionChipNewTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#059669',
+  },
+  noCustomerBox: {
+    alignItems: 'center',
+    padding: spacing.md,
+    gap: 4,
+  },
+  noCustomerTxt: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  pickPartyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#059669',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.sm,
+  },
+  pickPartyBtnTxt: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  addPartyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#059669',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.sm,
+  },
+  addPartyBtnTxt: {
+    color: '#059669',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  // Previous Sale Vouchers
+  emptyVoucherBox: {
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.sm,
+  },
+  saleVoucherRow: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.sm,
+    padding: 10,
+    gap: 8,
+  },
+  saleVoucherRowLinked: {
+    borderColor: '#86EFAC',
+    backgroundColor: '#F0FDF4',
+  },
+  svNo: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  svDate: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  svStatusBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  bgPaid: { backgroundColor: '#DCFCE7' },
+  bgUnpaid: { backgroundColor: '#FEE2E2' },
+  bgPartialLinked: { backgroundColor: '#FEF3C7' },
+  svStatusTxt: { fontSize: 9, fontWeight: '900' },
+  txtPaid: { color: '#166534' },
+  txtUnpaid: { color: '#991B1B' },
+  txtPartialLinked: { color: '#B45309' },
+  svAmountsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  svAmtTxt: {
+    fontSize: 12,
+    color: '#334155',
+  },
+  svBtnGroup: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    paddingTop: 8,
+  },
+  linkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+  },
+  linkBtnActive: {
+    backgroundColor: '#059669',
+  },
+  linkBtnTxt: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  historyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+  },
+  historyBtnTxt: {
+    color: '#0F172A',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  // Linked Rows Card
+  linkedRowCard: {
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: radius.sm,
+    padding: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  typePill: {
+    backgroundColor: '#E0E7FF',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  typePillTxt: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#3730A3',
+  },
+
+  // Table Particulars
+  addItemBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+  },
+  addItemBtnTxt: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  itemTableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: radius.sm,
+    gap: 6,
+  },
+  colHdr: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  itemTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    gap: 6,
+  },
+  cellTxt: {
+    fontSize: 12,
+    color: '#1E293B',
+  },
+  tableInput: {
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    fontSize: 12,
+    color: '#0F172A',
+    backgroundColor: '#FFF',
+  },
+  itemTableFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#CBD5E1',
+  },
+
+  // Overrides & Summary
+  overrideInput: {
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+    backgroundColor: '#FFF',
+    marginTop: 4,
+  },
+
+  // Error Box
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: radius.sm,
+    padding: 10,
+  },
+  errorTxt: {
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+
+  // Footer Buttons
+  saveAndPrintBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#047857',
+    paddingVertical: 14,
+    borderRadius: radius.md,
+  },
+  saveAndPrintBtnTxt: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+
+  // Modals
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 460,
+    backgroundColor: '#FFF',
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: 10,
+    maxHeight: '90%',
+  },
+  modalHead: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    paddingBottom: 10,
+  },
+  modalTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  modalCancelBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: radius.sm,
+  },
+  modalCancelTxt: {
+    color: '#64748B',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  modalSaveBtn: {
+    backgroundColor: '#2563EB',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: radius.sm,
+  },
+  modalSaveTxt: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  linkingSummaryBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    padding: 10,
+    gap: 2,
+  },
+  historySummaryBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    padding: 12,
+    gap: 2,
+  },
+  historyItemCard: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.sm,
+    padding: 10,
+    gap: 2,
+  },
+
+  // Success Modal
+  successIconCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#DCFCE7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  successModalTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#0F172A',
+    textAlign: 'center',
+  },
+  successModalSub: {
+    fontSize: 12,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  successDetailsBox: {
+    width: '100%',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.sm,
+    padding: 12,
+    marginTop: 8,
+  },
+  modalPrintBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#047857',
+    paddingVertical: 12,
+    borderRadius: radius.md,
+  },
+  modalPrintBtnTxt: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  modalViewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingVertical: 10,
+    borderRadius: radius.md,
+  },
+  modalViewBtnTxt: {
+    color: '#0F172A',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  modalDoneBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  modalDoneBtnTxt: {
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '700',
+  },
 });

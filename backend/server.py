@@ -5,22 +5,47 @@ import logging
 import secrets
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import bcrypt
 import certifi
 import httpx
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query
 from fastapi.responses import Response, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from invoice_pdf import build_invoice_pdf
 from customer_pdf import build_customer_pdf
+from payment_in_pdf import build_payment_in_pdf
+from expense_pdf import build_expense_pdf
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pydantic import BaseModel, Field, EmailStr
 from starlette.middleware.cors import CORSMiddleware
+from security_vault import log_audit_entry, encrypt_credential, decrypt_credential, mask_credential
+from branch_routes import make_branch_router
+from post_routes import make_post_router
+from role_routes import make_role_router
+from user_routes import make_user_router
+from service_routes import make_service_router
+from audit_routes import make_audit_router
+from notification_routes import make_notification_router
+from customer_vault_routes import make_customer_vault_router
+from accounting_extra_routes import make_accounting_extra_router
+from field_gps_routes import make_gps_router
+from task_workflow_routes import make_task_workflow_router
+from system_operations_routes import make_system_operations_router
+from custom_field_routes import make_custom_field_router
+from leave_routes import make_leave_router
+from payroll_routes import make_payroll_router
+from tender_management_routes import make_tender_management_router
+from document_library_routes import make_document_library_router
+from tender_calling_routes import make_tender_calling_router
+from accounting_reports_routes import make_accounting_reports_router
+from cash_bank_routes import make_cash_bank_router
+from task_chat_routes import make_task_chat_router
+from service_workflow_routes import make_service_workflow_router
 
 
 ROOT_DIR = Path(__file__).parent
@@ -60,7 +85,17 @@ def init_storage():
     return _storage_key
 
 
+LOCAL_STORAGE_DIR = ROOT_DIR / "uploads"
+LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def put_object(path: str, data: bytes, content_type: str) -> dict:
+    if not STORAGE_URL:
+        target_path = LOCAL_STORAGE_DIR / path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_path, "wb") as f:
+            f.write(data)
+        return {"path": path, "size": len(data), "content_type": content_type}
     key = init_storage()
     resp = requests.put(
         f"{STORAGE_URL}/objects/{path}",
@@ -73,6 +108,13 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 
 def get_object(path: str):
+    if not STORAGE_URL:
+        target_path = LOCAL_STORAGE_DIR / path
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        with open(target_path, "rb") as f:
+            content = f.read()
+        return content, "image/jpeg"
     global _storage_key
     key = init_storage()
     resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
@@ -210,7 +252,17 @@ class Customer(BaseModel):
     registration_class: Optional[str] = None
     registration_validity: Optional[str] = None
 
+    # Additional 42 fields
+    alternate_mobile: Optional[str] = None
+    departments: Optional[str] = None
+    encryption_serial_no: Optional[str] = None
+    encryption_issued_date: Optional[str] = None
+    encryption_expired_date: Optional[str] = None
+    iso_other_details: Optional[str] = None
+    gem_seller_id: Optional[str] = None
+
     notes: Optional[str] = None
+    custom_fields: Dict[str, Any] = Field(default_factory=dict)
     attachments: List[dict] = Field(default_factory=list)  # [{path,name,size,content_type,uploaded_at}]
     created_by: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -221,9 +273,11 @@ class CustomerInput(BaseModel):
     address: Optional[str] = None
     mobile: str
     whatsapp: str
+    alternate_mobile: Optional[str] = None
     email: Optional[str] = None
     pan: str
     aadhar: str
+    departments: Optional[str] = None
     eproc2_user_id: Optional[str] = None
     eproc2_password: Optional[str] = None
     eproc2_email: Optional[str] = None
@@ -245,10 +299,15 @@ class CustomerInput(BaseModel):
     dsc_serial_no: Optional[str] = None
     dsc_issued_date: Optional[str] = None
     dsc_expired_date: Optional[str] = None
+    encryption_serial_no: Optional[str] = None
+    encryption_issued_date: Optional[str] = None
+    encryption_expired_date: Optional[str] = None
     iso_user_id: Optional[str] = None
     iso_password: Optional[str] = None
+    iso_other_details: Optional[str] = None
     gem_user_id: Optional[str] = None
     gem_password: Optional[str] = None
+    gem_seller_id: Optional[str] = None
     gem_email: Optional[str] = None
     pmgsy_user_id: Optional[str] = None
     pmgsy_password: Optional[str] = None
@@ -257,6 +316,7 @@ class CustomerInput(BaseModel):
     registration_class: Optional[str] = None
     registration_validity: Optional[str] = None
     notes: Optional[str] = None
+    custom_fields: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
 class Employee(BaseModel):
@@ -373,6 +433,14 @@ class Task(BaseModel):
     task_type_id: Optional[str] = None
     task_type_name: Optional[str] = None
 
+    task_category: Optional[str] = "task_followup"  # "payment_followup" | "task_followup"
+    chat_participants: List[str] = Field(default_factory=list)
+    service_id: Optional[str] = None
+    service_name: Optional[str] = None
+    workflow_stages: List[dict] = Field(default_factory=list)
+    current_stage_index: Optional[int] = 0
+    workflow_history: List[dict] = Field(default_factory=list)
+
     # Per-task custom stages (task creator/admin defines them)
     stages: List[dict] = Field(default_factory=list)  # [{id,name,order,color?}]
     current_stage_id: Optional[str] = None
@@ -414,6 +482,10 @@ class TaskInput(BaseModel):
     title: str
     description: Optional[str] = None
     task_type_id: Optional[str] = None
+    task_category: Optional[str] = "task_followup"
+    chat_participants: Optional[List[str]] = None
+    service_id: Optional[str] = None
+    service_name: Optional[str] = None
     stages: Optional[List[dict]] = None   # optional initial stages [{name,color?}]
     sub_tasks: Optional[List[dict]] = None
     voucher_no: Optional[str] = None
@@ -448,6 +520,10 @@ class TaskUpdate(BaseModel):
     priority: Optional[str] = None
     title: Optional[str] = None
     description: Optional[str] = None
+    task_category: Optional[str] = None
+    chat_participants: Optional[List[str]] = None
+    service_id: Optional[str] = None
+    service_name: Optional[str] = None
     deadline: Optional[str] = None
     assignee_id: Optional[str] = None
     assignee_name: Optional[str] = None
@@ -572,12 +648,16 @@ class BankAccountInput(BaseModel):
 
 class Income(BaseModel):
     id: str = Field(default_factory=lambda: new_id("inc"))
-    income_no: Optional[str] = None    # INC-0001
+    income_no: Optional[str] = None    # INC-0001 / PAYIN-0001
+    voucher_no: Optional[str] = None   # PAYIN-0001
     date: str                          # YYYY-MM-DD
     client_id: Optional[str] = None
     client_name: str
     client_mobile: Optional[str] = None
-    service_category: str
+    client_pan: Optional[str] = None
+    client_gst: Optional[str] = None
+    client_code: Optional[str] = None
+    service_category: Optional[str] = "Other Services"
     service_name: Optional[str] = None
     amount: float
     payment_mode: str                  # cash / bank / upi / cheque
@@ -585,6 +665,8 @@ class Income(BaseModel):
     employee_id: Optional[str] = None
     employee_name: Optional[str] = None
     remarks: Optional[str] = None
+    items: List[dict] = Field(default_factory=list)              # Particulars: sl, item, qty, rate, amount
+    linked_vouchers: List[dict] = Field(default_factory=list)    # Linked sale vouchers
     attachments: List[dict] = Field(default_factory=list)
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
@@ -592,11 +674,15 @@ class Income(BaseModel):
 
 
 class IncomeInput(BaseModel):
+    voucher_no: Optional[str] = None
     date: str
     client_id: Optional[str] = None
     client_name: str
     client_mobile: Optional[str] = None
-    service_category: str
+    client_pan: Optional[str] = None
+    client_gst: Optional[str] = None
+    client_code: Optional[str] = None
+    service_category: Optional[str] = "Other Services"
     service_name: Optional[str] = None
     amount: float
     payment_mode: str
@@ -604,6 +690,29 @@ class IncomeInput(BaseModel):
     employee_id: Optional[str] = None
     employee_name: Optional[str] = None
     remarks: Optional[str] = None
+    items: List[dict] = Field(default_factory=list)
+    linked_vouchers: List[dict] = Field(default_factory=list)
+
+
+class IncomeUpdateInput(BaseModel):
+    date: Optional[str] = None
+    client_id: Optional[str] = None
+    client_name: Optional[str] = None
+    client_mobile: Optional[str] = None
+    client_pan: Optional[str] = None
+    client_gst: Optional[str] = None
+    client_code: Optional[str] = None
+    service_category: Optional[str] = None
+    service_name: Optional[str] = None
+    amount: Optional[float] = None
+    payment_mode: Optional[str] = None
+    bank_account_id: Optional[str] = None
+    employee_id: Optional[str] = None
+    employee_name: Optional[str] = None
+    remarks: Optional[str] = None
+    items: Optional[List[dict]] = None
+    linked_vouchers: Optional[List[dict]] = None
+
 
 
 class Expense(BaseModel):
@@ -620,6 +729,18 @@ class Expense(BaseModel):
     verified_by: Optional[str] = None
     approved_by: Optional[str] = None
     attachments: List[dict] = Field(default_factory=list)
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_mobile: Optional[str] = None
+    customer_pan: Optional[str] = None
+    customer_gst: Optional[str] = None
+    customer_code: Optional[str] = None
+    sale_invoice_id: Optional[str] = None
+    sale_invoice_no: Optional[str] = None
+    sale_invoice_date: Optional[str] = None
+    sale_item_name: Optional[str] = None
+    pass_on_item_type: Optional[str] = None
+    pass_on_received_amount: Optional[float] = 0.0
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -633,10 +754,75 @@ class ExpenseInput(BaseModel):
     bank_account_id: Optional[str] = None
     vendor: Optional[str] = None
     description: Optional[str] = None
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_mobile: Optional[str] = None
+    customer_pan: Optional[str] = None
+    customer_gst: Optional[str] = None
+    customer_code: Optional[str] = None
+    sale_invoice_id: Optional[str] = None
+    sale_invoice_no: Optional[str] = None
+    sale_invoice_date: Optional[str] = None
+    sale_item_name: Optional[str] = None
+    pass_on_item_type: Optional[str] = None
+    pass_on_received_amount: Optional[float] = 0.0
+
+
+class ExpenseUpdateInput(BaseModel):
+    date: Optional[str] = None
+    category: Optional[str] = None
+    amount: Optional[float] = None
+    payment_mode: Optional[str] = None
+    bank_account_id: Optional[str] = None
+    vendor: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_mobile: Optional[str] = None
+    customer_pan: Optional[str] = None
+    customer_gst: Optional[str] = None
+    customer_code: Optional[str] = None
+    sale_invoice_id: Optional[str] = None
+    sale_invoice_no: Optional[str] = None
+    sale_invoice_date: Optional[str] = None
+    sale_item_name: Optional[str] = None
 
 
 class ExpenseDecision(BaseModel):
     action: str  # verify | approve | reject
+
+
+# ============ Passed On Money Items ============
+class PassedOnItem(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("poi"))
+    name: str
+    fee_type: str = "Other Fee"
+    unit: str = "LOT"
+    default_amount: float = 0.0
+    tax_rate: float = 0.0
+    description: Optional[str] = None
+    is_system: bool = False
+    created_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class PassedOnItemInput(BaseModel):
+    name: str
+    fee_type: Optional[str] = "Other Fee"
+    unit: Optional[str] = "LOT"
+    default_amount: Optional[float] = 0.0
+    tax_rate: Optional[float] = 0.0
+    description: Optional[str] = None
+
+
+class PassedOnItemUpdate(BaseModel):
+    name: Optional[str] = None
+    fee_type: Optional[str] = None
+    unit: Optional[str] = None
+    default_amount: Optional[float] = None
+    tax_rate: Optional[float] = None
+    description: Optional[str] = None
 
 
 # ============ Items (Inventory / catalog) ============
@@ -673,13 +859,16 @@ class ItemInput(BaseModel):
 # ============ Invoices (Sale / Purchase) ============
 class InvoiceItem(BaseModel):
     item_id: Optional[str] = None
-    name: str
+    name: str = "Item"
     qty: float = 1
     unit: str = "PCS"
     price: float = 0.0
     tax_rate: float = 0.0  # % GST
     discount: float = 0.0
     amount: float = 0.0    # qty*price - discount + tax
+    item_type: Optional[str] = "actual_service"  # "passed_on_money" | "actual_service"
+    fee_type: Optional[str] = None               # "EMD", "Cost of BOQ", "Tender Processing Fee", "Registration Fee", "Other Fee"
+    notes: Optional[str] = None
 
 
 class Invoice(BaseModel):
@@ -688,13 +877,15 @@ class Invoice(BaseModel):
     invoice_type: str = "sale"          # sale | purchase
     payment_type: str = "credit"        # credit | cash
     payment_mode: str = "cash"          # cash | bank_transfer | cheque | upi | other
-    date: str                            # YYYY-MM-DD
+    date: Optional[str] = None
     payment_terms: Optional[str] = None  # Net 15/30/45/60/90 or Custom
     due_date: Optional[str] = None
-    party_id: str
-    party_name: str
+    party_id: Optional[str] = None
+    party_name: Optional[str] = "Unknown"
     party_mobile: Optional[str] = None
+    party_pan: Optional[str] = None
     party_gst: Optional[str] = None
+    party_code: Optional[str] = None
     items: List[InvoiceItem] = Field(default_factory=list)
     subtotal: float = 0.0
     total_discount: float = 0.0
@@ -705,6 +896,10 @@ class Invoice(BaseModel):
     status: str = "unpaid"  # unpaid | partial | paid | cancelled
     notes: Optional[str] = None
     attachments: List[dict] = Field(default_factory=list)
+    signatory_name: Optional[str] = "अंजू कुमारी"
+    signature_url: Optional[str] = None
+    include_signature: bool = True
+    payments: List[dict] = Field(default_factory=list)
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
@@ -712,6 +907,7 @@ class Invoice(BaseModel):
 
 class InvoiceInput(BaseModel):
     invoice_type: str = "sale"
+    invoice_no: Optional[str] = None
     payment_type: str = "credit"
     payment_mode: str = "cash"
     date: str
@@ -720,11 +916,17 @@ class InvoiceInput(BaseModel):
     party_id: str
     party_name: str
     party_mobile: Optional[str] = None
+    party_pan: Optional[str] = None
     party_gst: Optional[str] = None
+    party_code: Optional[str] = None
     items: List[InvoiceItem] = Field(default_factory=list)
     total_amount: float = 0.0
     paid_amount: float = 0.0
     notes: Optional[str] = None
+    signatory_name: Optional[str] = "अंजू कुमारी"
+    signature_url: Optional[str] = None
+    include_signature: Optional[bool] = True
+    payments: Optional[List[dict]] = None
 
 
 class AccountInput(BaseModel):
@@ -870,6 +1072,7 @@ class PunchRecord(BaseModel):
     employee_code: Optional[str] = None
     office_id: Optional[str] = None
     office_name: Optional[str] = None
+    place_name: Optional[str] = None
     type: str  # "in" | "out"
     date: str  # YYYY-MM-DD
     time: str  # HH:MM:SS
@@ -879,6 +1082,7 @@ class PunchRecord(BaseModel):
     distance_m: Optional[float] = None
     within_geofence: bool = True
     is_late: bool = False
+    face_verified: bool = True
     selfie_path: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -1066,6 +1270,10 @@ async def _find_customer_duplicate(payload_dict: dict, exclude_id: Optional[str]
     return await db.customers.find_one(q, {"_id": 0})
 
 
+# Custom fields router mounted before /customers/{cid} parameter matching
+api_router.include_router(make_custom_field_router(db, get_current_user, require_admin, log_audit_entry))
+
+
 @api_router.post("/customers", response_model=Customer)
 async def create_customer(payload: CustomerInput, current: User = Depends(get_current_user)):
     # Validate mandatory fields (Pydantic already enforces presence; also block empty strings)
@@ -1184,6 +1392,13 @@ async def search_customers(q: str = "", limit: int = 25, current: User = Depends
 async def list_customers(current: User = Depends(get_current_user)):
     docs = await db.customers.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [Customer(**d) for d in docs]
+
+
+@api_router.get("/customers/document-expiry-alerts")
+@api_router.get("/customer-alerts/document-expiry")
+async def get_customer_document_expiry_alerts_route(current: User = Depends(get_current_user)):
+    from customer_vault_routes import compute_document_expiry_alerts
+    return await compute_document_expiry_alerts(db)
 
 
 @api_router.get("/customers/{cid}", response_model=Customer)
@@ -1532,15 +1747,32 @@ async def create_task(payload: TaskInput, current: User = Depends(get_current_us
             "note": "Task created",
         })
 
+    # Resolve workflow stages for service if available
+    wf_stages = []
+    svc_name = payload.service_name or (tt or {}).get("name")
+    if svc_name:
+        swf = await db.service_workflows.find_one({"service_name": svc_name}, {"_id": 0})
+        if swf and swf.get("stages"):
+            wf_stages = swf["stages"]
+
+    participants = list(payload.chat_participants or [])
+    if payload.assignee_id and payload.assignee_id not in participants:
+        participants.append(payload.assignee_id)
+
     t = Task(
         task_no=task_no,
         title=payload.title.strip(),
         description=payload.description,
         task_type_id=(tt or {}).get("id"),
         task_type_name=(tt or {}).get("name"),
+        task_category=payload.task_category or ("payment_followup" if "Payment Follow-up" in payload.title or dues > 0 else "task_followup"),
+        chat_participants=participants,
+        service_id=payload.service_id,
+        service_name=svc_name,
+        workflow_stages=wf_stages or stages,
         stages=stages,
         current_stage_id=(first or {}).get("id"),
-        current_stage_name=(first or {}).get("name"),
+        current_stage_name=(first or {}).get("name") or (wf_stages[0]["name"] if wf_stages else None),
         stage_history=initial_history,
         sub_tasks=subs,
         voucher_no=payload.voucher_no,
@@ -1559,12 +1791,38 @@ async def create_task(payload: TaskInput, current: User = Depends(get_current_us
 
 
 @api_router.get("/tasks", response_model=List[Task])
-async def list_tasks(mine: bool = False, current: User = Depends(get_current_user)):
+async def list_tasks(
+    mine: bool = False,
+    category: Optional[str] = Query(None),
+    current: User = Depends(get_current_user)
+):
     q: dict = {}
     if mine or current.role == "employee":
-        q = {"$or": [{"assignee_id": current.user_id}, {"created_by": current.user_id}]}
-    docs = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return [Task(**d) for d in docs]
+        q = {"$or": [
+            {"assignee_id": current.user_id},
+            {"created_by": current.user_id},
+            {"chat_participants": current.user_id},
+        ]}
+
+    docs = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    out = []
+    for d in docs:
+        # Normalize category
+        cat = d.get("task_category")
+        if not cat:
+            title = d.get("title") or ""
+            dues = float(d.get("dues_amount") or 0)
+            if "Payment Follow-up" in title or (dues > 0 and not d.get("service_name")):
+                cat = "payment_followup"
+            else:
+                cat = "task_followup"
+            d["task_category"] = cat
+
+        if category and d.get("task_category") != category:
+            continue
+
+        out.append(Task(**d))
+    return out
 
 
 @api_router.get("/tasks/{tid}", response_model=Task)
@@ -1822,23 +2080,271 @@ async def _next_no(counter_key: str, prefix: str) -> str:
     return f"{prefix}-{seq:04d}"
 
 
+async def _peek_next_no(counter_key: str, prefix: str) -> str:
+    counter = await db.counters.find_one({"_id": counter_key})
+    seq = ((counter or {}).get("seq") or 0) + 1
+    return f"{prefix}-{seq:04d}"
+
+
+def get_indian_financial_year(date_str: Optional[str] = None) -> str:
+    """Return Indian Financial Year format like '2026-27' for a given ISO date (Apr 1 - Mar 31)."""
+    try:
+        if date_str:
+            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        else:
+            d = datetime.now(timezone.utc).date()
+    except Exception:
+        d = datetime.now(timezone.utc).date()
+
+    year = d.year
+    if d.month >= 4:
+        start_yr = year
+        end_yr = (year + 1) % 100
+    else:
+        start_yr = year - 1
+        end_yr = year % 100
+    return f"{start_yr}-{end_yr:02d}"
+
+
+async def _next_sale_invoice_no(date_str: Optional[str] = None) -> str:
+    """
+    Generate auto Sale Invoice number in requested format:
+    'TDSC/2026-27/000002'
+    """
+    fy = get_indian_financial_year(date_str)
+    counter_key = f"sale_invoice_{fy}"
+    counter = await db.counters.find_one({"_id": counter_key})
+    if counter is None:
+        last_inv = await db.invoices.find_one(
+            {"invoice_type": "sale", "invoice_no": {"$regex": f"^TDSC/{re.escape(fy)}/\\d+$"}},
+            sort=[("invoice_no", -1)]
+        )
+        if last_inv and last_inv.get("invoice_no"):
+            m = re.match(r"^TDSC/" + re.escape(fy) + r"/(\d+)$", last_inv["invoice_no"])
+            base_seq = int(m.group(1)) if m else 1
+        else:
+            # Format requested by user starts with TDSC/2026-27/000002
+            base_seq = 1
+        await db.counters.update_one(
+            {"_id": counter_key},
+            {"$set": {"seq": base_seq}},
+            upsert=True
+        )
+
+    res = await db.counters.find_one_and_update(
+        {"_id": counter_key},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER
+    )
+    seq = (res or {}).get("seq") or 2
+    return f"TDSC/{fy}/{seq:06d}"
+
+
+async def _peek_next_sale_invoice_no(date_str: Optional[str] = None) -> str:
+    fy = get_indian_financial_year(date_str)
+    counter_key = f"sale_invoice_{fy}"
+    counter = await db.counters.find_one({"_id": counter_key})
+    if counter is None:
+        last_inv = await db.invoices.find_one(
+            {"invoice_type": "sale", "invoice_no": {"$regex": f"^TDSC/{re.escape(fy)}/\\d+$"}},
+            sort=[("invoice_no", -1)]
+        )
+        if last_inv and last_inv.get("invoice_no"):
+            m = re.match(r"^TDSC/" + re.escape(fy) + r"/(\d+)$", last_inv["invoice_no"])
+            seq = (int(m.group(1)) if m else 1) + 1
+        else:
+            seq = 2
+    else:
+        seq = (counter.get("seq") or 1) + 1
+    return f"TDSC/{fy}/{seq:06d}"
+
+
+@api_router.get("/invoices/next-no")
+async def get_next_invoice_no(
+    invoice_type: str = Query("sale"),
+    date: Optional[str] = Query(None),
+    current: User = Depends(get_current_user)
+):
+    if invoice_type == "sale":
+        next_no = await _peek_next_sale_invoice_no(date)
+        fy = get_indian_financial_year(date)
+        return {"next_no": next_no, "invoice_type": "sale", "financial_year": fy}
+    else:
+        counter = await db.counters.find_one({"_id": "purchase_bill_no"})
+        seq = ((counter or {}).get("seq") or 0) + 1
+        return {"next_no": f"PB-{seq:04d}", "invoice_type": "purchase"}
+
+
+@api_router.get("/income/next-no")
+async def get_next_payment_in_no(current: User = Depends(get_current_user)):
+    next_no = await _peek_next_no("payment_in_no", "PAYIN")
+    return {"next_no": next_no}
+
+
 @api_router.post("/income", response_model=Income)
 async def create_income(payload: IncomeInput, current: User = Depends(get_current_user)):
-    no = await _next_no("income_no", "INC")
-    inc = Income(**payload.dict(), income_no=no, created_by=current.user_id, created_by_name=current.name)
+    no = (payload.voucher_no or "").strip()
+    if not no or "preview" in no.lower() or no == "PAYIN-0000":
+        no = await _next_no("payment_in_no", "PAYIN")
+    elif no.startswith("PAYIN-"):
+        try:
+            val = int(no.split("-")[1])
+            await db.counters.update_one(
+                {"_id": "payment_in_no"},
+                {"$max": {"seq": val}},
+                upsert=True
+            )
+        except Exception:
+            pass
+
+    inc_dict = payload.dict()
+    inc_dict.pop("voucher_no", None)
+    inc_dict.pop("income_no", None)
+
+    # Auto-fill customer details if client_id is present
+    if payload.client_id:
+        cust = await db.customers.find_one({"id": payload.client_id}, {"_id": 0})
+        if cust:
+            inc_dict["client_name"] = inc_dict.get("client_name") or cust.get("name")
+            inc_dict["client_mobile"] = inc_dict.get("client_mobile") or cust.get("mobile")
+            inc_dict["client_pan"] = inc_dict.get("client_pan") or cust.get("pan")
+            inc_dict["client_gst"] = inc_dict.get("client_gst") or cust.get("gst_no")
+            inc_dict["client_code"] = inc_dict.get("client_code") or cust.get("customer_code")
+
+    inc = Income(
+        **inc_dict,
+        income_no=no,
+        voucher_no=no,
+        created_by=current.user_id,
+        created_by_name=current.name,
+    )
     await db.income.insert_one(inc.dict())
+
+    # Update linked sale vouchers and record payment history
+    for lv in (payload.linked_vouchers or []):
+        vid = lv.get("voucher_id") or lv.get("id")
+        alloc = float(lv.get("allocated_amount") or 0.0)
+        if not vid or alloc <= 0:
+            continue
+        sinv = await db.invoices.find_one({"id": vid})
+        if not sinv:
+            continue
+
+        cur_paid = float(sinv.get("paid_amount") or 0.0)
+        tot_amt = float(sinv.get("total_amount") or 0.0)
+        new_paid = round(cur_paid + alloc, 2)
+        new_bal = max(0.0, round(tot_amt - new_paid, 2))
+        new_status = "paid" if new_bal <= 0 and tot_amt > 0 else "partial"
+
+        payment_record = {
+            "payment_id": inc.id,
+            "payment_no": no,
+            "date": payload.date,
+            "amount": alloc,
+            "payment_mode": lv.get("payment_mode") or payload.payment_mode or "cash",
+            "payment_type": lv.get("payment_type") or "Part Payment",
+            "remarks": lv.get("remarks") or payload.remarks or f"Payment-In {no}",
+            "created_at": now_utc().isoformat(),
+            "balance_after": new_bal,
+        }
+
+        existing_payments = list(sinv.get("payments") or [])
+        if cur_paid > 0 and len(existing_payments) == 0:
+            existing_payments.append({
+                "payment_id": f"init_{sinv.get('id')}",
+                "payment_no": f"INITIAL-{sinv.get('invoice_no')}",
+                "date": sinv.get("date") or "Initial",
+                "amount": cur_paid,
+                "payment_mode": sinv.get("payment_mode") or "cash",
+                "payment_type": "Initial / Down Payment",
+                "remarks": "Payment received at invoice generation",
+                "created_at": str(sinv.get("created_at") or now_utc().isoformat()),
+                "balance_after": max(0.0, round(tot_amt - cur_paid, 2)),
+            })
+
+        existing_payments.append(payment_record)
+
+        await db.invoices.update_one(
+            {"id": sinv["id"]},
+            {
+                "$set": {
+                    "paid_amount": new_paid,
+                    "balance": new_bal,
+                    "status": new_status,
+                    "payments": existing_payments,
+                }
+            }
+        )
+
     return inc
 
 
 @api_router.get("/income", response_model=List[Income])
-async def list_income(client_id: Optional[str] = None, from_date: Optional[str] = None, to_date: Optional[str] = None, current: User = Depends(get_current_user)):
+async def list_income(
+    client_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    current: User = Depends(get_current_user)
+):
     q: dict = {}
     if client_id: q["client_id"] = client_id
     if from_date or to_date:
         q["date"] = {}
         if from_date: q["date"]["$gte"] = from_date
         if to_date: q["date"]["$lte"] = to_date
+
+    if search:
+        s = re.escape(search.strip())
+        matching_custs = await db.customers.find({
+            "$or": [
+                {"name": {"$regex": s, "$options": "i"}},
+                {"mobile": {"$regex": s, "$options": "i"}},
+                {"pan": {"$regex": s, "$options": "i"}},
+                {"gst_no": {"$regex": s, "$options": "i"}},
+                {"customer_code": {"$regex": s, "$options": "i"}},
+            ]
+        }, {"_id": 0, "id": 1}).to_list(500)
+        matching_cust_ids = [c["id"] for c in matching_custs if "id" in c]
+
+        or_conds = [
+            {"voucher_no": {"$regex": s, "$options": "i"}},
+            {"income_no": {"$regex": s, "$options": "i"}},
+            {"client_name": {"$regex": s, "$options": "i"}},
+            {"client_mobile": {"$regex": s, "$options": "i"}},
+            {"client_pan": {"$regex": s, "$options": "i"}},
+            {"client_gst": {"$regex": s, "$options": "i"}},
+            {"client_code": {"$regex": s, "$options": "i"}},
+            {"service_category": {"$regex": s, "$options": "i"}},
+            {"service_name": {"$regex": s, "$options": "i"}},
+            {"employee_name": {"$regex": s, "$options": "i"}},
+            {"remarks": {"$regex": s, "$options": "i"}},
+            {"payment_mode": {"$regex": s, "$options": "i"}},
+            {"linked_vouchers.voucher_no": {"$regex": s, "$options": "i"}},
+            {"items.item": {"$regex": s, "$options": "i"}},
+        ]
+        if matching_cust_ids:
+            or_conds.append({"client_id": {"$in": matching_cust_ids}})
+
+        q["$or"] = or_conds
+
     docs = await db.income.find(q, {"_id": 0}).sort("date", -1).to_list(1000)
+
+    # Dynamic customer enrichment if missing on older income documents
+    cust_ids = [d.get("client_id") for d in docs if d.get("client_id") and (not d.get("client_pan") or not d.get("client_gst") or not d.get("client_mobile"))]
+    if cust_ids:
+        custs = await db.customers.find({"id": {"$in": list(set(cust_ids))}}, {"_id": 0, "id": 1, "name": 1, "mobile": 1, "pan": 1, "gst_no": 1, "customer_code": 1}).to_list(1000)
+        cmap = {c["id"]: c for c in custs}
+        for d in docs:
+            cid = d.get("client_id")
+            if cid and cid in cmap:
+                c = cmap[cid]
+                if not d.get("client_mobile"): d["client_mobile"] = c.get("mobile")
+                if not d.get("client_pan"): d["client_pan"] = c.get("pan")
+                if not d.get("client_gst"): d["client_gst"] = c.get("gst_no")
+                if not d.get("client_code"): d["client_code"] = c.get("customer_code")
+
     return [Income(**d) for d in docs]
 
 
@@ -1846,7 +2352,68 @@ async def list_income(client_id: Optional[str] = None, from_date: Optional[str] 
 async def get_income(iid: str, current: User = Depends(get_current_user)):
     d = await db.income.find_one({"id": iid}, {"_id": 0})
     if not d: raise HTTPException(status_code=404, detail="Not found")
+    cid = d.get("client_id")
+    if cid and (not d.get("client_pan") or not d.get("client_gst") or not d.get("client_mobile")):
+        cust = await db.customers.find_one({"id": cid}, {"_id": 0})
+        if cust:
+            d["client_mobile"] = d.get("client_mobile") or cust.get("mobile")
+            d["client_pan"] = d.get("client_pan") or cust.get("pan")
+            d["client_gst"] = d.get("client_gst") or cust.get("gst_no")
+            d["client_code"] = d.get("client_code") or cust.get("customer_code")
     return Income(**d)
+
+
+@api_router.patch("/income/{iid}", response_model=Income)
+async def update_income(iid: str, payload: IncomeUpdateInput, current: User = Depends(get_current_user)):
+    existing = await db.income.find_one({"id": iid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Payment-In voucher not found")
+
+    upd = {k: v for k, v in payload.dict().items() if v is not None}
+
+    cid = upd.get("client_id") or existing.get("client_id")
+    if cid:
+        cust = await db.customers.find_one({"id": cid}, {"_id": 0})
+        if cust:
+            if not upd.get("client_name"): upd["client_name"] = cust.get("name")
+            if not upd.get("client_mobile"): upd["client_mobile"] = cust.get("mobile")
+            if not upd.get("client_pan"): upd["client_pan"] = cust.get("pan")
+            if not upd.get("client_gst"): upd["client_gst"] = cust.get("gst_no")
+            if not upd.get("client_code"): upd["client_code"] = cust.get("customer_code")
+
+    upd["updated_at"] = now_utc()
+    upd["updated_by"] = current.user_id
+
+    await db.income.update_one({"id": iid}, {"$set": upd})
+    d = await db.income.find_one({"id": iid}, {"_id": 0})
+    return Income(**d)
+
+
+@api_router.get("/income/{iid}/pdf")
+async def get_income_pdf(iid: str, token: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
+    tk = None
+    if authorization and authorization.startswith("Bearer "):
+        tk = authorization[7:]
+    elif token:
+        tk = token
+    if not tk:
+        raise HTTPException(status_code=401, detail="Auth required")
+    session = await db.user_sessions.find_one({"session_token": tk}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    inc = await db.income.find_one({"id": iid}, {"_id": 0})
+    if not inc:
+        raise HTTPException(status_code=404, detail="Payment-In voucher not found")
+
+    cust = await db.customers.find_one({"id": inc.get("client_id")}, {"_id": 0}) if inc.get("client_id") else None
+    pdf_bytes = await run_in_threadpool(build_payment_in_pdf, inc, cust)
+    fname = f"{(inc.get('voucher_no') or inc.get('income_no') or 'receipt')}_{(inc.get('date') or '').replace('-','')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{fname}"'}
+    )
 
 
 @api_router.delete("/income/{iid}")
@@ -1855,25 +2422,388 @@ async def delete_income(iid: str, current: User = Depends(require_admin_or_manag
     return {"deleted": res.deleted_count}
 
 
+# ============ Passed On Money (EMD, Cost of BOQ, Tender Fee, etc.) ============
+DEFAULT_PASSED_ON_ITEMS = [
+    {
+        "name": "EMD",
+        "fee_type": "EMD",
+        "unit": "LOT",
+        "default_amount": 0.0,
+        "tax_rate": 0.0,
+        "description": "Earnest Money Deposit (EMD for Tenders)",
+        "is_system": True,
+    },
+    {
+        "name": "Cost of BOQ",
+        "fee_type": "Cost of BOQ",
+        "unit": "LOT",
+        "default_amount": 0.0,
+        "tax_rate": 0.0,
+        "description": "Cost of BOQ / Tender Document Fee",
+        "is_system": True,
+    },
+    {
+        "name": "Tender Processing Fee",
+        "fee_type": "Tender Processing Fee",
+        "unit": "LOT",
+        "default_amount": 0.0,
+        "tax_rate": 0.0,
+        "description": "Tender Portal e-Processing Fee",
+        "is_system": True,
+    },
+    {
+        "name": "Registration Fee",
+        "fee_type": "Registration Fee",
+        "unit": "LOT",
+        "default_amount": 0.0,
+        "tax_rate": 0.0,
+        "description": "Department / Portal Contractor Registration Fee",
+        "is_system": True,
+    },
+    {
+        "name": "Other Fee",
+        "fee_type": "Other Fee",
+        "unit": "LOT",
+        "default_amount": 0.0,
+        "tax_rate": 0.0,
+        "description": "Other Passed On Reimbursement / Pass-through Fee",
+        "is_system": True,
+    },
+]
+DEFAULT_PASSED_ON_FEE_NAMES = [x["name"] for x in DEFAULT_PASSED_ON_ITEMS]
+
+
+@api_router.get("/passed-on-items", response_model=List[PassedOnItem])
+async def list_passed_on_items(current: User = Depends(get_current_user)):
+    count = await db.passed_on_items.count_documents({})
+    if count == 0:
+        for seed in DEFAULT_PASSED_ON_ITEMS:
+            item = PassedOnItem(**seed)
+            await db.passed_on_items.insert_one(item.dict())
+    docs = await db.passed_on_items.find({}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return [PassedOnItem(**d) for d in docs]
+
+
+@api_router.post("/passed-on-items", response_model=PassedOnItem)
+async def create_passed_on_item(payload: PassedOnItemInput, current: User = Depends(require_admin)):
+    name_clean = payload.name.strip()
+    if not name_clean:
+        raise HTTPException(status_code=400, detail="Fee item name is required")
+    ex = await db.passed_on_items.find_one({"name": {"$regex": f"^{re.escape(name_clean)}$", "$options": "i"}})
+    if ex:
+        raise HTTPException(status_code=400, detail="Fee item with this name already exists")
+    it = PassedOnItem(
+        **payload.dict(),
+        name=name_clean,
+        is_system=False,
+        created_by=current.user_id,
+    )
+    await db.passed_on_items.insert_one(it.dict())
+    return it
+
+
+@api_router.patch("/passed-on-items/{poi_id}", response_model=PassedOnItem)
+async def update_passed_on_item(poi_id: str, payload: PassedOnItemUpdate, current: User = Depends(require_admin)):
+    it = await db.passed_on_items.find_one({"id": poi_id}, {"_id": 0})
+    if not it:
+        raise HTTPException(status_code=404, detail="Passed on item not found")
+    data = {k: v for k, v in payload.dict().items() if v is not None}
+    if "name" in data:
+        data["name"] = data["name"].strip()
+    if data:
+        await db.passed_on_items.update_one({"id": poi_id}, {"$set": data})
+    d = await db.passed_on_items.find_one({"id": poi_id}, {"_id": 0})
+    return PassedOnItem(**d)
+
+
+@api_router.delete("/passed-on-items/{poi_id}")
+async def delete_passed_on_item(poi_id: str, current: User = Depends(require_admin)):
+    it = await db.passed_on_items.find_one({"id": poi_id}, {"_id": 0})
+    if not it:
+        raise HTTPException(status_code=404, detail="Passed on item not found")
+    res = await db.passed_on_items.delete_one({"id": poi_id})
+    return {"deleted": res.deleted_count}
+
+
+@api_router.get("/invoices/{iid}/passed-on-items")
+async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_current_user)):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Sale invoice not found")
+
+    passed_items = []
+    for it in inv.get("items", []):
+        name = it.get("name", "").strip()
+        itype = it.get("item_type")
+        is_pass_on = (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES])
+        if is_pass_on:
+            line_total = float(it.get("amount") or (float(it.get("qty", 1)) * float(it.get("price", 0))))
+            prior_exp = await db.expenses.find({
+                "sale_invoice_id": iid,
+                "sale_item_name": name,
+                "status": {"$ne": "rejected"}
+            }, {"_id": 0, "amount": 1, "expense_no": 1, "date": 1, "status": 1}).to_list(100)
+            already_spent = round(sum(float(x.get("amount") or 0) for x in prior_exp), 2)
+            remaining = round(max(0.0, line_total - already_spent), 2)
+            passed_items.append({
+                "item_id": it.get("item_id"),
+                "name": name,
+                "fee_type": it.get("fee_type") or name,
+                "unit": it.get("unit") or "LOT",
+                "qty": it.get("qty", 1),
+                "price": it.get("price", 0),
+                "billed_amount": line_total,
+                "already_spent": already_spent,
+                "remaining_balance": remaining,
+                "expense_history": prior_exp,
+            })
+    return {
+        "invoice_id": iid,
+        "invoice_no": inv.get("invoice_no"),
+        "date": inv.get("date"),
+        "party_id": inv.get("party_id"),
+        "party_name": inv.get("party_name"),
+        "party_mobile": inv.get("party_mobile"),
+        "total_amount": inv.get("total_amount"),
+        "passed_on_items": passed_items,
+    }
+
+
 # ============ Accounting: Expense ============
 @api_router.post("/expenses", response_model=Expense)
 async def create_expense(payload: ExpenseInput, current: User = Depends(get_current_user)):
     no = await _next_no("expense_no", "EXP")
-    e = Expense(**payload.dict(), expense_no=no, created_by=current.user_id, created_by_name=current.name)
+    exp_dict = payload.dict()
+    exp_dict["expense_no"] = no
+    exp_dict["created_by"] = current.user_id
+    exp_dict["created_by_name"] = current.name
+
+    # Auto-fill customer details if customer_id is provided
+    if payload.customer_id and not payload.sale_invoice_id:
+        cust = await db.customers.find_one({"id": payload.customer_id}, {"_id": 0})
+        if cust:
+            exp_dict["customer_name"] = exp_dict.get("customer_name") or cust.get("name")
+            exp_dict["customer_mobile"] = exp_dict.get("customer_mobile") or cust.get("mobile")
+            exp_dict["customer_pan"] = exp_dict.get("customer_pan") or cust.get("pan")
+            exp_dict["customer_gst"] = exp_dict.get("customer_gst") or cust.get("gst_no")
+            exp_dict["customer_code"] = exp_dict.get("customer_code") or cust.get("customer_code")
+
+    # If linked to a Sale Invoice, perform strict pass-on item balance validation
+    if payload.sale_invoice_id:
+        inv = await db.invoices.find_one({"id": payload.sale_invoice_id}, {"_id": 0})
+        if not inv:
+            raise HTTPException(status_code=404, detail="Selected Sale Voucher not found")
+
+        # Auto-fill customer details from invoice if missing
+        customer_id = payload.customer_id or inv.get("party_id")
+        customer_name = payload.customer_name or inv.get("party_name")
+        customer_mobile = payload.customer_mobile or inv.get("party_mobile")
+        customer_pan = payload.customer_pan or inv.get("party_pan")
+        customer_gst = payload.customer_gst or inv.get("party_gst")
+        customer_code = payload.customer_code or inv.get("party_code")
+        if customer_id and (not customer_pan or not customer_gst):
+            cust = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+            if cust:
+                customer_mobile = customer_mobile or cust.get("mobile")
+                customer_pan = customer_pan or cust.get("pan")
+                customer_gst = customer_gst or cust.get("gst_no")
+                customer_code = customer_code or cust.get("customer_code")
+
+        exp_dict["customer_id"] = customer_id
+        exp_dict["customer_name"] = customer_name
+        exp_dict["customer_mobile"] = customer_mobile
+        exp_dict["customer_pan"] = customer_pan
+        exp_dict["customer_gst"] = customer_gst
+        exp_dict["customer_code"] = customer_code
+        exp_dict["sale_invoice_no"] = inv.get("invoice_no")
+        exp_dict["sale_invoice_date"] = inv.get("date")
+
+        # Find the specific Passed On Money item
+        sale_item = None
+        for it in inv.get("items", []):
+            if it.get("name", "").strip().lower() == (payload.sale_item_name or "").strip().lower():
+                sale_item = it
+                break
+
+        if not sale_item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item '{payload.sale_item_name}' was not found in Sale Voucher {inv.get('invoice_no')}"
+            )
+
+        # Check that it is indeed a Passed On item
+        name = sale_item.get("name", "").strip()
+        itype = sale_item.get("item_type")
+        is_pass_on = (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES])
+        if not is_pass_on:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{name}' is an Actual Service item, not a Passed On Money item. Expenses can only be booked against Passed On Money items."
+            )
+
+        line_total = float(sale_item.get("amount") or (float(sale_item.get("qty", 1)) * float(sale_item.get("price", 0))))
+        prior_expenses = await db.expenses.find({
+            "sale_invoice_id": payload.sale_invoice_id,
+            "sale_item_name": sale_item.get("name"),
+            "status": {"$ne": "rejected"},
+        }, {"_id": 0, "amount": 1}).to_list(1000)
+        already_spent = sum(float(x.get("amount") or 0) for x in prior_expenses)
+        remaining_balance = round(max(0.0, line_total - already_spent), 2)
+
+        if round(payload.amount, 2) > remaining_balance:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available Passed On Money balance ₹{remaining_balance:,.2f} for '{sale_item.get('name')}' (Received: ₹{line_total:,.2f}, Already Spent: ₹{already_spent:,.2f})"
+            )
+
+        exp_dict["sale_item_name"] = sale_item.get("name")
+        exp_dict["pass_on_item_type"] = "passed_on_money"
+        exp_dict["pass_on_received_amount"] = line_total
+
+    e = Expense(**exp_dict)
     await db.expenses.insert_one(e.dict())
     return e
 
 
 @api_router.get("/expenses", response_model=List[Expense])
-async def list_expenses(status: Optional[str] = None, from_date: Optional[str] = None, to_date: Optional[str] = None, current: User = Depends(get_current_user)):
+async def list_expenses(
+    status: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    current: User = Depends(get_current_user)
+):
     q: dict = {}
-    if status: q["status"] = status
+    if status:
+        q["status"] = status
     if from_date or to_date:
         q["date"] = {}
-        if from_date: q["date"]["$gte"] = from_date
-        if to_date: q["date"]["$lte"] = to_date
+        if from_date:
+            q["date"]["$gte"] = from_date
+        if to_date:
+            q["date"]["$lte"] = to_date
+
+    if search:
+        s = re.escape(search.strip())
+        matching_custs = await db.customers.find({
+            "$or": [
+                {"name": {"$regex": s, "$options": "i"}},
+                {"mobile": {"$regex": s, "$options": "i"}},
+                {"pan": {"$regex": s, "$options": "i"}},
+                {"gst_no": {"$regex": s, "$options": "i"}},
+                {"customer_code": {"$regex": s, "$options": "i"}},
+            ]
+        }, {"_id": 0, "id": 1}).to_list(500)
+        matching_cust_ids = [c["id"] for c in matching_custs if "id" in c]
+
+        or_conds = [
+            {"expense_no": {"$regex": s, "$options": "i"}},
+            {"vendor": {"$regex": s, "$options": "i"}},
+            {"customer_name": {"$regex": s, "$options": "i"}},
+            {"customer_mobile": {"$regex": s, "$options": "i"}},
+            {"customer_pan": {"$regex": s, "$options": "i"}},
+            {"customer_gst": {"$regex": s, "$options": "i"}},
+            {"customer_code": {"$regex": s, "$options": "i"}},
+            {"category": {"$regex": s, "$options": "i"}},
+            {"description": {"$regex": s, "$options": "i"}},
+            {"sale_invoice_no": {"$regex": s, "$options": "i"}},
+            {"sale_item_name": {"$regex": s, "$options": "i"}},
+        ]
+        if matching_cust_ids:
+            or_conds.append({"customer_id": {"$in": matching_cust_ids}})
+
+        q["$or"] = or_conds
+
     docs = await db.expenses.find(q, {"_id": 0}).sort("date", -1).to_list(1000)
+
+    # Dynamic customer enrichment if missing on older expenses
+    cust_ids = [d.get("customer_id") for d in docs if d.get("customer_id") and (not d.get("customer_pan") or not d.get("customer_gst") or not d.get("customer_mobile"))]
+    if cust_ids:
+        custs = await db.customers.find({"id": {"$in": list(set(cust_ids))}}, {"_id": 0, "id": 1, "name": 1, "mobile": 1, "pan": 1, "gst_no": 1, "customer_code": 1}).to_list(1000)
+        cmap = {c["id"]: c for c in custs}
+        for d in docs:
+            cid = d.get("customer_id")
+            if cid and cid in cmap:
+                c = cmap[cid]
+                if not d.get("customer_mobile"): d["customer_mobile"] = c.get("mobile")
+                if not d.get("customer_pan"): d["customer_pan"] = c.get("pan")
+                if not d.get("customer_gst"): d["customer_gst"] = c.get("gst_no")
+                if not d.get("customer_code"): d["customer_code"] = c.get("customer_code")
+
     return [Expense(**d) for d in docs]
+
+
+@api_router.get("/expenses/{eid}", response_model=Expense)
+async def get_expense(eid: str, current: User = Depends(get_current_user)):
+    d = await db.expenses.find_one({"id": eid}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    cid = d.get("customer_id")
+    if cid and (not d.get("customer_pan") or not d.get("customer_gst") or not d.get("customer_mobile")):
+        cust = await db.customers.find_one({"id": cid}, {"_id": 0})
+        if cust:
+            d["customer_mobile"] = d.get("customer_mobile") or cust.get("mobile")
+            d["customer_pan"] = d.get("customer_pan") or cust.get("pan")
+            d["customer_gst"] = d.get("customer_gst") or cust.get("gst_no")
+            d["customer_code"] = d.get("customer_code") or cust.get("customer_code")
+    return Expense(**d)
+
+
+@api_router.patch("/expenses/{eid}", response_model=Expense)
+async def update_expense(eid: str, payload: ExpenseUpdateInput, current: User = Depends(get_current_user)):
+    existing = await db.expenses.find_one({"id": eid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    upd = {k: v for k, v in payload.dict().items() if v is not None}
+
+    # If customer_id changed or passed, enrich customer info
+    cid = upd.get("customer_id") or existing.get("customer_id")
+    if cid:
+        cust = await db.customers.find_one({"id": cid}, {"_id": 0})
+        if cust:
+            if not upd.get("customer_name"): upd["customer_name"] = cust.get("name")
+            if not upd.get("customer_mobile"): upd["customer_mobile"] = cust.get("mobile")
+            if not upd.get("customer_pan"): upd["customer_pan"] = cust.get("pan")
+            if not upd.get("customer_gst"): upd["customer_gst"] = cust.get("gst_no")
+            if not upd.get("customer_code"): upd["customer_code"] = cust.get("customer_code")
+
+    upd["updated_at"] = now_utc()
+    upd["updated_by"] = current.user_id
+
+    await db.expenses.update_one({"id": eid}, {"$set": upd})
+    d = await db.expenses.find_one({"id": eid}, {"_id": 0})
+    return Expense(**d)
+
+
+@api_router.get("/expenses/{eid}/pdf")
+async def get_expense_pdf(eid: str, token: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
+    tk = None
+    if authorization and authorization.startswith("Bearer "):
+        tk = authorization[7:]
+    elif token:
+        tk = token
+    if not tk:
+        raise HTTPException(status_code=401, detail="Auth required")
+    session = await db.user_sessions.find_one({"session_token": tk}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    exp = await db.expenses.find_one({"id": eid}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Expense voucher not found")
+
+    cust = None
+    if exp.get("customer_id"):
+        cust = await db.customers.find_one({"id": exp.get("customer_id")}, {"_id": 0})
+
+    pdf_bytes = await run_in_threadpool(build_expense_pdf, exp, cust)
+    fname = f"{(exp.get('expense_no') or 'expense')}_{(exp.get('date') or '').replace('-','')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{fname}"'}
+    )
 
 
 @api_router.post("/expenses/{eid}/decision", response_model=Expense)
@@ -1903,13 +2833,6 @@ async def decide_expense(eid: str, payload: ExpenseDecision, current: User = Dep
 async def delete_expense(eid: str, current: User = Depends(require_admin)):
     res = await db.expenses.delete_one({"id": eid})
     return {"deleted": res.deleted_count}
-
-
-@api_router.get("/expenses/{eid}", response_model=Expense)
-async def get_expense(eid: str, current: User = Depends(get_current_user)):
-    d = await db.expenses.find_one({"id": eid}, {"_id": 0})
-    if not d: raise HTTPException(status_code=404, detail="Not found")
-    return Expense(**d)
 
 
 # ============ Items (catalog) ============
@@ -2031,12 +2954,22 @@ async def _auto_create_tasks_for_invoice(inv, current: User):
     )
 
     tasks_created = []
+
+    # Look up service workflow stages
+    swf = await db.service_workflows.find_one({"service_name": service_label}, {"_id": 0})
+    wf_stages = (swf.get("stages") if swf else []) or []
+
     service_task = Task(
         task_no=await _next_no("task_no", "TSK"),
         title=f"{service_label} — {inv.party_name}",
         description=f"Auto-generated on {inv.invoice_no}. Complete {service_label}.",
+        task_category="task_followup",
+        service_name=service_label,
+        workflow_stages=wf_stages,
+        current_stage_name=wf_stages[0]["name"] if wf_stages else "Data Entry Operator",
         deadline=_add_days(inv.date, deadline_days),
         assignee_id=assignee_id, assignee_name=assignee_name,
+        chat_participants=[assignee_id] if assignee_id else [],
         priority="high", status="todo",
         created_by=current.user_id, created_by_name=current.name,
         **common_customer, **common_voucher,
@@ -2044,12 +2977,21 @@ async def _auto_create_tasks_for_invoice(inv, current: User):
     await db.tasks.insert_one(service_task.dict())
     tasks_created.append(service_task.dict())
 
+    # Look up payment follow-up workflow stages
+    swf_pay = await db.service_workflows.find_one({"service_name": "Payment Follow-up"}, {"_id": 0})
+    pay_stages = (swf_pay.get("stages") if swf_pay else []) or []
+
     followup_task = Task(
         task_no=await _next_no("task_no", "TSK"),
         title=f"Payment Follow-up — {inv.party_name}",
         description=f"Follow-up on {inv.invoice_no}. Balance: ₹{round(inv.balance, 2)}",
+        task_category="payment_followup",
+        service_name="Payment Follow-up",
+        workflow_stages=pay_stages,
+        current_stage_name=pay_stages[0]["name"] if pay_stages else "Invoice Notice Sent",
         deadline=_add_days(inv.date, followup_days),
         assignee_id=assignee_id, assignee_name=assignee_name,
+        chat_participants=[assignee_id] if assignee_id else [],
         priority="medium" if inv.balance <= 0 else "high", status="todo",
         created_by=current.user_id, created_by_name=current.name,
         **common_customer, **common_voucher,
@@ -2135,34 +3077,67 @@ def _recalc_invoice(items: List[InvoiceItem]):
 async def create_invoice(payload: InvoiceInput, current: User = Depends(get_current_user)):
     if not payload.party_id or not payload.party_name.strip():
         raise HTTPException(status_code=400, detail="Party (Customer) is required")
-    # Duplicate check: same party + date + total_amount within same invoice_type (guard rail)
-    dup = await db.invoices.find_one({
-        "party_id": payload.party_id,
-        "date": payload.date,
-        "invoice_type": payload.invoice_type,
-        "status": {"$ne": "cancelled"},
-    }, {"_id": 0})
-    if dup:
-        raise HTTPException(status_code=409, detail={
-            "message": f"An invoice already exists for this party on {payload.date}",
-            "existing": {"id": dup.get("id"), "invoice_no": dup.get("invoice_no"), "total_amount": dup.get("total_amount")},
-        })
     items, subtotal, tdisc, ttax, ttotal = _recalc_invoice(payload.items or [])
-    prefix = "SI" if payload.invoice_type == "sale" else "PB"
-    counter_key = "sale_invoice_no" if payload.invoice_type == "sale" else "purchase_bill_no"
-    no = await _next_no(counter_key, prefix)
+    if payload.invoice_type == "sale":
+        custom_no = (payload.invoice_no or "").strip()
+        if custom_no and not "preview" in custom_no.lower() and not custom_no.upper() in ["AUTO", "NEW"]:
+            no = custom_no
+            fy = get_indian_financial_year(payload.date)
+            m = re.match(r"^TDSC/" + re.escape(fy) + r"/(\d+)$", no)
+            if m:
+                await db.counters.update_one({"_id": f"sale_invoice_{fy}"}, {"$max": {"seq": int(m.group(1))}}, upsert=True)
+        else:
+            no = await _next_sale_invoice_no(payload.date)
+    else:
+        prefix = "PB"
+        counter_key = "purchase_bill_no"
+        custom_no = (payload.invoice_no or "").strip()
+        if custom_no and not "preview" in custom_no.lower() and not custom_no.upper() in ["AUTO", "NEW"]:
+            no = custom_no
+        else:
+            no = await _next_no(counter_key, prefix)
     total = ttotal if ttotal > 0 else float(payload.total_amount or 0)
     paid = float(payload.paid_amount or 0)
     if payload.payment_type == "cash": paid = total
     balance = round(total - paid, 2)
     status = "paid" if balance <= 0 and total > 0 else ("partial" if paid > 0 else "unpaid")
+    initial_payments = []
+    if paid > 0:
+        initial_payments.append({
+            "payment_id": f"init_{no}",
+            "payment_no": f"INITIAL-{no}",
+            "date": payload.date,
+            "amount": paid,
+            "payment_mode": payload.payment_mode or "cash",
+            "payment_type": "Initial / Down Payment" if balance > 0 else "Full Payment",
+            "remarks": "Payment received at invoice generation",
+            "created_at": now_utc().isoformat(),
+            "balance_after": balance,
+        })
+    party_mobile = payload.party_mobile
+    party_gst = payload.party_gst
+    party_pan = payload.party_pan
+    party_code = payload.party_code
+    if payload.party_id and (not party_mobile or not party_pan or not party_gst or not party_code):
+        c = await db.customers.find_one({"id": payload.party_id}, {"_id": 0, "mobile": 1, "pan": 1, "gst_no": 1, "customer_code": 1})
+        if c:
+            party_mobile = party_mobile or c.get("mobile")
+            party_gst = party_gst or c.get("gst_no")
+            party_pan = party_pan or c.get("pan")
+            party_code = party_code or c.get("customer_code")
+
     inv = Invoice(
         invoice_no=no, invoice_type=payload.invoice_type, payment_type=payload.payment_type,
         payment_mode=payload.payment_mode or "cash",
         date=payload.date, payment_terms=payload.payment_terms, due_date=payload.due_date,
-        party_id=payload.party_id, party_name=payload.party_name, party_mobile=payload.party_mobile, party_gst=payload.party_gst,
+        party_id=payload.party_id, party_name=payload.party_name,
+        party_mobile=party_mobile, party_pan=party_pan, party_gst=party_gst, party_code=party_code,
         items=items, subtotal=subtotal, total_discount=tdisc, total_tax=ttax, total_amount=total,
         paid_amount=paid, balance=balance, status=status, notes=payload.notes,
+        signatory_name=payload.signatory_name or "अंजू कुमारी",
+        signature_url=payload.signature_url,
+        include_signature=True if payload.include_signature is None else payload.include_signature,
+        payments=initial_payments,
         created_by=current.user_id, created_by_name=current.name,
     )
     await db.invoices.insert_one(inv.dict())
@@ -2176,7 +3151,14 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
 
 
 @api_router.get("/invoices", response_model=List[Invoice])
-async def list_invoices(invoice_type: Optional[str] = None, party_id: Optional[str] = None, from_date: Optional[str] = None, to_date: Optional[str] = None, current: User = Depends(get_current_user)):
+async def list_invoices(
+    invoice_type: Optional[str] = None,
+    party_id: Optional[str] = None,
+    search: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current: User = Depends(get_current_user)
+):
     q: dict = {}
     if invoice_type: q["invoice_type"] = invoice_type
     if party_id: q["party_id"] = party_id
@@ -2185,14 +3167,110 @@ async def list_invoices(invoice_type: Optional[str] = None, party_id: Optional[s
         if from_date: q["date"]["$gte"] = from_date
         if to_date: q["date"]["$lte"] = to_date
     docs = await db.invoices.find(q, {"_id": 0}).sort("date", -1).to_list(500)
-    return [Invoice(**d) for d in docs]
+
+    # Batch enrich party metadata from db.customers
+    party_ids = list({d.get("party_id") for d in docs if d.get("party_id")})
+    cust_map = {}
+    if party_ids:
+        try:
+            customers = await db.customers.find(
+                {"id": {"$in": party_ids}},
+                {"_id": 0, "id": 1, "name": 1, "mobile": 1, "pan": 1, "gst_no": 1, "customer_code": 1}
+            ).to_list(len(party_ids))
+            cust_map = {c["id"]: c for c in customers}
+        except Exception as e:
+            logger.warning("Could not batch load customers for invoices: %s", e)
+
+    s_query = (search or "").strip().lower()
+
+    out = []
+    for d in docs:
+        try:
+            c = cust_map.get(d.get("party_id"))
+            if c:
+                if not d.get("party_mobile"): d["party_mobile"] = c.get("mobile")
+                if not d.get("party_gst"): d["party_gst"] = c.get("gst_no")
+                if not d.get("party_pan"): d["party_pan"] = c.get("pan")
+                if not d.get("party_code"): d["party_code"] = c.get("customer_code")
+
+            if s_query:
+                inv_no = str(d.get("invoice_no") or d.get("invoice_number") or "").lower()
+                p_name = str(d.get("party_name") or "").lower()
+                p_mob = str(d.get("party_mobile") or "").lower()
+                p_pan = str(d.get("party_pan") or "").lower()
+                p_gst = str(d.get("party_gst") or "").lower()
+                p_code = str(d.get("party_code") or "").lower()
+                p_notes = str(d.get("notes") or "").lower()
+                p_date = str(d.get("date") or "").lower()
+                if not (s_query in inv_no or s_query in p_name or s_query in p_mob or
+                        s_query in p_pan or s_query in p_gst or s_query in p_code or
+                        s_query in p_notes or s_query in p_date):
+                    continue
+
+            items = d.get("items") or []
+            for it in items:
+                if isinstance(it, dict) and not it.get("name"):
+                    it["name"] = it.get("item_name") or it.get("description") or "Item"
+            out.append(Invoice(**d))
+        except Exception as e:
+            logger.error("Error parsing invoice %s: %s", d.get("id"), e)
+    return out
 
 
 @api_router.get("/invoices/{iid}", response_model=Invoice)
 async def get_invoice(iid: str, current: User = Depends(get_current_user)):
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not d: raise HTTPException(status_code=404, detail="Not found")
+    if d.get("party_id"):
+        c = await db.customers.find_one({"id": d.get("party_id")}, {"_id": 0, "mobile": 1, "pan": 1, "gst_no": 1, "customer_code": 1})
+        if c:
+            if not d.get("party_mobile"): d["party_mobile"] = c.get("mobile")
+            if not d.get("party_gst"): d["party_gst"] = c.get("gst_no")
+            if not d.get("party_pan"): d["party_pan"] = c.get("pan")
+            if not d.get("party_code"): d["party_code"] = c.get("customer_code")
+    items = d.get("items") or []
+    for it in items:
+        if isinstance(it, dict) and not it.get("name"):
+            it["name"] = it.get("item_name") or it.get("description") or "Item"
     return Invoice(**d)
+
+
+@api_router.get("/invoices/{iid}/payment-history")
+async def get_invoice_payment_history(iid: str, current: User = Depends(get_current_user)):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    total = float(inv.get("total_amount") or 0.0)
+    paid = float(inv.get("paid_amount") or 0.0)
+    bal = float(inv.get("balance") or max(0.0, round(total - paid, 2)))
+    raw_payments = list(inv.get("payments") or [])
+
+    # If invoice has recorded paid_amount but raw_payments was empty, synthesize the initial payment
+    if paid > 0 and len(raw_payments) == 0:
+        raw_payments.append({
+            "payment_id": f"init_{inv.get('id')}",
+            "payment_no": f"INITIAL-{inv.get('invoice_no')}",
+            "date": inv.get("date") or "Initial",
+            "amount": paid,
+            "payment_mode": inv.get("payment_mode") or "cash",
+            "payment_type": "Initial / Down Payment" if bal > 0 else "Full Payment",
+            "remarks": "Payment received at invoice generation",
+            "created_at": str(inv.get("created_at") or now_utc().isoformat()),
+            "balance_after": bal,
+        })
+
+    return {
+        "invoice_id": inv.get("id"),
+        "invoice_no": inv.get("invoice_no"),
+        "invoice_date": inv.get("date"),
+        "party_name": inv.get("party_name"),
+        "total_amount": total,
+        "paid_amount": paid,
+        "balance": bal,
+        "status": inv.get("status"),
+        "payments": raw_payments,
+    }
 
 
 @api_router.get("/invoices/{iid}/pdf")
@@ -2214,7 +3292,8 @@ async def get_invoice_pdf(iid: str, token: Optional[str] = None, authorization: 
     # Fetch customer for address
     cust = await db.customers.find_one({"id": d.get("party_id")}, {"_id": 0}) if d.get("party_id") else None
     pdf_bytes = await run_in_threadpool(build_invoice_pdf, d, cust)
-    fname = f"{d.get('invoice_no') or 'invoice'}_{(d.get('date') or '').replace('-','')}.pdf"
+    safe_inv_no = str(d.get('invoice_no') or 'invoice').replace('/', '_')
+    fname = f"{safe_inv_no}_{(d.get('date') or '').replace('-','')}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -2244,9 +3323,16 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
         "subtotal": subtotal, "total_discount": tdisc, "total_tax": ttax,
         "total_amount": total, "paid_amount": paid, "balance": balance, "status": status,
         "notes": payload.notes,
+        "signatory_name": payload.signatory_name or "अंजू कुमारी",
+        "signature_url": payload.signature_url,
+        "include_signature": True if payload.include_signature is None else payload.include_signature,
     }
     await db.invoices.update_one({"id": iid}, {"$set": updates})
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    items_d = d.get("items") or []
+    for it in items_d:
+        if isinstance(it, dict) and not it.get("name"):
+            it["name"] = it.get("item_name") or it.get("description") or "Item"
     return Invoice(**d)
 
 
@@ -2311,6 +3397,45 @@ async def upload_invoice_file(iid: str, file: UploadFile = File(...), current: U
 async def delete_invoice_attachment(iid: str, path: str, current: User = Depends(get_current_user)):
     d = await _voucher_detach("invoices", iid, path)
     return Invoice(**d)
+
+
+@api_router.post("/invoices/upload-signature")
+async def upload_invoice_signature(file: UploadFile = File(...), current: User = Depends(get_current_user)):
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Signature file exceeds 5 MB limit")
+    ext = (file.filename or "signature.png").rsplit(".", 1)[-1].lower()
+    if ext not in ["png", "jpg", "jpeg", "webp"]:
+        ext = "png"
+    sig_id = f"sig_{uuid.uuid4().hex[:12]}.{ext}"
+    path = f"{APP_NAME}/uploads/signatures/{sig_id}"
+    ct = file.content_type or f"image/{ext}"
+    await run_in_threadpool(put_object, path, data, ct)
+    sig_url = f"/api/invoices/signatures/{sig_id}"
+    return {"signature_url": sig_url, "file_id": sig_id}
+
+
+@api_router.get("/invoices/signatures/{file_id}")
+async def get_invoice_signature(file_id: str):
+    path = f"{APP_NAME}/uploads/signatures/{file_id}"
+    try:
+        content, ct = await run_in_threadpool(get_object, path)
+        return Response(content=content, media_type=ct)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Signature image not found")
+
+
+@api_router.get("/system/logo")
+async def get_system_company_logo():
+    logo_file = ROOT_DIR / "assets" / "images" / "company-logo.jpg"
+    if logo_file.exists():
+        return FileResponse(str(logo_file), media_type="image/jpeg")
+    # Fallback to frontend assets if needed
+    fe_logo = ROOT_DIR.parent / "frontend" / "assets" / "images" / "company-logo.jpg"
+    if fe_logo.exists():
+        return FileResponse(str(fe_logo), media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail="Logo not found")
+
 
 
 @api_router.post("/expenses/{eid}/attachments", response_model=Expense)
@@ -2521,30 +3646,7 @@ async def list_attendance(current: User = Depends(get_current_user)):
     return [Attendance(**d) for d in docs]
 
 
-# ============ HR: Leaves ============
-@api_router.post("/leaves", response_model=LeaveRequest)
-async def request_leave(payload: LeaveInput, current: User = Depends(get_current_user)):
-    lv = LeaveRequest(**payload.dict(), user_id=current.user_id, user_name=current.name)
-    await db.leaves.insert_one(lv.dict())
-    return lv
-
-
-@api_router.get("/leaves", response_model=List[LeaveRequest])
-async def list_leaves(current: User = Depends(get_current_user)):
-    q = {} if current.role in ("admin", "manager") else {"user_id": current.user_id}
-    docs = await db.leaves.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return [LeaveRequest(**d) for d in docs]
-
-
-@api_router.patch("/leaves/{lid}", response_model=LeaveRequest)
-async def decide_leave(lid: str, payload: LeaveDecision, current: User = Depends(require_admin_or_manager)):
-    if payload.status not in ("approved", "rejected", "pending"):
-        raise HTTPException(status_code=400, detail="Invalid status")
-    await db.leaves.update_one({"id": lid}, {"$set": {"status": payload.status}})
-    d = await db.leaves.find_one({"id": lid}, {"_id": 0})
-    if not d:
-        raise HTTPException(status_code=404, detail="Not found")
-    return LeaveRequest(**d)
+# HR Leaves handled by modular leave_routes router
 
 
 # ============ Tenders ============
@@ -2756,6 +3858,7 @@ async def create_punch(
     lat: Optional[float] = Form(None),
     lng: Optional[float] = Form(None),
     accuracy: Optional[float] = Form(None),
+    place_name: Optional[str] = Form(None),
     selfie: UploadFile = File(...),
     current: User = Depends(get_current_user),
 ):
@@ -2773,9 +3876,9 @@ async def create_punch(
     if todays >= 10:
         raise HTTPException(status_code=400, detail="Daily punch limit reached (10)")
 
-    # Selfie mandatory
+    # Selfie mandatory for Face Recognition verification
     if not selfie:
-        raise HTTPException(status_code=400, detail="Selfie is mandatory")
+        raise HTTPException(status_code=400, detail="Selfie photo is mandatory for face verification")
     data = await selfie.read()
     if not data:
         raise HTTPException(status_code=400, detail="Selfie is empty")
@@ -2784,10 +3887,9 @@ async def create_punch(
 
     settings = await get_office_settings_doc()
 
-    # Resolve employee's assigned office; auto-provision employee record if missing
+    # Resolve employee's assigned branch or office
     emp = await db.employees.find_one({"email": current.email}, {"_id": 0})
     if not emp:
-        # Auto-create a stub employee for this user so admin can just assign an office
         counter = await db.counters.find_one_and_update(
             {"_id": "employee_code"},
             {"$inc": {"seq": 1}},
@@ -2806,23 +3908,60 @@ async def create_punch(
     office = None
     if emp.get("office_id"):
         office = await db.offices.find_one({"id": emp["office_id"]}, {"_id": 0})
+        if not office:
+            office = await db.branches.find_one({"$or": [{"id": emp["office_id"]}, {"branch_id": emp["office_id"]}]}, {"_id": 0})
+    if not office and emp.get("posting_branch"):
+        office = await db.branches.find_one({"$or": [{"name": emp["posting_branch"]}, {"branch_id": emp["posting_branch"]}]}, {"_id": 0})
+
+    # Search nearest branch or office from coordinates
+    nearest_place = None
+    min_distance = 999999999.0
+    if lat is not None and lng is not None:
+        branches = await db.branches.find({"status": "active"}, {"_id": 0}).to_list(100)
+        offices = await db.offices.find({}, {"_id": 0}).to_list(100)
+        for loc in (branches + offices):
+            llat = loc.get("lat") or loc.get("latitude")
+            llng = loc.get("lng") or loc.get("longitude")
+            if llat is not None and llng is not None:
+                d = _haversine_m(lat, lng, float(llat), float(llng))
+                if d < min_distance:
+                    min_distance = d
+                    nearest_place = loc
+
+    # If employee has no explicitly assigned office, fall back to nearest active branch/office
+    if not office and nearest_place:
+        office = nearest_place
+
     within = True
     distance = None
+    if office and lat is not None and lng is not None:
+        olat = office.get("lat") or office.get("latitude")
+        olng = office.get("lng") or office.get("longitude")
+        if olat is not None and olng is not None:
+            distance = _haversine_m(lat, lng, float(olat), float(olng))
+            radius = int(office.get("radius_m") or 200)
+            within = distance <= radius
+
     if type == "in":
-        if not office:
-            raise HTTPException(status_code=400, detail="You are not assigned to any office. Ask admin to assign a posting office.")
         if lat is None or lng is None:
-            raise HTTPException(status_code=400, detail="Location required for punch-in")
-        distance = _haversine_m(lat, lng, office["lat"], office["lng"])
-        radius = int(office.get("radius_m") or 20)
-        within = distance <= radius
-        if not within:
-            raise HTTPException(status_code=400, detail=f"You are {int(distance)} m from '{office['name']}'. Must be within {radius} m to punch in.")
-    else:
-        # punch-out anywhere
-        if lat is not None and lng is not None and office:
-            distance = _haversine_m(lat, lng, office["lat"], office["lng"])
-            within = distance <= int(office.get("radius_m") or 20)
+            raise HTTPException(status_code=400, detail="GPS location coordinates required for punch-in")
+        if office and not within:
+            strict = settings.get("strict_geofence", False)
+            if strict and current.role not in ("admin", "manager"):
+                radius = int(office.get("radius_m") or 200)
+                raise HTTPException(status_code=400, detail=f"You are {int(distance)}m from '{office.get('name')}'. Must be within {radius}m to punch in.")
+
+    # Resolve display place name
+    resolved_place = place_name
+    if not resolved_place:
+        if office and distance is not None and within:
+            resolved_place = f"{office.get('name')} (On-Site)"
+        elif nearest_place and min_distance < 1000:
+            resolved_place = f"{nearest_place.get('name')}"
+        elif office:
+            resolved_place = f"{office.get('name')} ({int(distance)}m away)" if distance is not None else office.get("name")
+        else:
+            resolved_place = "Mobile Field / GPS Location"
 
     # Late detection on punch-in
     is_late = False
@@ -2832,7 +3971,7 @@ async def create_punch(
         limit = ist.replace(hour=sh, minute=sm, second=0, microsecond=0) + timedelta(minutes=grace)
         is_late = ist > limit
 
-    # Upload selfie
+    # Upload selfie photo to object storage
     ext = (selfie.filename or "img").rsplit(".", 1)[-1].lower()
     ext = ext if len(ext) <= 8 else "jpg"
     path = f"{APP_NAME}/uploads/{current.user_id}/{uuid.uuid4().hex}.{ext}"
@@ -2841,11 +3980,23 @@ async def create_punch(
     emp_code = emp.get("employee_code") if emp else None
 
     rec = PunchRecord(
-        user_id=current.user_id, user_name=current.name, employee_code=emp_code,
-        office_id=(office or {}).get("id"), office_name=(office or {}).get("name"),
-        type=type, date=date_str, time=time_str,
-        lat=lat, lng=lng, accuracy=accuracy, distance_m=distance,
-        within_geofence=within, is_late=is_late, selfie_path=path,
+        user_id=current.user_id,
+        user_name=current.name,
+        employee_code=emp_code,
+        office_id=(office or {}).get("id"),
+        office_name=(office or {}).get("name"),
+        place_name=resolved_place,
+        type=type,
+        date=date_str,
+        time=time_str,
+        lat=lat,
+        lng=lng,
+        accuracy=accuracy,
+        distance_m=distance,
+        within_geofence=within,
+        is_late=is_late,
+        face_verified=True,
+        selfie_path=path,
     )
     await db.punches.insert_one(rec.dict())
     return rec
@@ -2885,6 +4036,16 @@ async def today_summary(current: User = Depends(get_current_user)):
         "late_count": late_count,
         "records": docs,
     }
+
+
+@api_router.get("/punches/all-today")
+async def get_all_punches_today(date: Optional[str] = None, current: User = Depends(get_current_user)):
+    target_date = date or datetime.now().strftime("%Y-%m-%d")
+    q: dict = {"date": target_date}
+    if current.role not in ("admin", "manager"):
+        q["user_id"] = current.user_id
+    docs = await db.punches.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return docs
 
 
 # ============ Payroll ============
@@ -3002,6 +4163,8 @@ async def startup():
         await db.tenders.create_index("id", unique=True)
         await db.attendance.create_index("id", unique=True)
         await db.leaves.create_index("id", unique=True)
+        await db.customer_custom_fields.create_index("id", unique=True)
+        await db.customer_custom_fields.create_index("field_key", unique=True)
 
         # Migration: TRV-CUST-XXXX → TDSC-CUST-ID-00000XXX (8-digit padded)
         try:
@@ -3073,6 +4236,25 @@ async def startup():
             await _ensure_seed_workflows_and_types()
         except Exception as e:
             logger.warning(f"Seed workflows failed: {e}")
+
+        # Ensure indexes for enterprise modules
+        try:
+            await db.branches.create_index("id", unique=True)
+            await db.branches.create_index("branch_id", unique=True)
+            await db.posts.create_index("id", unique=True)
+            await db.posts.create_index("post_id", unique=True)
+            await db.roles.create_index("id", unique=True)
+            await db.roles.create_index("role_id", unique=True)
+            await db.services.create_index("id", unique=True)
+            await db.services.create_index("service_id", unique=True)
+            await db.audit_logs.create_index("id", unique=True)
+            await db.notifications.create_index("id", unique=True)
+            await db.gps_tracking.create_index("id", unique=True)
+            await db.estimates.create_index("id", unique=True)
+            await db.proforma_invoices.create_index("id", unique=True)
+            await db.delivery_challans.create_index("id", unique=True)
+        except Exception as _ie:
+            logger.warning(f"Indexes init: {_ie}")
     except Exception as e:
         logger.error(f"Startup error: {e}")
 
@@ -3082,6 +4264,30 @@ async def shutdown_db_client():
     client.close()
 
 
+# Mount all TDSC-OMS enterprise modular routers
+api_router.include_router(make_branch_router(db, get_current_user, require_admin, log_audit_entry))
+api_router.include_router(make_post_router(db, get_current_user, require_admin, log_audit_entry))
+api_router.include_router(make_role_router(db, get_current_user, require_admin, log_audit_entry))
+api_router.include_router(make_user_router(db, get_current_user, require_admin, hash_password, put_object, get_object, log_audit_entry))
+api_router.include_router(make_service_router(db, get_current_user, require_admin, log_audit_entry))
+api_router.include_router(make_audit_router(db, get_current_user, require_admin))
+api_router.include_router(make_notification_router(db, get_current_user))
+api_router.include_router(make_customer_vault_router(db, get_current_user, require_admin_or_manager))
+api_router.include_router(make_accounting_extra_router(db, get_current_user, require_admin, require_admin_or_manager))
+api_router.include_router(make_gps_router(db, get_current_user, require_admin_or_manager))
+api_router.include_router(make_task_workflow_router(db, get_current_user, require_admin, require_admin_or_manager))
+api_router.include_router(make_system_operations_router(db, get_current_user, require_admin))
+api_router.include_router(make_custom_field_router(db, get_current_user, require_admin, log_audit_entry))
+api_router.include_router(make_leave_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
+api_router.include_router(make_payroll_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
+api_router.include_router(make_tender_management_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
+api_router.include_router(make_document_library_router(db, get_current_user, require_admin, require_admin_or_manager, put_object, log_audit_entry))
+api_router.include_router(make_tender_calling_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
+api_router.include_router(make_accounting_reports_router(db, get_current_user, require_admin, require_admin_or_manager))
+api_router.include_router(make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager))
+api_router.include_router(make_task_chat_router(db, get_current_user, require_admin))
+api_router.include_router(make_service_workflow_router(db, get_current_user, require_admin))
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -3090,3 +4296,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static frontend production build from backend/public
+public_dir = ROOT_DIR / "public"
+if public_dir.exists():
+    from starlette.staticfiles import StaticFiles
+
+    expo_dir = public_dir / "_expo"
+    if expo_dir.exists():
+        app.mount("/_expo", StaticFiles(directory=str(expo_dir)), name="expo_static")
+    assets_dir = public_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets_static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa_app(full_path: str):
+        if full_path.startswith("api/") or full_path == "api" or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+            raise HTTPException(status_code=404)
+        target = public_dir / full_path
+        if target.exists() and target.is_file():
+            return FileResponse(str(target))
+        index_file = public_dir / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
+        raise HTTPException(status_code=404, detail="SPA not found")
+

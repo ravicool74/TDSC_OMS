@@ -12,7 +12,7 @@ import { notify } from '@/src/dialog';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const addDays = (d: string, days: number) => { const t = new Date(d); t.setDate(t.getDate() + days); return t.toISOString().slice(0, 10); };
-const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 const TERMS = [
   { label: 'Net 15 days', days: 15 },
@@ -31,7 +31,18 @@ const PAY_MODES = [
   { key: 'other', label: 'Other', icon: 'ellipsis-horizontal' },
 ] as const;
 
-type LineItem = { key: string; item_id?: string; name: string; unit: string; qty: string; price: string; tax_rate: string; discount: string };
+type LineItem = {
+  key: string;
+  item_id?: string;
+  name: string;
+  unit: string;
+  qty: string;
+  price: string;
+  tax_rate: string;
+  discount: string;
+  item_type?: 'passed_on_money' | 'actual_service';
+  fee_type?: string;
+};
 
 export default function NewInvoice() {
   const router = useRouter();
@@ -56,6 +67,9 @@ export default function NewInvoice() {
 
   const [notes, setNotes] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [signatoryName, setSignatoryName] = useState('अंजू कुमारी');
+  const [includeSignature, setIncludeSignature] = useState(true);
+  const [signatureUrl, setSignatureUrl] = useState<string | null>(null);
   const [invoiceNo, setInvoiceNo] = useState<string>('AUTO'); // just display
   const [busy, setBusy] = useState(false);
 
@@ -83,26 +97,37 @@ export default function NewInvoice() {
             key: `${it.item_id || idx}-${idx}`, item_id: it.item_id || undefined,
             name: it.name, unit: it.unit || 'PCS', qty: String(it.qty || 1),
             price: String(it.price || 0), tax_rate: String(it.tax_rate || 0), discount: String(it.discount || 0),
+            item_type: it.item_type || 'actual_service', fee_type: it.fee_type || undefined,
           })));
           setNotes(ex.notes || '');
           setAttachments(ex.attachments || []);
+          setSignatoryName(ex.signatory_name || 'अंजू कुमारी');
+          setIncludeSignature(ex.include_signature !== false);
+          setSignatureUrl(ex.signature_url || null);
         } catch (e: any) { notify('Load failed', String(e?.message || 'Unable to load')); }
         return;
       }
       try {
-        const list = await api.get<any[]>(`/invoices?invoice_type=${isPurchase ? 'purchase' : 'sale'}`);
-        const prefix = isPurchase ? 'PB' : 'SI';
-        setInvoiceNo(`${prefix}-${String((list?.length || 0) + 1).padStart(4, '0')} (preview)`);
-      } catch {}
+        const next = await api.get<any>(`/invoices/next-no?invoice_type=${isPurchase ? 'purchase' : 'sale'}&date=${date}`);
+        if (next?.next_no) {
+          setInvoiceNo(`${next.next_no} (preview)`);
+        } else {
+          setInvoiceNo(isPurchase ? 'PB-0001 (preview)' : 'TDSC/2026-27/000002 (preview)');
+        }
+      } catch {
+        setInvoiceNo(isPurchase ? 'PB-0001 (preview)' : 'TDSC/2026-27/000002 (preview)');
+      }
     })();
-  }, [isPurchase, editId]);
+  }, [isPurchase, editId, date]);
 
   const addItem = (i: PickedItem) => {
     setItems(p => [...p, {
       key: `${i.id}-${Date.now()}`,
-      item_id: i.id, name: i.name, unit: i.unit,
-      qty: '1', price: String(isPurchase ? i.purchase_price || i.sale_price : i.sale_price),
+      item_id: i.id, name: i.name, unit: i.unit || 'PCS',
+      qty: '1', price: String(isPurchase ? i.purchase_price || i.sale_price : i.sale_price || 0),
       tax_rate: String(i.tax_rate || 0), discount: '0',
+      item_type: i.item_type || 'actual_service',
+      fee_type: i.fee_type || undefined,
     }]);
   };
 
@@ -113,6 +138,7 @@ export default function NewInvoice() {
 
   const totals = useMemo(() => {
     let subtotal = 0, discount = 0, tax = 0, total = 0;
+    let passedOnTotal = 0, actualServiceTotal = 0;
     for (const it of items) {
       const q = parseFloat(it.qty) || 0;
       const pr = parseFloat(it.price) || 0;
@@ -121,9 +147,15 @@ export default function NewInvoice() {
       const line = q * pr;
       const after = Math.max(0, line - d);
       const taxAmt = (after * t) / 100;
-      subtotal += line; discount += d; tax += taxAmt; total += after + taxAmt;
+      const lineTotal = after + taxAmt;
+      subtotal += line; discount += d; tax += taxAmt; total += lineTotal;
+      if (it.item_type === 'passed_on_money') {
+        passedOnTotal += lineTotal;
+      } else {
+        actualServiceTotal += lineTotal;
+      }
     }
-    return { subtotal, discount, tax, total };
+    return { subtotal, discount, tax, total, passedOnTotal, actualServiceTotal };
   }, [items]);
 
   // Auto-fill Paid = Total when cash mode selected
@@ -148,6 +180,7 @@ export default function NewInvoice() {
     try {
       const body = {
         invoice_type: isPurchase ? 'purchase' : 'sale',
+        invoice_no: invoiceNo && !invoiceNo.includes('preview') && invoiceNo !== 'AUTO' ? invoiceNo.trim() : undefined,
         payment_type: paymentType,
         payment_mode: paymentMode,
         date, payment_terms: terms, due_date: paymentType === 'cash' ? date : dueDate,
@@ -157,10 +190,15 @@ export default function NewInvoice() {
           qty: parseFloat(it.qty) || 1, price: parseFloat(it.price) || 0,
           tax_rate: parseFloat(it.tax_rate) || 0, discount: parseFloat(it.discount) || 0,
           amount: 0,
+          item_type: it.item_type || 'actual_service',
+          fee_type: it.fee_type || null,
         })),
         total_amount: totals.total,
         paid_amount: paidNum,
         notes: notes || null,
+        signatory_name: signatoryName || 'अंजू कुमारी',
+        include_signature: includeSignature,
+        signature_url: signatureUrl,
       };
       const inv: any = editId ? await api.patch(`/invoices/${editId}`, body) : await api.post('/invoices', body);
       // Upload queued attachments (best-effort)
@@ -201,8 +239,7 @@ export default function NewInvoice() {
       }
     } catch (e: any) {
       const msg = String(e?.message || 'Failed');
-      if (msg.includes('already exists')) notify('Duplicate Invoice', 'This party already has an invoice on this date. To prevent duplicate billing, only one invoice per party per date is allowed.');
-      else notify('Failed', msg);
+      notify('Failed', msg);
     } finally { setBusy(false); }
   };
 
@@ -210,8 +247,10 @@ export default function NewInvoice() {
     <View style={styles.root} testID="new-invoice">
       <SafeAreaView edges={['top']} style={{ backgroundColor: '#FFF' }}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={10}><Ionicons name="chevron-back" size={26} color="#111827" /></Pressable>
-          <View style={{ flex: 1 }}>
+          <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
+            <Ionicons name="arrow-back" size={20} color="#0F172A" />
+          </Pressable>
+          <View style={{ flex: 1, marginLeft: 6 }}>
             <Text style={styles.headerTitle}>{isPurchase ? 'Purchase Bill' : 'Sale Invoice'}</Text>
             <Text style={styles.headerSub}>{invoiceNo}</Text>
           </View>
@@ -285,6 +324,15 @@ export default function NewInvoice() {
               <View key={it.key} style={styles.itemCard} testID={`li-${it.key}`}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Text style={{ flex: 1, fontWeight: '800', color: '#111827' }}>{it.name}</Text>
+                  {it.item_type === 'passed_on_money' ? (
+                    <View style={{ backgroundColor: '#CCFBF1', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                      <Text style={{ color: '#0F766E', fontSize: 10, fontWeight: '800' }}>Passed On Money</Text>
+                    </View>
+                  ) : (
+                    <View style={{ backgroundColor: '#EDE9FE', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                      <Text style={{ color: '#6D28D9', fontSize: 10, fontWeight: '800' }}>Actual Service</Text>
+                    </View>
+                  )}
                   <Pressable onPress={() => removeItem(it.key)} hitSlop={8}><Ionicons name="close-circle" size={20} color={colors.error} /></Pressable>
                 </View>
                 <View style={styles.itemGrid}>
@@ -341,6 +389,27 @@ export default function NewInvoice() {
             <Text style={styles.cellLbl}>Notes (optional)</Text>
             <TextInput multiline value={notes} onChangeText={setNotes} style={styles.notesInput} placeholder="Any notes / description…" placeholderTextColor={colors.muted} />
           </View>
+
+          {/* Authorized Signatory */}
+          <View style={styles.notesWrap}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <Text style={styles.cellLbl}>Authorized Signatory</Text>
+              <Pressable
+                onPress={() => setIncludeSignature(!includeSignature)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name={includeSignature ? 'checkbox' : 'square-outline'} size={18} color={includeSignature ? colors.brandPrimary : colors.muted} />
+                <Text style={{ fontSize: 12, color: colors.text, fontWeight: '600' }}>Include on Voucher</Text>
+              </Pressable>
+            </View>
+            <TextInput
+              value={signatoryName}
+              onChangeText={setSignatoryName}
+              style={[styles.notesInput, { minHeight: 40, height: 42 }]}
+              placeholder="Signatory Name (e.g. अंजू कुमारी)"
+              placeholderTextColor={colors.muted}
+            />
+          </View>
         </ScrollView>
 
         {/* Bottom totals + save bar */}
@@ -348,7 +417,13 @@ export default function NewInvoice() {
           <View style={styles.totalRow}>
             <View>
               <Text style={styles.totalLbl}>Total Amount</Text>
-              {totals.tax > 0 ? <Text style={styles.taxLbl}>incl. GST {inr(totals.tax)}</Text> : null}
+              {totals.passedOnTotal > 0 && totals.actualServiceTotal > 0 ? (
+                <Text style={styles.taxLbl}>
+                  Services: {inr(totals.actualServiceTotal)} | Pass-on: {inr(totals.passedOnTotal)}
+                </Text>
+              ) : totals.tax > 0 ? (
+                <Text style={styles.taxLbl}>incl. GST {inr(totals.tax)}</Text>
+              ) : null}
             </View>
             <Text style={styles.totalVal}>{inr(totals.total)}</Text>
           </View>
@@ -419,6 +494,7 @@ const NumCell: React.FC<{ label: string; value: string; onChange: (v: string) =>
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F4F6FB' },
   header: { flexDirection: 'row', alignItems: 'center', padding: spacing.md, gap: 8 },
+  backBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 2, elevation: 2 },
   headerTitle: { fontSize: font.xl, fontWeight: '800', color: '#111827' },
   headerSub: { color: colors.muted, fontSize: font.sm },
   segWrap: { flexDirection: 'row', backgroundColor: '#F3F4F6', borderRadius: radius.pill, padding: 3 },
