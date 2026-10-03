@@ -110,3 +110,14 @@ cd "e:\MY PROJECTS\tdscoms\backend"
 | **System Administrator** | `admin@triveni.com` | `admin123` |
 | **Branch Manager** | `manager@triveni.com` | `manager123` |
 | **Staff Employee** | `employee@triveni.com` | `employee123` |
+
+---
+
+## 5. App Installation, Distribution & 1-Click Updates
+
+Complete operational guide available in [APP_INSTALLATION_AND_UPDATES.md](APP_INSTALLATION_AND_UPDATES.md).
+
+- **Direct Android APK Download**: [https://tdscoms.onrender.com/download-apk](https://tdscoms.onrender.com/download-apk)
+- **Live Web App / PWA**: [https://frontend-rho-woad-43.vercel.app](https://frontend-rho-woad-43.vercel.app)
+- **App Update Check API**: [https://tdscoms.onrender.com/api/app/version](https://tdscoms.onrender.com/api/app/version)
+- **In-App Updater**: Installed apps automatically detect newer versions on startup and prompt users to update with 1 tap. Users can also manually check for updates via **More $\rightarrow$ Check for App Updates**.
