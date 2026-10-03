@@ -1,0 +1,1171 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Share, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
+import { colors, spacing, radius, font, shadow } from '@/src/theme';
+import { api } from '@/src/api';
+
+const FAV_KEY = 'acc.report.favs';
+const BLUE = '#2563EB';
+const NAVY = '#00104A';
+
+const inr = (n: any): string => {
+  if (n === undefined || n === null || n === '') return '₹0.00';
+  const str = String(n).trim();
+  if (str.startsWith('₹') || str.startsWith('-₹')) {
+    return str.replace(/^([+-]?)(₹)\s*/, '$1₹');
+  }
+  const num = Number(str.replace(/[^0-9.-]/g, ''));
+  if (isNaN(num)) return `₹${n}`;
+  const isNeg = num < 0;
+  const absFormatted = Math.abs(num).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${isNeg ? '-' : ''}₹${absFormatted}`;
+};
+
+const formatCellValue = (colKey: string, val: any): string => {
+  if (val === undefined || val === null || val === '') return '—';
+  const str = String(val).trim();
+  if (str.startsWith('₹') || str.startsWith('-₹')) {
+    return str.replace(/^([+-]?)(₹)\s*/, '$1₹');
+  }
+
+  const moneyColKeywords = [
+    'taxable', 'tax', 'gst', 'amount', 'amt', 'paid', 'balance', 'price',
+    'total', 'subtotal', 'received', 'turnover', 'profit', 'debit', 'credit',
+    'sales', 'purchases', 'expenses', 'discount', 'fee', 'charge', 'cost',
+    'receivable', 'payable', 'opening', 'closing'
+  ];
+  const isMoneyCol = moneyColKeywords.some(kw => colKey.toLowerCase().includes(kw));
+  const isNumericStr = /^-?\d+(\.\d+)?$/.test(str.replace(/,/g, ''));
+
+  if (isMoneyCol || isNumericStr) {
+    const num = Number(str.replace(/,/g, ''));
+    if (!isNaN(num)) {
+      const isNeg = num < 0;
+      return `${isNeg ? '-' : ''}₹${Math.abs(num).toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    }
+  }
+  return str;
+};
+
+const getColWidth = (colKey: string): number => {
+  const k = colKey.toLowerCase();
+  if (k === '#' || k === 'sr' || k === 'sn') return 44;
+  if (k.includes('date')) return 100;
+  if (k.includes('inv') || k.includes('bill_no') || k.includes('voucher') || k.includes('order_no')) return 130;
+  if (k.includes('mode') || k.includes('type')) return 85;
+  if (k.includes('status')) return 105;
+  if (k.includes('taxable')) return 110;
+  if (k.includes('tax') || k.includes('gst')) return 95;
+  if (k.includes('total') || k.includes('amount') || k.includes('amt') || k.includes('received') || k.includes('inflow') || k.includes('outflow')) return 125;
+  if (k.includes('paid')) return 100;
+  if (k.includes('balance')) return 110;
+  if (k.includes('fee')) return 130;
+  if (k.includes('party') || k.includes('client') || k.includes('vendor') || k.includes('customer') || k.includes('name')) return 170;
+  if (k.includes('desc') || k.includes('narration') || k.includes('item')) return 170;
+  if (k.includes('hsn') || k.includes('sac')) return 90;
+  if (k.includes('qty') || k.includes('quantity')) return 70;
+  if (k.includes('rate') || k.includes('price')) return 100;
+  return 115;
+};
+
+interface ReportItem {
+  id: string;
+  name: string;
+  icon: any;
+  description: string;
+}
+
+interface ReportCategory {
+  id: string;
+  title: string;
+  icon: any;
+  color: string;
+  reports: ReportItem[];
+}
+
+export default function AccountingReportsHub() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ report?: string; tab?: string }>();
+
+  const [categories, setCategories] = useState<ReportCategory[]>([]);
+  const [summary, setSummary] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCatId, setSelectedCatId] = useState<string>('all');
+  const [openCats, setOpenCats] = useState<Record<string, boolean>>({ core_financial: true, party_reports: true, gst_reports: true, passed_on_money: true });
+  const [favs, setFavs] = useState<Record<string, boolean>>({});
+
+  // Active Report Viewer State
+  const [activeReportId, setActiveReportId] = useState<string | null>(params?.report || null);
+  const [reportData, setReportData] = useState<any | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [dateFilter, setDateFilter] = useState<'today' | 'month' | 'quarter' | 'fy' | 'all'>('month');
+  const [tableSearch, setTableSearch] = useState('');
+
+  // Load Catalog & Summary
+  const loadCatalog = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [catRes, sumRes] = await Promise.all([
+        api.getAccountingReportsCatalog().catch(() => null),
+        api.getAccountingReportsSummary().catch(() => null),
+      ]);
+      if (catRes?.categories) setCategories(catRes.categories);
+      if (sumRes) setSummary(sumRes);
+
+      const savedFavs = await SecureStore.getItemAsync(FAV_KEY).catch(() => null);
+      if (savedFavs) setFavs(JSON.parse(savedFavs));
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { loadCatalog(); }, [loadCatalog]));
+
+  // Auto-open report if passed in params
+  useEffect(() => {
+    if (params?.report) {
+      openReport(params.report);
+    }
+  }, [params?.report]);
+
+  // Inject native @media print style for web so Ctrl+P prints cleanly with full-width table
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const styleId = 'tdsc-native-print-rules';
+    let styleTag = document.getElementById(styleId);
+    if (!styleTag) {
+      styleTag = document.createElement('style');
+      styleTag.id = styleId;
+      styleTag.innerHTML = `
+        @media print {
+          @page {
+            size: A4 landscape;
+            margin: 8mm;
+          }
+          body {
+            background: #FFFFFF !important;
+            color: #000000 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          [data-testid="rep-back-btn"], nav, header, .no-print, [role="banner"], [testID="rep-back-btn"] {
+            display: none !important;
+          }
+          div[style*="overflow: hidden"], div[style*="overflow-x: scroll"], div[style*="overflow: auto"] {
+            overflow: visible !important;
+            width: 100% !important;
+            max-width: 100% !important;
+          }
+          table {
+            width: 100% !important;
+            page-break-inside: auto !important;
+          }
+          thead {
+            display: table-header-group !important;
+          }
+          tr {
+            page-break-inside: avoid !important;
+          }
+        }
+      `;
+      document.head.appendChild(styleTag);
+    }
+  }, []);
+
+  const toggleFav = async (reportId: string) => {
+    const next = { ...favs, [reportId]: !favs[reportId] };
+    setFavs(next);
+    try { await SecureStore.setItemAsync(FAV_KEY, JSON.stringify(next)); } catch {}
+  };
+
+  const toggleCategory = (catId: string) => {
+    setOpenCats(prev => ({ ...prev, [catId]: !prev[catId] }));
+  };
+
+  // Open specific report
+  const openReport = async (repId: string, customDateFilter?: 'today' | 'month' | 'quarter' | 'fy' | 'all') => {
+    setActiveReportId(repId);
+    setReportLoading(true);
+    setTableSearch('');
+    const dFilter = customDateFilter || dateFilter;
+
+    let fromDate: string | undefined = undefined;
+    let toDate: string | undefined = undefined;
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+
+    if (dFilter === 'today') {
+      fromDate = todayStr;
+      toDate = todayStr;
+    } else if (dFilter === 'month') {
+      fromDate = `${todayStr.slice(0, 7)}-01`;
+      toDate = todayStr;
+    } else if (dFilter === 'quarter') {
+      const qMonth = Math.floor(now.getMonth() / 3) * 3 + 1;
+      fromDate = `${now.getFullYear()}-${String(qMonth).padStart(2, '0')}-01`;
+      toDate = todayStr;
+    } else if (dFilter === 'fy') {
+      const startYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+      fromDate = `${startYear}-04-01`;
+      toDate = todayStr;
+    }
+
+    try {
+      const res = await api.getAccountingReportData(repId, { from_date: fromDate, to_date: toDate });
+      setReportData(res);
+    } catch {
+      setReportData(null);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const changeDateFilter = (filter: 'today' | 'month' | 'quarter' | 'fy' | 'all') => {
+    setDateFilter(filter);
+    if (activeReportId) {
+      openReport(activeReportId, filter);
+    }
+  };
+
+  // Filtered categories and reports
+  const filteredCategories = useMemo(() => {
+    return categories.map(cat => {
+      let filteredReports = cat.reports;
+      if (selectedCatId !== 'all' && cat.id !== selectedCatId) {
+        return null;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        filteredReports = cat.reports.filter(r =>
+          r.name.toLowerCase().includes(q) ||
+          r.description.toLowerCase().includes(q) ||
+          cat.title.toLowerCase().includes(q)
+        );
+      }
+      if (filteredReports.length === 0) return null;
+      return { ...cat, reports: filteredReports };
+    }).filter(Boolean) as ReportCategory[];
+  }, [categories, selectedCatId, searchQuery]);
+
+  // Filtered in-report table rows
+  const filteredReportRows = useMemo(() => {
+    if (!reportData?.rows) return [];
+    if (!tableSearch.trim()) return reportData.rows;
+    const q = tableSearch.toLowerCase().trim();
+    return reportData.rows.filter((row: any) =>
+      Object.values(row).some(val => String(val || '').toLowerCase().includes(q))
+    );
+  }, [reportData, tableSearch]);
+
+  const shareReport = async () => {
+    if (!reportData) return;
+    let text = `*TDSC Office Management System*\n`;
+    text += `*Report:* ${reportData.report_title}\n`;
+    text += `*Category:* ${reportData.category}\n`;
+    text += `*Generated On:* ${new Date().toLocaleDateString('en-IN')}\n\n`;
+
+    if (reportData.kpis && reportData.kpis.length > 0) {
+      text += `*KEY METRICS:*\n`;
+      reportData.kpis.forEach((k: any) => {
+        text += `• ${k.label}: ${k.value}\n`;
+      });
+      text += `\n`;
+    }
+
+    if (reportData.rows && reportData.rows.length > 0) {
+      text += `*TOTAL RECORDS:* ${reportData.rows.length} entries\n`;
+    }
+
+    try {
+      await Share.share({ message: text });
+    } catch {}
+  };
+
+  const handlePrint = () => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') {
+      shareReport();
+      return;
+    }
+
+    const title = reportData?.report_title || 'Financial Summary Report';
+    const category = reportData?.category || 'Accounting & Billing';
+    const dateLabel = dateFilter === 'today' ? 'Today' : dateFilter === 'month' ? 'This Month' : dateFilter === 'quarter' ? 'Quarter' : dateFilter === 'fy' ? 'FY 2026-27' : 'All Time';
+    const generatedOn = new Date().toLocaleString('en-IN', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true,
+    });
+    const logoUrl = `${api.base}/api/system/logo`;
+    const cols = reportData?.columns || [];
+    const rows = filteredReportRows || [];
+    const kpis = reportData?.kpis || [];
+    const isLandscape = cols.length > 6;
+
+    const kpiHtml = kpis.length > 0 ? `
+      <div class="kpi-grid">
+        ${kpis.map((k: any) => `
+          <div class="kpi-card" style="border-left-color: ${k.color || '#2563EB'};">
+            <div class="kpi-lbl">${k.label}</div>
+            <div class="kpi-val" style="color: ${k.color || '#0F172A'};">${inr(k.value)}</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    const theadHtml = `
+      <thead>
+        <tr>
+          <th style="width: 32px; text-align: center;">#</th>
+          ${cols.map((c: any) => {
+            const isColAmount = ['taxable', 'tax', 'gst', 'amount', 'amt', 'total', 'paid', 'balance', 'price', 'debit', 'credit', 'rate'].some((k: string) => c.key.toLowerCase().includes(k));
+            return `<th style="${isColAmount ? 'text-align: right;' : 'text-align: left;'}">${c.label}</th>`;
+          }).join('')}
+        </tr>
+      </thead>
+    `;
+
+    const tbodyHtml = rows.length > 0 ? `
+      <tbody>
+        ${rows.map((row: any, idx: number) => {
+          const isBold = !!row.is_bold;
+          return `
+            <tr class="${isBold ? 'bold-row' : ''}">
+              <td style="text-align: center; color: #64748B;">${idx + 1}</td>
+              ${cols.map((c: any) => {
+                const val = row[c.key];
+                const formattedStr = formatCellValue(c.key, val);
+                const isNumeric = formattedStr.startsWith('₹') || formattedStr.startsWith('-₹') || /^-?\d+(\.\d+)?%?$/.test(formattedStr.replace(/,/g, ''));
+                const isAlert = formattedStr.includes('LOW') || formattedStr.includes('OVERDUE') || formattedStr.includes('Unpaid');
+                return `
+                  <td class="${isNumeric ? 'cell-numeric' : ''}" style="${isAlert ? 'color: #DC2626; font-weight: bold;' : ''}">
+                    ${formattedStr}
+                  </td>
+                `;
+              }).join('')}
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    ` : `
+      <tbody>
+        <tr>
+          <td colspan="${cols.length + 1}" style="text-align: center; padding: 20px; color: #64748B;">
+            No records found for this period.
+          </td>
+        </tr>
+      </tbody>
+    `;
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>${title} - Triveni DSC</title>
+  <style>
+    @page {
+      size: A4 ${isLandscape ? 'landscape' : 'portrait'};
+      margin: 8mm 8mm 12mm 8mm;
+    }
+    @media print {
+      body {
+        margin: 0;
+        padding: 0;
+        background: #FFF;
+        color: #000;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .no-print {
+        display: none !important;
+      }
+      table {
+        page-break-inside: auto;
+      }
+      thead {
+        display: table-header-group;
+      }
+      tr {
+        page-break-inside: avoid;
+        page-break-after: auto;
+      }
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      margin: 0;
+      padding: 12px;
+      color: #1E293B;
+      background: #FFFFFF;
+      font-size: 10px;
+    }
+    .print-wrapper {
+      width: 100%;
+      margin: 0 auto;
+      background: #FFFFFF;
+      padding: 12px;
+    }
+    .action-bar {
+      position: sticky;
+      top: 10px;
+      margin-bottom: 14px;
+      background: #00104A;
+      color: #FFF;
+      padding: 10px 16px;
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+      z-index: 1000;
+    }
+    .print-btn {
+      background: #2563EB;
+      color: #FFF;
+      border: none;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .print-btn:hover { background: #1D4ED8; }
+    .close-btn {
+      background: #475569;
+      color: #FFF;
+      border: none;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+
+    /* Company Header */
+    .company-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #00104A;
+      margin-bottom: 10px;
+    }
+    .company-logo {
+      width: 64px;
+      height: 64px;
+      object-fit: contain;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+    .company-info {
+      flex: 1;
+    }
+    .company-name {
+      font-size: 14px;
+      font-weight: 900;
+      color: #00104A;
+      letter-spacing: 0.3px;
+      margin: 0 0 2px 0;
+    }
+    .company-addr {
+      font-size: 9px;
+      color: #475569;
+      line-height: 1.3;
+      margin: 0 0 3px 0;
+    }
+    .company-meta-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 9px;
+      color: #334155;
+    }
+
+    /* Report Banner */
+    .report-banner {
+      background: #F1F5F9;
+      border-left: 4px solid #2563EB;
+      padding: 8px 12px;
+      border-radius: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .report-title-txt {
+      font-size: 14px;
+      font-weight: 900;
+      color: #0F172A;
+      text-transform: uppercase;
+      margin: 0;
+    }
+    .report-category-txt {
+      font-size: 9.5px;
+      font-weight: 600;
+      color: #475569;
+      margin-top: 1px;
+    }
+    .report-meta-right {
+      text-align: right;
+      font-size: 9px;
+      color: #334155;
+      line-height: 1.35;
+    }
+
+    /* KPI Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .kpi-card {
+      background: #F8FAFC;
+      border: 1px solid #E2E8F0;
+      border-left: 3px solid #2563EB;
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+    .kpi-lbl {
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #64748B;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .kpi-val {
+      font-size: 12.5px;
+      font-weight: 800;
+      color: #0F172A;
+      margin-top: 2px;
+      white-space: nowrap;
+    }
+
+    /* Table Auto Adjust */
+    table.report-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: auto;
+      font-size: 9px;
+      margin-bottom: 14px;
+    }
+    table.report-table th {
+      background: #00104A !important;
+      color: #FFFFFF !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      padding: 6px 6px;
+      font-weight: 700;
+      border: 1px solid #00104A;
+      white-space: nowrap;
+      font-size: 8.5px;
+    }
+    table.report-table td {
+      padding: 5px 6px;
+      border: 1px solid #CBD5E1;
+      vertical-align: middle;
+      word-break: break-word;
+    }
+    table.report-table tbody tr:nth-child(even) td {
+      background: #F8FAFC;
+    }
+    table.report-table tr.bold-row td {
+      font-weight: 800;
+      background: #E2E8F0;
+      color: #0F172A;
+    }
+    .cell-numeric {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    /* Footer */
+    .report-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding-top: 12px;
+      border-top: 1px solid #CBD5E1;
+      margin-top: 12px;
+    }
+    .footer-left {
+      font-size: 8.5px;
+      color: #64748B;
+      line-height: 1.35;
+    }
+    .signatory-box {
+      border: 1px dashed #94A3B8;
+      border-radius: 4px;
+      padding: 6px 12px;
+      text-align: center;
+      background: #FAFAFA;
+      min-width: 180px;
+    }
+    .signatory-stamp {
+      color: #059669;
+      font-weight: 800;
+      font-size: 9px;
+      margin-bottom: 2px;
+    }
+    .signatory-title {
+      font-size: 10px;
+      font-weight: 700;
+      color: #0F172A;
+    }
+    .signatory-desig {
+      font-size: 8px;
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print action-bar">
+    <div>
+      <strong>TRIVENI DSC REPORT PRINT ENGINE</strong> &bull; ${title} (${rows.length} records)
+    </div>
+    <div>
+      <button class="print-btn" onclick="window.print()">Print Report / Save PDF</button>
+      <button class="close-btn" onclick="window.close()">Close</button>
+    </div>
+  </div>
+
+  <div class="print-wrapper">
+    <div class="company-header">
+      <img src="${logoUrl}" alt="TDSC Logo" class="company-logo" onerror="this.src='/assets/assets/images/company-logo.b43290140700e1432dbc6d9050ee67da.jpg'; this.onerror=null;"/>
+      <div class="company-info">
+        <h1 class="company-name">TRIVENI DSC AND ETENDER SERVICE PVT. LTD</h1>
+        <div class="company-addr">MOH-BHAISHASUR HOSPITAL MORE NEAR EYE CARE HOSPITAL SRI DILCHANDRA MAHTO WARD NO-17 RANCHI ROAD BIHARSHARIF</div>
+        <div class="company-meta-tags">
+          <span><strong>GSTIN:</strong> 10AAGCT3865R1ZU</span>
+          <span><strong>State:</strong> 10-Bihar</span>
+          <span><strong>Phone:</strong> 9334344708</span>
+          <span><strong>Email:</strong> tdscservice@gmail.com</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="report-banner">
+      <div>
+        <h2 class="report-title-txt">${title}</h2>
+        <div class="report-category-txt">${category} &bull; Official Management Ledger</div>
+      </div>
+      <div class="report-meta-right">
+        <div><strong>Period:</strong> ${dateLabel}</div>
+        <div><strong>Printed On:</strong> ${generatedOn}</div>
+        <div><strong>Total Entries:</strong> ${rows.length}</div>
+      </div>
+    </div>
+
+    ${kpiHtml}
+
+    <table class="report-table">
+      ${theadHtml}
+      ${tbodyHtml}
+    </table>
+
+    <div class="report-footer">
+      <div class="footer-left">
+        <div><strong>Triveni DSC & E-Tender Management System</strong></div>
+        <div>Computer generated financial statement. Page layout automatically adjusted for multi-page export.</div>
+        <div>Generated on: ${generatedOn}</div>
+      </div>
+      <div class="signatory-box">
+        <div class="signatory-stamp">&#10004; DIGITALLY VERIFIED</div>
+        <div class="signatory-title">अंजू कुमारी</div>
+        <div class="signatory-desig">Authorized Signatory<br/>For TRIVENI DSC AND ETENDER SERVICE PVT. LTD</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.onload = function() {
+      setTimeout(function() {
+        window.print();
+      }, 400);
+    };
+  </script>
+</body>
+</html>
+    `;
+
+    // Zero-Popup-Blocker: Render into a hidden iframe
+    try {
+      let iframe = document.getElementById('tdsc-report-print-frame') as HTMLIFrameElement;
+      if (!iframe) {
+        iframe = document.createElement('iframe');
+        iframe.id = 'tdsc-report-print-frame';
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        document.body.appendChild(iframe);
+      }
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (doc) {
+        doc.open();
+        doc.write(htmlContent);
+        doc.close();
+        setTimeout(() => {
+          try {
+            iframe.contentWindow?.focus();
+            iframe.contentWindow?.print();
+          } catch {
+            const printWin = window.open('', '_blank');
+            if (printWin) {
+              printWin.document.open();
+              printWin.document.write(htmlContent);
+              printWin.document.close();
+              printWin.focus();
+            } else {
+              window.print();
+            }
+          }
+        }, 400);
+        return;
+      }
+    } catch {
+      // Fallback
+    }
+
+    const printWin = window.open('', '_blank');
+    if (printWin) {
+      printWin.document.open();
+      printWin.document.write(htmlContent);
+      printWin.document.close();
+      printWin.focus();
+    } else {
+      window.print();
+    }
+  };
+
+  return (
+    <View style={styles.root} testID="accounting-reports-hub">
+      {/* Top Header */}
+      <SafeAreaView edges={['top']} style={styles.headerSafe}>
+        <View style={styles.header}>
+          <Pressable onPress={() => {
+            if (activeReportId) setActiveReportId(null);
+            else router.push('/accounting/menu' as any);
+          }} style={styles.headerBackBtn} hitSlop={8} testID="rep-back-btn">
+            <Ionicons name="arrow-back" size={20} color="#0F172A" />
+          </Pressable>
+
+          <View style={{ flex: 1, marginLeft: 8 }}>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {activeReportId && reportData ? reportData.report_title : 'Reports & Financial Statements'}
+            </Text>
+            <Text style={styles.headerSub} numberOfLines={1}>
+              {activeReportId && reportData ? reportData.category : 'TDSC • Accounting & Billing Suite (37 Reports)'}
+            </Text>
+          </View>
+
+          {activeReportId ? (
+            <View style={{ flexDirection: 'row', gap: 6 }}>
+              <Pressable onPress={handlePrint} hitSlop={6} style={styles.headerActionBtn}>
+                <Ionicons name="print-outline" size={18} color="#0F172A" />
+              </Pressable>
+              <Pressable onPress={shareReport} hitSlop={6} style={styles.headerActionBtn}>
+                <Ionicons name="share-social-outline" size={18} color="#0F172A" />
+              </Pressable>
+              <Pressable onPress={() => setActiveReportId(null)} hitSlop={6} style={styles.headerActionBtn}>
+                <Ionicons name="close" size={18} color="#0F172A" />
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable onPress={() => router.push('/accounting' as any)} hitSlop={8} style={styles.headerActionBtn}>
+              <Ionicons name="pie-chart-outline" size={18} color="#0F172A" />
+            </Pressable>
+          )}
+        </View>
+      </SafeAreaView>
+
+      {/* VIEW: REPORT VIEWER (When a specific report is active) */}
+      {activeReportId ? (
+        <View style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
+          {/* Date Filter Bar */}
+          <View style={styles.dateFilterBar}>
+            {(['today', 'month', 'quarter', 'fy', 'all'] as const).map(df => (
+              <Pressable
+                key={df}
+                onPress={() => changeDateFilter(df)}
+                style={[styles.dateChip, dateFilter === df && styles.dateChipActive]}
+              >
+                <Text style={[styles.dateChipTxt, dateFilter === df && styles.dateChipTxtActive]}>
+                  {df === 'today' ? 'Today' : df === 'month' ? 'This Month' : df === 'quarter' ? 'Quarter' : df === 'fy' ? 'FY 2026-27' : 'All Time'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {reportLoading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="large" color={BLUE} />
+              <Text style={styles.loadingTxt}>Generating real-time statement & calculating metrics...</Text>
+            </View>
+          ) : reportData ? (
+            <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}>
+              {/* Report Header Title Badge */}
+              <View style={styles.reportHeroCard}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.heroTitle}>{reportData.report_title}</Text>
+                  <Text style={styles.heroSub}>{reportData.category} • Automated Financial Ledger</Text>
+                </View>
+                <Pressable onPress={() => toggleFav(reportData.report_type)} hitSlop={8} style={styles.heroStarBtn}>
+                  <Ionicons name={favs[reportData.report_type] ? 'star' : 'star-outline'} size={22} color={favs[reportData.report_type] ? '#F59E0B' : '#94A3B8'} />
+                </Pressable>
+              </View>
+
+              {/* KPI Summary Grid */}
+              {reportData.kpis && reportData.kpis.length > 0 && (
+                <View style={styles.kpiGrid}>
+                  {reportData.kpis.map((kpi: any, idx: number) => (
+                    <View key={idx} style={[styles.kpiCard, { borderLeftColor: kpi.color || BLUE }]}>
+                      <Text style={styles.kpiLbl}>{kpi.label}</Text>
+                      <Text style={[styles.kpiVal, { color: kpi.color || '#0F172A' }]}>
+                        {kpi.label.toLowerCase().includes('count') || kpi.label.toLowerCase().includes('entries') ? kpi.value : inr(kpi.value)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {/* In-Table Search Input */}
+              <View style={styles.tableSearchRow}>
+                <Ionicons name="search" size={16} color="#94A3B8" />
+                <TextInput
+                  placeholder={`Search ${reportData.rows?.length || 0} records in this report...`}
+                  placeholderTextColor="#94A3B8"
+                  value={tableSearch}
+                  onChangeText={setTableSearch}
+                  style={styles.tableSearchInput}
+                />
+                {tableSearch ? (
+                  <Pressable onPress={() => setTableSearch('')}>
+                    <Ionicons name="close-circle" size={16} color="#94A3B8" />
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {/* Tabular Statement View */}
+              <View style={styles.tableCard}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+                  <View>
+                    {/* Header Row */}
+                    <View style={styles.tHeadRow}>
+                      <View style={[styles.tHeadCell, { width: 44 }]}>
+                        <Text style={[styles.tHeadTxt, { textAlign: 'center' }]}>#</Text>
+                      </View>
+                      {reportData.columns?.map((col: any) => {
+                        const colW = getColWidth(col.key);
+                        const isColAmount = ['taxable', 'tax', 'gst', 'amount', 'amt', 'total', 'paid', 'balance', 'price', 'debit', 'credit', 'rate'].some((k: string) => col.key.toLowerCase().includes(k));
+                        return (
+                          <View key={col.key} style={[styles.tHeadCell, { width: colW }]}>
+                            <Text style={[styles.tHeadTxt, isColAmount && { textAlign: 'right' }]} numberOfLines={1}>{col.label}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    {/* Data Rows */}
+                    {filteredReportRows.length === 0 ? (
+                      <View style={styles.emptyTableBox}>
+                        <Ionicons name="file-tray-outline" size={32} color="#CBD5E1" />
+                        <Text style={styles.emptyTableTxt}>No matching records found for this period.</Text>
+                      </View>
+                    ) : (
+                      filteredReportRows.map((row: any, rIdx: number) => {
+                        const isEven = rIdx % 2 === 0;
+                        const isBold = !!row.is_bold;
+                        return (
+                          <View key={rIdx} style={[styles.tDataRow, isEven && styles.tDataRowAlt, isBold && styles.tDataRowBold]}>
+                            <View style={[styles.tDataCell, { width: 44 }]}>
+                              <Text style={[styles.tDataTxt, { color: '#94A3B8', fontSize: 11, textAlign: 'center' }]}>{rIdx + 1}</Text>
+                            </View>
+                            {reportData.columns?.map((col: any) => {
+                              const colW = getColWidth(col.key);
+                              const val = formatCellValue(col.key, row[col.key]);
+                              const isAmount = String(val).startsWith('₹') || String(val).startsWith('-₹');
+                              const isAlert = String(val).includes('LOW') || String(val).includes('OVERDUE') || String(val).includes('Unpaid');
+                              return (
+                                <View key={col.key} style={[styles.tDataCell, { width: colW }]}>
+                                  <Text
+                                    numberOfLines={2}
+                                    style={[
+                                      styles.tDataTxt,
+                                      isBold && { fontWeight: '800', color: '#0F172A' },
+                                      isAmount && { fontWeight: '700', color: '#0F172A', textAlign: 'right' },
+                                      isAlert && { color: '#DC2626', fontWeight: '800' }
+                                    ]}
+                                  >
+                                    {val}
+                                  </Text>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        );
+                      })
+                    )}
+                  </View>
+                </ScrollView>
+              </View>
+
+              {/* Action Toolbar */}
+              <View style={styles.reportActionsRow}>
+                <Pressable onPress={shareReport} style={[styles.btnAction, { backgroundColor: '#059669' }]}>
+                  <Ionicons name="logo-whatsapp" size={16} color="#FFF" />
+                  <Text style={styles.btnActionTxt}>WhatsApp Summary</Text>
+                </Pressable>
+                <Pressable onPress={handlePrint} style={[styles.btnAction, { backgroundColor: BLUE }]}>
+                  <Ionicons name="print" size={16} color="#FFF" />
+                  <Text style={styles.btnActionTxt}>Print / Export PDF</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          ) : (
+            <View style={styles.loadingBox}>
+              <Ionicons name="alert-circle-outline" size={40} color="#DC2626" />
+              <Text style={{ color: '#0F172A', fontWeight: '700', marginTop: 8 }}>Unable to load report</Text>
+            </View>
+          )}
+        </View>
+      ) : (
+        /* VIEW: MASTER REPORTS HUB (Catalog of 9 Categories & 37 Reports) */
+        <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl }}>
+          {/* Quick Search Bar */}
+          <View style={styles.searchBarWrapper}>
+            <View style={styles.searchBar}>
+              <Ionicons name="search" size={18} color="#64748B" />
+              <TextInput
+                placeholder="Search across all 37 financial reports..."
+                placeholderTextColor="#94A3B8"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                style={styles.searchInput}
+              />
+              {searchQuery ? (
+                <Pressable onPress={() => setSearchQuery('')}>
+                  <Ionicons name="close-circle" size={18} color="#94A3B8" />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+
+          {/* High-Level Overview Metrics Banner */}
+          {summary && (
+            <View style={styles.summaryBanner}>
+              <View style={styles.sumMetric}>
+                <Text style={styles.sumMetricLbl}>Gross Turnover</Text>
+                <Text style={[styles.sumMetricVal, { color: '#059669' }]}>{inr(summary.total_sales)}</Text>
+              </View>
+              <View style={styles.sumDivider} />
+              <View style={styles.sumMetric}>
+                <Text style={styles.sumMetricLbl}>Gross Profit</Text>
+                <Text style={[styles.sumMetricVal, { color: '#2563EB' }]}>{inr(summary.gross_profit)}</Text>
+              </View>
+              <View style={styles.sumDivider} />
+              <View style={styles.sumMetric}>
+                <Text style={styles.sumMetricLbl}>Bank Liquidity</Text>
+                <Text style={[styles.sumMetricVal, { color: '#7C3AED' }]}>{inr(summary.total_bank_balance)}</Text>
+              </View>
+              <View style={styles.sumDivider} />
+              <View style={styles.sumMetric}>
+                <Text style={styles.sumMetricLbl}>Receivables</Text>
+                <Text style={[styles.sumMetricVal, { color: '#DC2626' }]}>{inr(summary.total_receivables)}</Text>
+              </View>
+            </View>
+          )}
+
+          {/* Category Filter Chips */}
+          <View style={styles.catChipsScroll}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.md, gap: 6 }}>
+              <Pressable
+                onPress={() => setSelectedCatId('all')}
+                style={[styles.catChip, selectedCatId === 'all' && styles.catChipActive]}
+              >
+                <Text style={[styles.catChipTxt, selectedCatId === 'all' && styles.catChipTxtActive]}>All Reports (37)</Text>
+              </Pressable>
+              {categories.map(cat => (
+                <Pressable
+                  key={cat.id}
+                  onPress={() => setSelectedCatId(cat.id)}
+                  style={[styles.catChip, selectedCatId === cat.id && styles.catChipActive]}
+                >
+                  <Text style={[styles.catChipTxt, selectedCatId === cat.id && styles.catChipTxtActive]}>
+                    {cat.title} ({cat.reports.length})
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* 9 Report Categories with Accordion Collapse */}
+          {loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="large" color={BLUE} />
+              <Text style={styles.loadingTxt}>Loading financial reports directory...</Text>
+            </View>
+          ) : (
+            <View style={{ paddingHorizontal: spacing.md, gap: spacing.md, marginTop: spacing.md }}>
+              {filteredCategories.map(cat => {
+                const isOpen = openCats[cat.id] ?? true;
+                return (
+                  <View key={cat.id} style={styles.categoryCard}>
+                    <Pressable
+                      onPress={() => toggleCategory(cat.id)}
+                      style={styles.categoryHeader}
+                      testID={`cat-hdr-${cat.id}`}
+                    >
+                      <View style={[styles.catIconBox, { backgroundColor: cat.color + '15' }]}>
+                        <Ionicons name={cat.icon as any} size={20} color={cat.color} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.categoryTitle}>{cat.title}</Text>
+                        <Text style={styles.categorySub}>{cat.reports.length} Sub-Reports Available</Text>
+                      </View>
+                      <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color="#94A3B8" />
+                    </Pressable>
+
+                    {isOpen && (
+                      <View style={styles.reportsList}>
+                        {cat.reports.map((rep, rIdx) => {
+                          const isFav = !!favs[rep.id];
+                          return (
+                            <Pressable
+                              key={rep.id}
+                              onPress={() => openReport(rep.id)}
+                              style={[styles.reportRow, rIdx > 0 && styles.reportRowBorder]}
+                              testID={`report-item-${rep.id}`}
+                            >
+                              <View style={[styles.repIconBox, { backgroundColor: cat.color + '12' }]}>
+                                <Ionicons name={rep.icon as any} size={18} color={cat.color} />
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  <Text style={styles.repName}>{rep.name}</Text>
+                                  {isFav ? <Ionicons name="star" size={13} color="#F59E0B" /> : null}
+                                </View>
+                                <Text style={styles.repDesc} numberOfLines={2}>{rep.description}</Text>
+                              </View>
+                              <Pressable
+                                onPress={(e) => {
+                                  e.stopPropagation?.();
+                                  toggleFav(rep.id);
+                                }}
+                                hitSlop={8}
+                                style={{ padding: 6 }}
+                              >
+                                <Ionicons name={isFav ? 'star' : 'star-outline'} size={18} color={isFav ? '#F59E0B' : '#CBD5E1'} />
+                              </Pressable>
+                              <Ionicons name="chevron-forward" size={16} color="#CBD5E1" />
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#F1F5F9' },
+  headerSafe: { backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: 10 },
+  headerBackBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { color: '#0F172A', fontSize: font.base, fontWeight: '900' },
+  headerSub: { color: '#64748B', fontSize: 11, fontWeight: '600', marginTop: 1 },
+  headerActionBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center' },
+
+  searchBarWrapper: { paddingHorizontal: spacing.md, paddingTop: spacing.md },
+  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#E2E8F0', gap: 8, ...shadow.card },
+  searchInput: { flex: 1, fontSize: font.sm, color: '#0F172A', padding: 0 },
+
+  summaryBanner: { flexDirection: 'row', backgroundColor: '#FFF', marginHorizontal: spacing.md, marginTop: spacing.sm, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: '#E2E8F0', ...shadow.card },
+  sumMetric: { flex: 1, alignItems: 'center' },
+  sumMetricLbl: { fontSize: 9, fontWeight: '800', color: '#64748B', textTransform: 'uppercase' },
+  sumMetricVal: { fontSize: 12, fontWeight: '900', marginTop: 3 },
+  sumDivider: { width: 1, backgroundColor: '#E2E8F0', marginVertical: 2 },
+
+  catChipsScroll: { marginTop: spacing.sm },
+  catChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#CBD5E1' },
+  catChipActive: { backgroundColor: BLUE, borderColor: BLUE },
+  catChipTxt: { fontSize: 11, fontWeight: '700', color: '#475569' },
+  catChipTxtActive: { color: '#FFF' },
+
+  categoryCard: { backgroundColor: '#FFF', borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', overflow: 'hidden', ...shadow.card },
+  categoryHeader: { flexDirection: 'row', alignItems: 'center', padding: spacing.md, backgroundColor: '#F8FAFC', gap: 10 },
+  catIconBox: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  categoryTitle: { fontSize: font.sm, fontWeight: '900', color: '#0F172A' },
+  categorySub: { fontSize: 10, color: '#64748B', marginTop: 1 },
+
+  reportsList: { backgroundColor: '#FFF' },
+  reportRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: 11, gap: 10 },
+  reportRowBorder: { borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  repIconBox: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  repName: { fontSize: font.sm, fontWeight: '800', color: '#1E293B' },
+  repDesc: { fontSize: 10, color: '#64748B', marginTop: 2, lineHeight: 14 },
+
+  dateFilterBar: { flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: spacing.md, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', gap: 6 },
+  dateChip: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: '#F1F5F9' },
+  dateChipActive: { backgroundColor: BLUE },
+  dateChipTxt: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  dateChipTxtActive: { color: '#FFF' },
+
+  reportHeroCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: '#E2E8F0', ...shadow.card },
+  heroTitle: { fontSize: font.lg, fontWeight: '900', color: '#0F172A' },
+  heroSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  heroStarBtn: { padding: 4 },
+
+  kpiGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+  kpiCard: { flex: 1, minWidth: '47%', backgroundColor: '#FFF', borderRadius: radius.md, padding: 14, borderWidth: 1, borderColor: '#E2E8F0', borderLeftWidth: 4, overflow: 'visible', ...shadow.card },
+  kpiLbl: { fontSize: 10, fontWeight: '800', color: '#64748B', textTransform: 'uppercase', letterSpacing: 0.4 },
+  kpiVal: { fontSize: font.lg, fontWeight: '900', marginTop: 4, lineHeight: 26, paddingTop: 2 },
+
+  tableSearchRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#E2E8F0', gap: 8 },
+  tableSearchInput: { flex: 1, fontSize: font.sm, color: '#0F172A', padding: 0 },
+
+  tableCard: { backgroundColor: '#FFF', borderRadius: radius.md, borderWidth: 1, borderColor: '#CBD5E1', overflow: 'hidden', ...shadow.card },
+  tHeadRow: { flexDirection: 'row', backgroundColor: '#00104A', borderBottomWidth: 1, borderBottomColor: '#00104A' },
+  tHeadCell: { paddingHorizontal: 8, paddingVertical: 10, justifyContent: 'center' },
+  tHeadTxt: { fontSize: 10.5, fontWeight: '800', color: '#FFFFFF', textTransform: 'uppercase', letterSpacing: 0.3 },
+  tDataRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  tDataRowAlt: { backgroundColor: '#F8FAFC' },
+  tDataRowBold: { backgroundColor: '#EFF6FF', borderTopWidth: 1, borderTopColor: '#BFDBFE', borderBottomWidth: 1, borderBottomColor: '#BFDBFE' },
+  tDataCell: { paddingHorizontal: 8, paddingVertical: 9, justifyContent: 'center' },
+  tDataTxt: { fontSize: 11, color: '#1E293B' },
+
+  emptyTableBox: { padding: 32, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  emptyTableTxt: { fontSize: font.sm, color: '#94A3B8', fontWeight: '600' },
+
+  reportActionsRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  btnAction: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: radius.md, gap: 6, ...shadow.card },
+  btnActionTxt: { color: '#FFF', fontWeight: '800', fontSize: font.sm },
+
+  loadingBox: { padding: 48, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  loadingTxt: { color: '#64748B', fontSize: font.sm, fontWeight: '600' },
+});

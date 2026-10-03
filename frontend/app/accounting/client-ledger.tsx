@@ -6,7 +6,7 @@ import { Card, ScreenLoader } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { Ionicons } from '@expo/vector-icons';
 
-const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN')}`;
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 export default function ClientLedger() {
   const [clients, setClients] = useState<any[]>([]);

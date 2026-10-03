@@ -1,137 +1,112 @@
-# TDSC Office Management & Accounting System
+# TDSC Office Management System (TDSC-OMS)
+## TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED
 
-A modern, cross-platform office management and Vyapar-style accounting application designed for **Triveni DSC & E-Tender Service Pvt. Ltd.** The system provides comprehensive business operations management, invoicing, GST billing, party directory with duplicate prevention, employee management, and PDF report generation.
+A complete, modern, secure, responsive and scalable **Office Management + Customer Management + Accounting + Employee Management + Task Management + Attendance System** designed for **TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED**.
 
 ---
 
-## Architecture & Tech Stack
+## 1. System Architecture & Tech Stack
 
-- **Frontend**:
-  - React Native (0.81) & Expo (SDK 54)
-  - Expo Router (File-based navigation)
-  - React Native Web (Browser compatibility) & Native Android
-  - React Native Reanimated, Gesture Handler, Bottom Sheet
-  - TypeScript
 - **Backend**:
-  - Python 3.12 with FastAPI & Uvicorn (ASGI)
-  - Motor (Async MongoDB Driver)
-  - Pydantic v2 (Data validation)
-  - ReportLab (Automated GST invoice & customer profile PDF generation)
-  - Bcrypt & PyJWT (Authentication & Authorization)
+  - Python 3.12 with **FastAPI** & **Uvicorn** (Async REST API)
+  - **Motor**: Async MongoDB Driver connected to MongoDB Atlas Cloud Cluster (`triveni_fms`)
+  - **Cryptography (Fernet AES-256)**: Secure encryption vault for all portal credentials
+  - **Pydantic v2**: Strict enterprise schema validation
+  - **ReportLab**: High-resolution GST Tax Invoice & Customer Profile PDF generator
+  - **PyJWT & Bcrypt**: JWT session security with password hashing
+- **Frontend**:
+  - **React Native (0.81)** & **Expo (SDK 54)**
+  - **Expo Router (v6)**: File-based routing & deep linking
+  - **React Native Web**: Full desktop & browser responsive layout
+  - **TypeScript**: 100% type-safe codebase
+  - **Native Android APK**: Release APK build configuration via Gradle
 - **Database**:
-  - MongoDB / MongoDB Atlas (Cloud 24/7)
+  - **MongoDB Atlas** Cloud Cluster (`tdscmanagementapk.sdv1sbt.mongodb.net`, DB: `triveni_fms`)
 
 ---
 
-## Key Features
+## 2. 18 Core Enterprise Modules
 
-1. **Vyapar-Style Accounting & Billing**:
-   - Cash / Credit sales toggles with custom payment terms and due dates.
-   - Item catalog with auto-pricing and tax calculations.
-   - Real-time GST calculation (CGST, SGST, IGST).
-   - Auto-generated serial invoice numbering (`SI-000x`, `PB-000x`).
-   - Automated income ledger entry creation on invoice submission.
+### 1. Master Data Management
+- **Branch Master**: Auto-generated Branch ID (`TDSC-BR-xxxx`), geofence radius sync, dynamic staff counts.
+- **Post Master**: Auto-generated Post ID (`TDSC-PST-xxx`), seeding 6 organizational designations.
+- **User Master**: Organization mapping `User -> Branch -> Post -> Role` (`TDSC-USR-xxxxxx`) with 10MB document uploads.
+- **Role & Granular RBAC Matrix**: 22 modules $\times$ 11 actions (`view`, `add`, `edit`, `delete`, `print`, `download`, `share`, `approve`, `reject`, `cancel`, `export`).
+- **Service Master**: 17 TDSC services pre-seeded with SAC/HSN codes and auto-sync into Vyapar billing catalog.
 
-2. **Customer Directory & Duplicate Prevention**:
-   - Multi-field customer search (Name, Mobile, WhatsApp, PAN, Aadhar, GSTIN, Registration No).
-   - Server-side duplicate prevention guards blocking duplicate parties across PAN, Aadhar, Mobile, or GST.
+### 2. Customer Master & Credential Vault
+- **42-Field Contractor Profile**: Complete identification (Name, Code, PAN, Aadhar, Mobile, WhatsApp, Alt Mobile, Email, Full Address).
+- **Class & Department Classification**: Class-I to Class-IV chips and department tags (RWD, RCD, WRD, BCD, PHED, CPWD, Railway, etc.).
+- **AES-256 Credential Vault**: Encrypted passwords for eProc2, Railway/IREPS, CPP, GST, EPFO, GeM, PMGSY, ISO, and Other portals.
+- **Audit-Logged Reveal**: Passwords masked by default; unmasking via the eye button logs an immutable audit trail entry.
+- **Category Document Uploader**: Upload attachments classified by PAN, Aadhar, GST, DSC, Registration, etc.
+- **30-Day Expiry Alert Detector**: Highlights documents, DSC signing, and encryption keys expiring in $\le 30$ days.
 
-3. **PDF Generation**:
-   - Downloadable official GST Tax Invoices matching company letterhead.
-   - Comprehensive 39-field contractor/customer profile cards.
+### 3. Task Management & 4-Stage Approval Workflows
+- **Auto Task ID**: `TDSC-TSK-xxxxxx`.
+- **4-Stage Pipeline**: `Data Entry Operator` $\rightarrow$ `Accountant` $\rightarrow$ `Manager` $\rightarrow$ `Admin`.
+- **Workflow Actions**: `Approve & Next`, `Forward`, `Return`, `Reject`, and `Comment`.
+- **Audit Trail**: Chronological history recording user actor, role, stage transition, remarks, and timestamp.
 
-4. **Employee & Attendance Management**:
-   - Role-based permissions (Admin, Manager, Employee).
-   - Office location verification and attendance logs.
+### 4. Vyapar-Style Accounting & Financial Reporting
+- **Sales Invoices**: Auto serial numbering (`TDSC/{fy}/{seq}` or `SI-xxxx`), GST calculation (CGST, SGST, IGST).
+- **Estimates / Quotations**: Quotation generation (`TDSC-EST/{fy}/{seq}`) with 1-click **Convert to Sale Invoice**.
+- **Proforma Invoices**: Provisional commercial invoices (`TDSC-PI/{fy}/{seq}`) with 1-click **Convert to Tax Invoice**.
+- **Delivery Challans**: Material dispatch documents (`TDSC-DC/{fy}/{seq}`) with vehicle and courier tracking.
+- **Credit & Debit Notes**: Sale Return (`type=sale_return`) and Purchase Return (`type=purchase_return`) vouchers.
+- **GST Tax Filing Center**: Real-time GSTR-1 outward supplies & 18% output GST, GSTR-2 inward input tax credits (ITC), GSTR-3B net payable reconciliation, HSN/SAC breakdown, and Section 51/194C TDS tracking.
+- **Financial & Aging Reports**: Dynamic Balance Sheet with net worth calculation, 4-tier Receivables & Payables Aging analysis (0-30, 31-60, 61-90, 90+ days), and bill-wise gross profit margins.
+- **Payments-In & Payments-Out**: Income and expense tracking with cash/bank split.
+- **Day Book Report**: Financial movement report with receipts, payments, and net flow summary.
+- **Banking**: Bank account management with live running balances and Bank Book.
+- **UI & Navigation Polish**: High-contrast, tactile circular Back Button with distinct arrow icon (`arrow-back`) standardized across 20+ screens.
+
+### 5. HR, Attendance & Field Operations
+- **Geofenced Attendance**: Validates distance against assigned branch GPS coordinates.
+- **Face Selfie Verification**: Selfie camera capture on attendance punch.
+- **Leave Management**: Leave requests with approval lifecycle.
+- **Payroll**: Salary slip generation and allowances.
+- **Field Staff GPS Tracking**: Real-time staff location pings, active map feed, and client visit reporting.
+
+### 6. Security, Intelligence & System Operations
+- **Security Audit Trail**: Immutable queryable audit log with actor ID, action, old values, and new values.
+- **Live Multi-Module Global Search**: Multi-collection search across Customers, Tasks, Invoices, Branches, and Employees.
+- **Executive Dashboard**: Live financial KPIs (Today's Sales, To Receive, To Pay) and operations counters.
+- **Database Backup**: 1-click JSON snapshot generator across all collections.
 
 ---
 
-## Project Structure
+## 3. Quick Start & Execution
 
+### Launch Everything in 1-Click (Windows):
+Double-click `start-all.bat` at the project root to launch both Backend and Frontend in separate windows.
+
+### Manual Backend Launch:
+```powershell
+cd "e:\MY PROJECTS\tdscoms\backend"
+.\.venv\Scripts\python.exe -m uvicorn server:app --host 127.0.0.1 --port 8000 --reload
 ```
-├── backend/                  # FastAPI backend
-│   ├── server.py             # Main API application & routes
-│   ├── invoice_pdf.py        # ReportLab GST invoice PDF generator
-│   ├── customer_pdf.py       # ReportLab customer profile PDF generator
-│   ├── requirements.txt      # Python dependencies
-│   ├── Procfile              # Cloud hosting entrypoint
-│   └── .env.example          # Environment variable template
-├── frontend/                 # React Native / Expo application
-│   ├── app/                  # Expo Router pages & screens
-│   ├── src/                  # Reusable components & API services
-│   ├── assets/               # Images, icons, and logos
-│   ├── android/              # Native Android project (Gradle & NDK)
-│   ├── eas.json              # Expo Application Services build configuration
-│   └── package.json          # Node dependencies & scripts
-├── build-apk.bat             # 1-Click native Android APK compiler
-├── start-all.bat             # 1-Click launcher for Backend + Frontend
-├── start-backend.bat         # Launcher for FastAPI backend
-├── start-frontend.bat        # Launcher for Expo Web frontend
-└── README.md
+- API Docs: `http://127.0.0.1:8000/docs`
+
+### Manual Frontend Launch:
+```powershell
+cd "e:\MY PROJECTS\tdscoms\frontend"
+npx.cmd expo start --web
+```
+- Web Application: `http://localhost:8081`
+
+### Running the Enterprise Test Suite:
+```powershell
+cd "e:\MY PROJECTS\tdscoms\backend"
+.\.venv\Scripts\python.exe -m pytest tests/test_enterprise_modules.py -v
 ```
 
 ---
 
-## Quick Start (Local Development)
-
-### Prerequisites
-- **Node.js** (v18+)
-- **Python** (v3.10 - v3.12)
-- **MongoDB** (Local instance or MongoDB Atlas URI)
-
-### 1. Backend Setup
-```bash
-cd backend
-python -m venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On Mac/Linux:
-source .venv/bin/activate
-
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your MONGO_URL
-uvicorn server:app --host 127.0.0.1 --port 8000 --reload
-```
-API Documentation will be accessible at: `http://127.0.0.1:8000/docs`
-
-### 2. Frontend Setup
-```bash
-cd frontend
-npm install # or yarn install
-cp .env.example .env
-npx expo start --web
-```
-Web app will be accessible at: `http://localhost:8081`
-
-### Or Use the 1-Click Windows Launchers
-- Double-click `start-all.bat` to launch both Backend and Frontend in separate windows.
-- Double-click `start-backend.bat` to launch only the backend.
-- Double-click `start-frontend.bat` to launch only the frontend.
-
----
-
-## Building the Android APK Locally
-
-A standalone Android release APK can be built directly on your PC:
-1. Ensure JDK 17 and Android SDK/NDK 27 are installed.
-2. Double-click `build-apk.bat`.
-3. The compiled APK will be created at the project root as `TDSC-Office-Manager.apk`.
-
----
-
-## 24/7 Cloud Deployment
-
-- **Database**: Host on [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) (M0 Free Cluster).
-- **Backend**: Deploy on [Render](https://render.com) or [Koyeb](https://www.koyeb.com) using the provided `backend/Procfile` and `backend/requirements.txt`.
-- **Frontend (Web)**: Deploy on [Vercel](https://vercel.com) by connecting this repository with build command `npx expo export --platform web` and output directory `dist`.
-
----
-
-## Demo Credentials
+## 4. Default Demo Accounts
 
 | Role | Email | Password |
-|---|---|---|
-| **Admin** | `admin@triveni.com` | `admin123` |
-| **Manager** | `manager@triveni.com` | `manager123` |
-| **Employee** | `employee@triveni.com` | `employee123` |
+| :--- | :--- | :--- |
+| **System Administrator** | `admin@triveni.com` | `admin123` |
+| **Branch Manager** | `manager@triveni.com` | `manager123` |
+| **Staff Employee** | `employee@triveni.com` | `employee123` |

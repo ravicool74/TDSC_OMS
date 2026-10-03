@@ -95,16 +95,71 @@ export default function LoginScreen() {
 
             {String(process.env.EXPO_PUBLIC_SHOW_DEMO_CREDS || 'false').toLowerCase() === 'true' ? (
               <View style={styles.demoBox}>
-                <Text style={styles.demoTitle}>Demo credentials</Text>
-                {process.env.EXPO_PUBLIC_DEMO_ADMIN ? (
-                  <Text style={styles.demoText}>Admin: {process.env.EXPO_PUBLIC_DEMO_ADMIN}</Text>
-                ) : null}
-                {process.env.EXPO_PUBLIC_DEMO_MANAGER ? (
-                  <Text style={styles.demoText}>Manager: {process.env.EXPO_PUBLIC_DEMO_MANAGER}</Text>
-                ) : null}
-                {process.env.EXPO_PUBLIC_DEMO_EMPLOYEE ? (
-                  <Text style={styles.demoText}>Employee: {process.env.EXPO_PUBLIC_DEMO_EMPLOYEE}</Text>
-                ) : null}
+                <Text style={styles.demoTitle}>⚡ Quick 1-Click Demo Login:</Text>
+                <View style={{ gap: 8, marginTop: 6 }}>
+                  <Pressable
+                    testID="quick-admin-login"
+                    onPress={async () => {
+                      setEmail('admin@triveni.com');
+                      setPassword('admin123');
+                      setErr(null);
+                      setBusy(true);
+                      try { await loginEmail('admin@triveni.com', 'admin123'); }
+                      catch (e: any) { setErr(e?.message || 'Login failed'); }
+                      finally { setBusy(false); }
+                    }}
+                    style={styles.demoQuickBtn}
+                  >
+                    <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.demoQuickBtnTitle}>Login as Admin</Text>
+                      <Text style={styles.demoQuickBtnSub}>admin@triveni.com • Full Access</Text>
+                    </View>
+                    <Ionicons name="arrow-forward-circle" size={20} color={colors.brandPrimary} />
+                  </Pressable>
+
+                  <Pressable
+                    testID="quick-manager-login"
+                    onPress={async () => {
+                      setEmail('manager@triveni.com');
+                      setPassword('manager123');
+                      setErr(null);
+                      setBusy(true);
+                      try { await loginEmail('manager@triveni.com', 'manager123'); }
+                      catch (e: any) { setErr(e?.message || 'Login failed'); }
+                      finally { setBusy(false); }
+                    }}
+                    style={styles.demoQuickBtn}
+                  >
+                    <Ionicons name="person" size={18} color={colors.brandSecondary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.demoQuickBtnTitle}>Login as Manager</Text>
+                      <Text style={styles.demoQuickBtnSub}>manager@triveni.com • Staff & Leaves</Text>
+                    </View>
+                    <Ionicons name="arrow-forward-circle" size={20} color={colors.brandSecondary} />
+                  </Pressable>
+
+                  <Pressable
+                    testID="quick-employee-login"
+                    onPress={async () => {
+                      setEmail('employee@triveni.com');
+                      setPassword('employee123');
+                      setErr(null);
+                      setBusy(true);
+                      try { await loginEmail('employee@triveni.com', 'employee123'); }
+                      catch (e: any) { setErr(e?.message || 'Login failed'); }
+                      finally { setBusy(false); }
+                    }}
+                    style={styles.demoQuickBtn}
+                  >
+                    <Ionicons name="people" size={18} color="#16A34A" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.demoQuickBtnTitle}>Login as Employee</Text>
+                      <Text style={styles.demoQuickBtnSub}>employee@triveni.com • Attendance Punch</Text>
+                    </View>
+                    <Ionicons name="arrow-forward-circle" size={20} color="#16A34A" />
+                  </Pressable>
+                </View>
               </View>
             ) : null}
           </View>
@@ -142,6 +197,8 @@ const styles = StyleSheet.create({
   googleBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, minHeight: 48, backgroundColor: colors.surface },
   googleText: { color: colors.onSurface, fontWeight: '600', fontSize: font.lg },
   demoBox: { padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
-  demoTitle: { fontWeight: '700', color: colors.onSurface, marginBottom: 4 },
-  demoText: { fontSize: font.sm, color: colors.muted },
+  demoTitle: { fontWeight: '800', color: colors.onSurface, marginBottom: 4, fontSize: font.sm },
+  demoQuickBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.surface, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  demoQuickBtnTitle: { fontSize: font.sm, fontWeight: '800', color: colors.onSurface },
+  demoQuickBtnSub: { fontSize: 11, color: colors.muted, marginTop: 1 },
 });

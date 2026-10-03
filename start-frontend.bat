@@ -1,5 +1,5 @@
 @echo off
-echo Starting Expo Frontend on http://localhost:8081 ...
+echo Starting TDSC Frontend on http://localhost:8081 ...
 cd /d "%~dp0frontend"
-call npx expo start --web
+call npx.cmd serve -s dist -l 8081
 pause

@@ -8,7 +8,7 @@ import { Card, EmptyState, ScreenLoader, PrimaryButton } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput } from '@/src/forms';
 
-const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN')}`;
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 type F = { id?: string; name: string; bank_name: string; account_no: string; ifsc: string; opening_balance: string };
 const empty: F = { name: '', bank_name: '', account_no: '', ifsc: '', opening_balance: '0' };
 

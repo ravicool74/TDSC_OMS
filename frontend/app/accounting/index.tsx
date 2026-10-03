@@ -11,7 +11,7 @@ import { useAuth } from '@/src/AuthContext';
 const NAVY = '#00104A';
 const NAVY_LIGHT = '#1A2A6B';
 const BLUE = '#2075FF';
-const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN')}`;
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 export default function AccountingDashboard() {
   const router = useRouter();
@@ -212,7 +212,7 @@ export default function AccountingDashboard() {
 const Header: React.FC<{ user: any; onBack: () => void }> = ({ user, onBack }) => (
   <SafeAreaView edges={['top']} style={{ backgroundColor: NAVY }}>
     <View style={styles.header}>
-      <Pressable onPress={onBack} hitSlop={10} style={styles.headerBtn}><Ionicons name="chevron-back" size={22} color="#FFF" /></Pressable>
+      <Pressable onPress={onBack} hitSlop={10} style={styles.headerBtn}><Ionicons name="arrow-back" size={20} color="#FFF" /></Pressable>
       <View style={{ flex: 1 }}>
         <Text style={styles.brand}>TDSC</Text>
         <Text style={styles.brandSub}>ACCOUNTS MANAGEMENT</Text>
@@ -239,7 +239,7 @@ const QA: React.FC<{ icon: any; color: string; label: string; onPress: () => voi
 
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.md, gap: spacing.sm },
-  headerBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  headerBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
   brand: { color: '#FFF', fontSize: font.xl, fontWeight: '900', letterSpacing: 1 },
   brandSub: { color: '#93C5FD', fontSize: 10, fontWeight: '700', letterSpacing: 1, marginTop: -2 },
   bell: { width: 32, height: 32, borderRadius: 16, backgroundColor: NAVY_LIGHT, alignItems: 'center', justifyContent: 'center' },
