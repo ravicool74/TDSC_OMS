@@ -91,7 +91,9 @@ LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
     if not STORAGE_URL:
-        target_path = LOCAL_STORAGE_DIR / path
+        target_path = (LOCAL_STORAGE_DIR / path).resolve()
+        if not str(target_path).startswith(str(LOCAL_STORAGE_DIR.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid storage path")
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with open(target_path, "wb") as f:
             f.write(data)
@@ -109,7 +111,9 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 def get_object(path: str):
     if not STORAGE_URL:
-        target_path = LOCAL_STORAGE_DIR / path
+        target_path = (LOCAL_STORAGE_DIR / path).resolve()
+        if not str(target_path).startswith(str(LOCAL_STORAGE_DIR.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid storage path")
         if not target_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
         with open(target_path, "rb") as f:
@@ -4277,7 +4281,6 @@ api_router.include_router(make_accounting_extra_router(db, get_current_user, req
 api_router.include_router(make_gps_router(db, get_current_user, require_admin_or_manager))
 api_router.include_router(make_task_workflow_router(db, get_current_user, require_admin, require_admin_or_manager))
 api_router.include_router(make_system_operations_router(db, get_current_user, require_admin))
-api_router.include_router(make_custom_field_router(db, get_current_user, require_admin, log_audit_entry))
 api_router.include_router(make_leave_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
 api_router.include_router(make_payroll_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
 api_router.include_router(make_tender_management_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))

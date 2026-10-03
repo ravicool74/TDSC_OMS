@@ -58,19 +58,51 @@ def number_to_indian_words(n: float) -> str:
 
 FONT_REG = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
+FONT_DEV = "Helvetica-Bold"
 
 try:
-    windir = os.environ.get("WINDIR", r"C:\Windows")
-    nirmala_path = os.path.join(windir, "Fonts", "Nirmala.ttf")
-    if os.path.exists(nirmala_path):
-        pdfmetrics.registerFont(TTFont("Nirmala", nirmala_path, subfontIndex=0))
-        FONT_DEV = "Nirmala"
-    else:
+    search_dirs = [
+        os.environ.get("WINDIR", r"C:\Windows") + r"\Fonts",
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/truetype/liberation",
+        "/usr/share/fonts/truetype/freefont",
+        "/usr/share/fonts/truetype",
+    ]
+    for d in search_dirs:
+        segoe_path = os.path.join(d, "segoeui.ttf")
+        segoeb_path = os.path.join(d, "segoeuib.ttf")
+        if os.path.exists(segoe_path) and os.path.exists(segoeb_path):
+            pdfmetrics.registerFont(TTFont("SegoeUI", segoe_path))
+            pdfmetrics.registerFont(TTFont("SegoeUI-Bold", segoeb_path))
+            FONT_REG = "SegoeUI"
+            FONT_BOLD = "SegoeUI-Bold"
+            break
+        deja_path = os.path.join(d, "DejaVuSans.ttf")
+        dejab_path = os.path.join(d, "DejaVuSans-Bold.ttf")
+        if os.path.exists(deja_path) and os.path.exists(dejab_path):
+            pdfmetrics.registerFont(TTFont("DejaVuSans", deja_path))
+            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", dejab_path))
+            FONT_REG = "DejaVuSans"
+            FONT_BOLD = "DejaVuSans-Bold"
+            break
+
+    for d in search_dirs:
+        for fname in ["Nirmala.ttf", "Nirmala.ttc", "Lohit-Devanagari.ttf", "gargi.ttf"]:
+            p = os.path.join(d, fname)
+            if os.path.exists(p):
+                pdfmetrics.registerFont(TTFont("DevFont", p, subfontIndex=0 if fname.endswith(".ttc") else None))
+                FONT_DEV = "DevFont"
+                break
+        if FONT_DEV != "Helvetica-Bold":
+            break
+    if FONT_DEV == "Helvetica-Bold":
         FONT_DEV = FONT_BOLD
 except Exception:
     FONT_DEV = FONT_BOLD
 
 def _rupee(amt: float) -> str:
+    if FONT_REG == "Helvetica":
+        return f"Rs. {amt:,.2f}"
     return f"₹{amt:,.2f}"
 
 def build_expense_pdf(exp: dict, customer: dict | None = None) -> bytes:
@@ -257,9 +289,9 @@ def build_expense_pdf(exp: dict, customer: dict | None = None) -> bytes:
     elems.append(summary_tbl)
     elems.append(Spacer(1, 14))
 
-    # 5. Signatory & Official Verification
+    sig_label = "Anju Kumari" if FONT_DEV in ("Helvetica-Bold", "Helvetica") and SIGNATORY == "अंजू कुमारी" else SIGNATORY
     sig_block = [
-        Paragraph(SIGNATORY, ParagraphStyle("sig_dev", parent=body, fontName=FONT_DEV, fontSize=13, alignment=TA_CENTER, textColor=rl_colors.HexColor("#0F172A"))),
+        Paragraph(sig_label, ParagraphStyle("sig_dev", parent=body, fontName=FONT_DEV, fontSize=13, alignment=TA_CENTER, textColor=rl_colors.HexColor("#0F172A"))),
         Paragraph("Authorized Signatory", ParagraphStyle("sig_sub", parent=body, fontName=FONT_BOLD, fontSize=9, alignment=TA_CENTER, textColor=rl_colors.HexColor("#64748B"))),
         Paragraph(f"For {COMPANY['name']}", ParagraphStyle("sig_co", parent=body, fontName=FONT_REG, fontSize=8, alignment=TA_CENTER, textColor=rl_colors.HexColor("#94A3B8"))),
     ]

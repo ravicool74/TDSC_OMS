@@ -67,26 +67,49 @@ try:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    win_fonts = os.environ.get("WINDIR", "C:\\Windows") + "\\Fonts"
-    segoe_path = os.path.join(win_fonts, "segoeui.ttf")
-    segoeb_path = os.path.join(win_fonts, "segoeuib.ttf")
-    nirmala_path = os.path.join(win_fonts, "Nirmala.ttc")
+    search_dirs = [
+        os.environ.get("WINDIR", "C:\\Windows") + "\\Fonts",
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/truetype/liberation",
+        "/usr/share/fonts/truetype/freefont",
+        "/usr/share/fonts/truetype",
+    ]
 
-    if os.path.exists(segoe_path) and os.path.exists(segoeb_path):
-        pdfmetrics.registerFont(TTFont("SegoeUI", segoe_path))
-        pdfmetrics.registerFont(TTFont("SegoeUI-Bold", segoeb_path))
-        FONT_REG = "SegoeUI"
-        FONT_BOLD = "SegoeUI-Bold"
+    for d in search_dirs:
+        segoe_path = os.path.join(d, "segoeui.ttf")
+        segoeb_path = os.path.join(d, "segoeuib.ttf")
+        if os.path.exists(segoe_path) and os.path.exists(segoeb_path):
+            pdfmetrics.registerFont(TTFont("SegoeUI", segoe_path))
+            pdfmetrics.registerFont(TTFont("SegoeUI-Bold", segoeb_path))
+            FONT_REG = "SegoeUI"
+            FONT_BOLD = "SegoeUI-Bold"
+            break
+        deja_path = os.path.join(d, "DejaVuSans.ttf")
+        dejab_path = os.path.join(d, "DejaVuSans-Bold.ttf")
+        if os.path.exists(deja_path) and os.path.exists(dejab_path):
+            pdfmetrics.registerFont(TTFont("DejaVuSans", deja_path))
+            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", dejab_path))
+            FONT_REG = "DejaVuSans"
+            FONT_BOLD = "DejaVuSans-Bold"
+            break
 
-    if os.path.exists(nirmala_path):
-        pdfmetrics.registerFont(TTFont("Nirmala", nirmala_path, subfontIndex=0))
-        FONT_DEV = "Nirmala"
-    else:
+    for d in search_dirs:
+        for fname in ["Nirmala.ttc", "Nirmala.ttf", "Lohit-Devanagari.ttf", "gargi.ttf"]:
+            p = os.path.join(d, fname)
+            if os.path.exists(p):
+                pdfmetrics.registerFont(TTFont("DevFont", p, subfontIndex=0 if fname.endswith(".ttc") else None))
+                FONT_DEV = "DevFont"
+                break
+        if FONT_DEV != "Helvetica-Bold":
+            break
+    if FONT_DEV == "Helvetica-Bold":
         FONT_DEV = FONT_BOLD
 except Exception:
     pass
 
 def _rupee(amt: float) -> str:
+    if FONT_REG == "Helvetica":
+        return f"Rs. {amt:,.2f}"
     return f"₹{amt:,.2f}"
 
 def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
@@ -345,7 +368,7 @@ def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
         Spacer(1, 4),
         Paragraph("<font color='#047857'><b>✔ DIGITALLY VERIFIED VOUCHER</b></font><br/><font size='7' color='#64748B'>Authorized Payment Collector</font>", small),
         Spacer(1, 12),
-        Paragraph(f"<b>{SIGNATORY}</b>", ParagraphStyle("sig", parent=body, fontName=FONT_DEV, fontSize=10, alignment=TA_RIGHT)),
+        Paragraph(f"<b>{'Anju Kumari' if FONT_DEV in ('Helvetica-Bold', 'Helvetica') and SIGNATORY == 'अंजू कुमारी' else SIGNATORY}</b>", ParagraphStyle("sig", parent=body, fontName=FONT_DEV, fontSize=10, alignment=TA_RIGHT)),
         Paragraph("Authorized Signatory", ParagraphStyle("sig2", parent=small, fontName=FONT_REG, alignment=TA_RIGHT)),
     ]
 
