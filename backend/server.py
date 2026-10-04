@@ -148,11 +148,11 @@ async def download_apk():
 @api_router.get("/app/version")
 async def get_app_version():
     return {
-        "version": "1.2.0",
-        "version_code": 3,
+        "version": "1.2.1",
+        "version_code": 4,
         "apk_url": "https://tdscoms.onrender.com/download-apk",
         "fallback_apk_url": "https://frontend-rho-woad-43.vercel.app/TDSC-Office-Manager.apk",
-        "release_notes": "• Contractor Database: Complete 42+ field profile view, multi-criteria search (Name, GST, Reg No, Mobile, PAN, Class, Dept) & editing\n• Android Navigation: Fixed bottom buttons overlapping with 3-button system navigation bar\n• Enterprise RBAC: Super Admin and Admin hierarchy with staff management\n• Security: Demo credentials removed & session hardening",
+        "release_notes": "• Resolved crash when clicking Contractor / Customer Database\n• Comprehensive 42+ field contractor profile view, multi-criteria search & editing\n• Fixed Android bottom navigation bar overlap\n• Role-Based Access Control (Super Admin & Admin hierarchy with staff management)\n• Security hardening & test credentials removed",
         "mandatory": False,
     }
 
