@@ -10,6 +10,7 @@
     "web": "expo start --web",
     "build": "node ./scripts/clean.js && expo export --platform web && node ./scripts/inject-pwa.js",
     "build:web": "node ./scripts/clean.js && expo export --platform web && node ./scripts/inject-pwa.js",
+    "vercel-build": "node ./scripts/clean.js && expo export --platform web && node ./scripts/inject-pwa.js",
     "serve": "npx serve dist",
     "lint": "expo lint"
   },
