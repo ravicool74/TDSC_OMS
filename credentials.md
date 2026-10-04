@@ -4,15 +4,13 @@ All login credentials, roles, and live cloud links for the TDSC Office Managemen
 
 ---
 
-## 1. App Login Credentials
+## 1. Production Authentication & Access Control
 
-| Role | Email | Password | Access Level |
-| :--- | :--- | :--- | :--- |
-| **Admin** | `admin@triveni.com` | `admin123` | **Full Access**: Billing, Invoicing, Customer Directory, Attendance, Approvals, System Settings |
-| **Manager** | `manager@triveni.com` | `manager123` | **Operational Access**: Invoices, Customer Records, Task Management, Attendance Monitoring |
-| **Employee** | `employee@triveni.com` | `employee123` | **Staff Access**: Selfie Attendance Punch-In/Out, View Assigned Tasks |
-
-> **Tip**: You can create new employee logins or change existing passwords anytime directly from the **Admin Dashboard** under the **Employees** tab.
+> [!NOTE]
+> **Test / Demo Credentials Removed**: Hardcoded test credentials and the 1-Click Demo Login box have been removed from the UI and frontend environment for production security.
+> Users can log in using their registered corporate credentials or sign up via the **Sign Up** tab on the login screen.
+> 
+> System Administrators can manage users, staff profiles, and roles dynamically from **Admin -> Users & Roles**.
 
 ---
 

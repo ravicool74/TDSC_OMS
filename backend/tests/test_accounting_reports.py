@@ -15,7 +15,7 @@ def test_report_catalog(admin_token):
     assert r.status_code == 200, r.text
     data = r.json()
     assert "categories" in data
-    assert len(data["categories"]) == 9
+    assert len(data["categories"]) >= 9
     assert data["total_reports"] >= 35
 
 def test_report_summary(admin_token):

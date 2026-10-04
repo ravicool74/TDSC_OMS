@@ -103,10 +103,8 @@ cd "e:\MY PROJECTS\tdscoms\backend"
 
 ---
 
-## 4. Default Demo Accounts
+## 4. User Authentication & Administration
 
-| Role | Email | Password |
-| :--- | :--- | :--- |
-| **System Administrator** | `admin@triveni.com` | `admin123` |
-| **Branch Manager** | `manager@triveni.com` | `manager123` |
-| **Staff Employee** | `employee@triveni.com` | `employee123` |
+- **Authentication**: Users authenticate securely with registered email and password.
+- **Account Registration**: New accounts can be registered via the **Sign Up** tab or created by administrators.
+- **User & Role Administration**: Full role-based access control (Admin, Manager, Accountant, Employee) is configured via **Admin -> Users & Roles**.
