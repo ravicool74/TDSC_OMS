@@ -32,6 +32,51 @@ export default function PostsScreen() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Bulk selection state
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [busyBulk, setBusyBulk] = useState(false);
+
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+  const toggleSelect = (id: string) => setSelected(p => ({ ...p, [id]: !p[id] }));
+  const toggleSelectAll = () => {
+    if (!posts) return;
+    const all = posts.length > 0 && posts.every(p => selected[p.id]);
+    if (all) { setSelected({}); return; }
+    const next: Record<string, boolean> = {};
+    posts.forEach(p => { next[p.id] = true; });
+    setSelected(next);
+  };
+  const exitSelectMode = () => { setSelectMode(false); setSelected({}); };
+
+  const handleBulkDelete = async () => {
+    const ids = Object.keys(selected).filter(k => selected[k]);
+    if (ids.length === 0) return;
+    const ok = Platform.OS === 'web'
+      ? window.confirm(`Delete ${ids.length} selected post designation(s)?`)
+      : await new Promise(res => {
+          Alert.alert('Delete Selected Posts?', `${ids.length} posts will be permanently removed.`, [
+            { text: 'Cancel', style: 'cancel', onPress: () => res(false) },
+            { text: 'Delete All', style: 'destructive', onPress: () => res(true) },
+          ]);
+        });
+    if (!ok) return;
+
+    setBusyBulk(true);
+    try {
+      const res: any = await api.post('/posts/bulk-delete', { ids });
+      if (Platform.OS === 'web') window.alert(res?.message || 'Posts deleted');
+      else Alert.alert('Success', res?.message || 'Posts deleted');
+      exitSelectMode();
+      await load();
+    } catch (e: any) {
+      if (Platform.OS === 'web') window.alert(e?.message || 'Failed to delete');
+      else Alert.alert('Error', e?.message || 'Failed to delete');
+    } finally {
+      setBusyBulk(false);
+    }
+  };
+
   const load = useCallback(async () => {
     try {
       let url = '/posts';
@@ -118,9 +163,27 @@ export default function PostsScreen() {
       <ScreenHeader
         title="Post Management"
         right={
-          <Pressable onPress={openNew} style={styles.addButton}>
-            <Ionicons name="add" size={24} color={colors.onBrandPrimary} />
-          </Pressable>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <Pressable
+              onPress={() => {
+                if (selectMode) exitSelectMode();
+                else setSelectMode(true);
+              }}
+              style={[styles.selectHeaderBtn, selectMode && styles.selectHeaderBtnActive]}
+            >
+              <Ionicons
+                name={selectMode ? "close-circle" : "checkbox-outline"}
+                size={18}
+                color={selectMode ? colors.brandPrimary : colors.onSurface}
+              />
+              <Text style={[styles.selectHeaderBtnText, selectMode && { color: colors.brandPrimary }]}>
+                {selectMode ? 'Cancel' : 'Select'}
+              </Text>
+            </Pressable>
+            <Pressable onPress={openNew} style={styles.addButton}>
+              <Ionicons name="add" size={24} color={colors.onBrandPrimary} />
+            </Pressable>
+          </View>
         }
       />
 
@@ -137,6 +200,22 @@ export default function PostsScreen() {
         </View>
       </View>
 
+      {selectMode && (
+        <View style={styles.bulkSubHeader}>
+          <Pressable onPress={toggleSelectAll} style={styles.selectAllToggle}>
+            <Ionicons
+              name={posts && posts.length > 0 && posts.every(p => selected[p.id]) ? "checkbox" : "square-outline"}
+              size={20}
+              color={colors.brandPrimary}
+            />
+            <Text style={styles.selectAllToggleText}>
+              {posts && posts.length > 0 && posts.every(p => selected[p.id]) ? "Deselect All" : "Select All"}
+            </Text>
+          </Pressable>
+          <Text style={styles.selectedCountText}>{selectedCount} selected</Text>
+        </View>
+      )}
+
       {posts === null ? (
         <ScreenLoader />
       ) : posts.length === 0 ? (
@@ -151,10 +230,19 @@ export default function PostsScreen() {
         <FlatList
           data={posts}
           keyExtractor={item => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: selectMode ? 100 : 40 }]}
           renderItem={({ item }) => (
             <Card>
               <View style={styles.cardHeader}>
+                {selectMode && (
+                  <Pressable onPress={() => toggleSelect(item.id)} hitSlop={8} style={{ marginRight: 4 }}>
+                    <Ionicons
+                      name={selected[item.id] ? "checkbox" : "square-outline"}
+                      size={22}
+                      color={selected[item.id] ? colors.brandPrimary : colors.muted}
+                    />
+                  </Pressable>
+                )}
                 <View style={styles.postIcon}>
                   <Ionicons name="briefcase" size={20} color={colors.brandSecondary} />
                 </View>
@@ -186,6 +274,25 @@ export default function PostsScreen() {
             </Card>
           )}
         />
+      )}
+
+      {/* Bulk Delete Floating Bar */}
+      {selectMode && (
+        <View style={styles.bulkFloatingBar}>
+          <Pressable
+            disabled={selectedCount === 0 || busyBulk}
+            onPress={handleBulkDelete}
+            style={[styles.bulkDelBtn, { opacity: selectedCount === 0 || busyBulk ? 0.5 : 1 }]}
+          >
+            <Ionicons name="trash" size={16} color="#FFF" />
+            <Text style={styles.bulkDelBtnText}>
+              {busyBulk ? 'Deleting…' : `Delete Selected (${selectedCount})`}
+            </Text>
+          </Pressable>
+          <Pressable onPress={exitSelectMode} style={styles.bulkCancelBtn}>
+            <Text style={{ color: colors.onSurface, fontWeight: '700' }}>Cancel</Text>
+          </Pressable>
+        </View>
       )}
 
       {/* Modal */}
@@ -224,8 +331,8 @@ export default function PostsScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg }}>
-                <SecondaryButton title="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} />
-                <PrimaryButton title={busy ? 'Saving...' : 'Save Post'} onPress={save} disabled={busy} style={{ flex: 1 }} />
+                <SecondaryButton label="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} testID="btn-cancel-post" />
+                <PrimaryButton label={busy ? 'Saving...' : form.id ? 'Update Post' : 'Create Post'} onPress={save} disabled={busy} loading={busy} style={{ flex: 1 }} testID="btn-save-post" />
               </View>
             </ScrollView>
           </View>
@@ -263,4 +370,17 @@ const styles = StyleSheet.create({
   statusOption: { flex: 1, paddingVertical: 8, alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
   statusOptionSelected: { borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + '10' },
   statusOptionText: { fontSize: font.sm, color: colors.muted },
+
+  // Bulk action styles
+  selectHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  selectHeaderBtnActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + '15' },
+  selectHeaderBtnText: { fontSize: font.xs, fontWeight: '700', color: colors.onSurface },
+  bulkSubHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: 10, backgroundColor: '#F8FAFC', borderBottomWidth: 1, borderBottomColor: colors.border },
+  selectAllToggle: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  selectAllToggleText: { fontSize: font.sm, fontWeight: '700', color: colors.brandPrimary },
+  selectedCountText: { fontSize: font.sm, fontWeight: '800', color: colors.onSurface },
+  bulkFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', gap: 8, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.1, shadowRadius: 5, elevation: 8 },
+  bulkDelBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: radius.md, backgroundColor: colors.error },
+  bulkDelBtnText: { color: '#FFF', fontWeight: '800', fontSize: font.sm },
+  bulkCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceSecondary },
 });

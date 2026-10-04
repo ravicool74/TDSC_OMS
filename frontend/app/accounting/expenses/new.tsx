@@ -4,6 +4,7 @@ import {
   Pressable, ActivityIndicator, Alert
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { ScreenHeader } from '@/src/ScreenHeader';
@@ -29,6 +30,7 @@ type InvoicePassOnItem = {
 
 export default function NewExpense() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -226,7 +228,7 @@ export default function NewExpense() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-expense">
       <ScreenHeader title="Add Expense" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xxxl }}>
+        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 60 + insets.bottom }}>
 
           {/* Mode Switcher */}
           <View style={styles.modeContainer}>

@@ -187,8 +187,8 @@ export default function FieldGpsTrackingScreen() {
               <FormInput label="Visit Notes" value={visitNotes} onChangeText={setVisitNotes} placeholder="Outcome, discussion points, follow-up" />
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.md }}>
-                <SecondaryButton title="Cancel" onPress={() => setShowVisitModal(false)} style={{ flex: 1 }} />
-                <PrimaryButton title={visitBusy ? 'Logging...' : 'Save Visit'} onPress={logVisit} disabled={visitBusy} style={{ flex: 1 }} />
+                <SecondaryButton label="Cancel" onPress={() => setShowVisitModal(false)} style={{ flex: 1 }} testID="btn-cancel-visit" />
+                <PrimaryButton label={visitBusy ? 'Logging...' : 'Save Visit'} onPress={logVisit} disabled={visitBusy} loading={visitBusy} style={{ flex: 1 }} testID="btn-save-visit" />
               </View>
             </View>
           </View>

@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, Modal, KeyboardAvoidingView, Platform, ScrollView, Alert, TextInput } from 'react-native';
 import { useFocusEffect } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors, spacing, radius, font } from '@/src/theme';
@@ -8,6 +9,8 @@ import { api } from '@/src/api';
 import { Card, EmptyState, ScreenLoader, PrimaryButton, SecondaryButton, Avatar } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput } from '@/src/forms';
+import { useAuth } from '@/src/AuthContext';
+import { confirm, notify } from '@/src/dialog';
 
 type UserForm = {
   user_id?: string;
@@ -37,6 +40,11 @@ const emptyUser: UserForm = {
 };
 
 export default function UserManagementScreen() {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === 'super_admin';
+  const isAdmin = user?.role === 'admin' || isSuperAdmin;
+
   const [users, setUsers] = useState<any[] | null>(null);
   const [branches, setBranches] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
@@ -48,8 +56,17 @@ export default function UserManagementScreen() {
   const [form, setForm] = useState<UserForm>(emptyUser);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Bulk action states
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [busyBulk, setBusyBulk] = useState(false);
+  const [bulkModalType, setBulkModalType] = useState<'status' | 'branch' | 'post' | null>(null);
+  const [bulkSelectedOption, setBulkSelectedOption] = useState<string>('');
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       let url = '/manage-users';
       if (search.trim()) url += `?q=${encodeURIComponent(search.trim())}`;
@@ -63,7 +80,8 @@ export default function UserManagementScreen() {
       setBranches(bData);
       setPosts(pData);
       setRoles(rData);
-    } catch {
+    } catch (e: any) {
+      setLoadError(e?.message || 'Failed to load user directory');
       setUsers([]);
     }
   }, [search]);
@@ -77,6 +95,11 @@ export default function UserManagementScreen() {
   };
 
   const openEdit = (u: any) => {
+    const targetIsSuperAdmin = u.role === 'super_admin' || u.role_id === 'super_admin';
+    if (targetIsSuperAdmin && !isSuperAdmin) {
+      Alert.alert('Access Denied', 'Administrators cannot modify a Super Admin profile.');
+      return;
+    }
     setForm({
       user_id: u.user_id,
       name: u.name,
@@ -88,10 +111,102 @@ export default function UserManagementScreen() {
       status: u.status || 'active',
       branch_id: u.branch_id || '',
       post_id: u.post_id || '',
-      role_id: u.role_id || 'employee',
+      role_id: u.role_id || u.role || 'employee',
     });
     setErr(null);
     setShowForm(true);
+  };
+
+  const handleDeleteUser = async (u: any) => {
+    const targetIsSuperAdmin = u.role === 'super_admin' || u.role_id === 'super_admin';
+    if (targetIsSuperAdmin && !isSuperAdmin) {
+      Alert.alert('Access Denied', 'Administrators cannot remove a Super Admin account.');
+      return;
+    }
+    if (u.user_id === user?.user_id) {
+      Alert.alert('Action Not Allowed', 'You cannot delete your own logged-in account.');
+      return;
+    }
+    const ok = await confirm(
+      'Delete User',
+      `Are you sure you want to permanently delete user "${u.name}" (${u.email})? This action cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.del(`/manage-users/${u.user_id}`);
+      notify('User deleted successfully');
+      await load();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Failed to delete user');
+    }
+  };
+
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+  const toggleSelect = (uid: string) => setSelected(p => ({ ...p, [uid]: !p[uid] }));
+  const toggleSelectAll = () => {
+    if (!users) return;
+    const all = users.length > 0 && users.every(u => selected[u.user_id]);
+    if (all) { setSelected({}); return; }
+    const next: Record<string, boolean> = {};
+    users.forEach(u => { next[u.user_id] = true; });
+    setSelected(next);
+  };
+  const exitSelectMode = () => { setSelectMode(false); setSelected({}); };
+
+  const handleBulkDelete = async () => {
+    const ids = Object.keys(selected).filter(k => selected[k]);
+    if (ids.length === 0) return;
+    if (ids.includes(user?.user_id)) {
+      Alert.alert('Action Denied', 'You cannot delete your own logged-in account in a bulk action.');
+      return;
+    }
+    const ok = await confirm(
+      'Bulk Delete Users',
+      `Are you sure you want to permanently delete ${ids.length} selected user(s)? This action cannot be undone.`,
+      { confirmText: 'Delete All', destructive: true }
+    );
+    if (!ok) return;
+    setBusyBulk(true);
+    try {
+      const res: any = await api.post('/manage-users/bulk-action', { user_ids: ids, action: 'delete' });
+      notify(res?.message || 'Users deleted');
+      exitSelectMode();
+      await load();
+    } catch (e: any) {
+      Alert.alert('Bulk Delete Failed', e?.message || 'Failed to delete users');
+    } finally {
+      setBusyBulk(false);
+    }
+  };
+
+  const handleExecuteBulkAction = async () => {
+    const ids = Object.keys(selected).filter(k => selected[k]);
+    if (ids.length === 0 || !bulkModalType) return;
+    setBusyBulk(true);
+    try {
+      let payload: any = { user_ids: ids };
+      if (bulkModalType === 'status') {
+        payload.action = 'set_status';
+        payload.status = bulkSelectedOption || 'active';
+      } else if (bulkModalType === 'branch') {
+        payload.action = 'set_branch';
+        payload.branch_id = bulkSelectedOption;
+      } else if (bulkModalType === 'post') {
+        payload.action = 'set_post';
+        payload.post_id = bulkSelectedOption;
+      }
+      const res: any = await api.post('/manage-users/bulk-action', payload);
+      notify(res?.message || 'Users updated');
+      setBulkModalType(null);
+      exitSelectMode();
+      await load();
+    } catch (e: any) {
+      Alert.alert('Bulk Update Failed', e?.message || 'Failed to update users');
+    } finally {
+      setBusyBulk(false);
+    }
   };
 
   const save = async () => {
@@ -101,6 +216,10 @@ export default function UserManagementScreen() {
     }
     if (!form.user_id && !form.password) {
       setErr('Password is required for new user');
+      return;
+    }
+    if (form.role_id === 'super_admin' && !isSuperAdmin) {
+      setErr('Only Super Admin can assign the Super Admin role');
       return;
     }
     setBusy(true);
@@ -175,9 +294,27 @@ export default function UserManagementScreen() {
       <ScreenHeader
         title="User Management"
         right={
-          <Pressable onPress={openNew} style={styles.addButton}>
-            <Ionicons name="person-add" size={20} color={colors.onBrandPrimary} />
-          </Pressable>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <Pressable
+              onPress={() => {
+                if (selectMode) exitSelectMode();
+                else setSelectMode(true);
+              }}
+              style={[styles.selectHeaderBtn, selectMode && styles.selectHeaderBtnActive]}
+            >
+              <Ionicons
+                name={selectMode ? "close-circle" : "checkbox-outline"}
+                size={18}
+                color={selectMode ? colors.brandPrimary : colors.onSurface}
+              />
+              <Text style={[styles.selectHeaderBtnText, selectMode && { color: colors.brandPrimary }]}>
+                {selectMode ? 'Cancel' : 'Select'}
+              </Text>
+            </Pressable>
+            <Pressable onPress={openNew} style={styles.addButton}>
+              <Ionicons name="person-add" size={20} color={colors.onBrandPrimary} />
+            </Pressable>
+          </View>
         }
       />
 
@@ -194,8 +331,32 @@ export default function UserManagementScreen() {
         </View>
       </View>
 
+      {selectMode && (
+        <View style={styles.bulkSubHeader}>
+          <Pressable onPress={toggleSelectAll} style={styles.selectAllToggle}>
+            <Ionicons
+              name={users && users.length > 0 && users.every(u => selected[u.user_id]) ? "checkbox" : "square-outline"}
+              size={20}
+              color={colors.brandPrimary}
+            />
+            <Text style={styles.selectAllToggleText}>
+              {users && users.length > 0 && users.every(u => selected[u.user_id]) ? "Deselect All" : "Select All"}
+            </Text>
+          </Pressable>
+          <Text style={styles.selectedCountText}>{selectedCount} selected</Text>
+        </View>
+      )}
+
       {users === null ? (
         <ScreenLoader />
+      ) : loadError ? (
+        <EmptyState
+          icon="alert-circle-outline"
+          title="Unable to Load Users"
+          subtitle={`Error: ${loadError}`}
+          actionLabel="Retry"
+          onAction={load}
+        />
       ) : users.length === 0 ? (
         <EmptyState
           icon="people-outline"
@@ -208,13 +369,22 @@ export default function UserManagementScreen() {
         <FlatList
           data={users}
           keyExtractor={item => item.user_id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: (selectMode ? 120 : 60) + insets.bottom }]}
           renderItem={({ item }) => (
             <Card>
               <View style={styles.cardHeader}>
+                {selectMode && (
+                  <Pressable onPress={() => toggleSelect(item.user_id)} hitSlop={8} style={{ marginRight: 4 }}>
+                    <Ionicons
+                      name={selected[item.user_id] ? "checkbox" : "square-outline"}
+                      size={22}
+                      color={selected[item.user_id] ? colors.brandPrimary : colors.muted}
+                    />
+                  </Pressable>
+                )}
                 <Avatar name={item.name} size={44} />
                 <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     <Text style={styles.userName}>{item.name}</Text>
                     <View style={[styles.badge, item.status === 'active' ? styles.badgeActive : styles.badgeInactive]}>
                       <Text style={[styles.badgeText, { color: item.status === 'active' ? colors.success : colors.muted }]}>
@@ -226,9 +396,23 @@ export default function UserManagementScreen() {
                 </View>
 
                 <View style={styles.actionBtns}>
-                  <Pressable onPress={() => openEdit(item)} style={styles.editBtn}>
-                    <Ionicons name="pencil" size={18} color={colors.brandPrimary} />
-                  </Pressable>
+                  {(item.role === 'super_admin' || item.role_id === 'super_admin') && !isSuperAdmin ? (
+                    <View style={styles.protectedBadge}>
+                      <Ionicons name="shield" size={13} color={colors.warning} />
+                      <Text style={styles.protectedText}>Protected</Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Pressable onPress={() => openEdit(item)} style={styles.editBtn}>
+                        <Ionicons name="pencil" size={17} color={colors.brandPrimary} />
+                      </Pressable>
+                      {item.user_id !== user?.user_id && (
+                        <Pressable onPress={() => handleDeleteUser(item)} style={styles.delBtn}>
+                          <Ionicons name="trash-outline" size={17} color={colors.error} />
+                        </Pressable>
+                      )}
+                    </>
+                  )}
                 </View>
               </View>
 
@@ -244,9 +428,23 @@ export default function UserManagementScreen() {
                   <Text style={styles.mapPillText}>{item.post_title || 'No Post'}</Text>
                 </View>
                 <Ionicons name="arrow-forward" size={12} color={colors.muted} />
-                <View style={[styles.mapPill, { backgroundColor: colors.success + '15' }]}>
-                  <Ionicons name="shield-checkmark" size={12} color={colors.success} />
-                  <Text style={[styles.mapPillText, { color: colors.success }]}>{item.role_name || item.role}</Text>
+                <View style={[
+                  styles.mapPill,
+                  (item.role_id === 'super_admin' || item.role === 'super_admin')
+                    ? { backgroundColor: colors.brandPrimary + '15' }
+                    : { backgroundColor: colors.success + '15' }
+                ]}>
+                  <Ionicons
+                    name={(item.role_id === 'super_admin' || item.role === 'super_admin') ? "shield" : "shield-checkmark"}
+                    size={12}
+                    color={(item.role_id === 'super_admin' || item.role === 'super_admin') ? colors.brandPrimary : colors.success}
+                  />
+                  <Text style={[
+                    styles.mapPillText,
+                    { color: (item.role_id === 'super_admin' || item.role === 'super_admin') ? colors.brandPrimary : colors.success, fontWeight: '700' }
+                  ]}>
+                    {item.role_name || item.role}
+                  </Text>
                 </View>
               </View>
 
@@ -267,6 +465,145 @@ export default function UserManagementScreen() {
         />
       )}
 
+      {/* Floating Bulk Action Bar */}
+      {selectMode && (
+        <View style={[styles.bulkFloatingBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <View style={styles.bulkActionsRow}>
+            <Pressable
+              disabled={selectedCount === 0 || busyBulk}
+              onPress={() => { setBulkSelectedOption('active'); setBulkModalType('status'); }}
+              style={[styles.bulkActionButton, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}
+            >
+              <Ionicons name="swap-horizontal" size={15} color="#15803D" />
+              <Text style={[styles.bulkActionText, { color: '#15803D' }]}>Status</Text>
+            </Pressable>
+
+            <Pressable
+              disabled={selectedCount === 0 || busyBulk}
+              onPress={() => { setBulkSelectedOption(branches[0]?.branch_id || ''); setBulkModalType('branch'); }}
+              style={[styles.bulkActionButton, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+            >
+              <Ionicons name="business-outline" size={15} color={colors.brandPrimary} />
+              <Text style={[styles.bulkActionText, { color: colors.brandPrimary }]}>Branch</Text>
+            </Pressable>
+
+            <Pressable
+              disabled={selectedCount === 0 || busyBulk}
+              onPress={() => { setBulkSelectedOption(posts[0]?.post_id || ''); setBulkModalType('post'); }}
+              style={[styles.bulkActionButton, { backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' }]}
+            >
+              <Ionicons name="briefcase-outline" size={15} color="#6D28D9" />
+              <Text style={[styles.bulkActionText, { color: "#6D28D9" }]}>Post</Text>
+            </Pressable>
+
+            <Pressable
+              disabled={selectedCount === 0 || busyBulk}
+              onPress={handleBulkDelete}
+              style={[styles.bulkActionButton, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}
+            >
+              <Ionicons name="trash-outline" size={15} color={colors.error} />
+              <Text style={[styles.bulkActionText, { color: colors.error }]}>Delete ({selectedCount})</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      {/* Bulk Action Options Modal */}
+      <Modal visible={!!bulkModalType} animationType="fade" transparent onRequestClose={() => setBulkModalType(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalBox, { maxHeight: '80%', padding: spacing.lg }]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>
+                  {bulkModalType === 'status' ? 'Bulk Update Status' :
+                   bulkModalType === 'branch' ? 'Bulk Assign Branch' : 'Bulk Assign Post'}
+                </Text>
+                <Text style={styles.subText}>Applying to {selectedCount} selected user(s)</Text>
+              </View>
+              <Pressable onPress={() => setBulkModalType(null)}>
+                <Ionicons name="close" size={24} color={colors.muted} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ gap: spacing.sm, paddingVertical: spacing.md }}>
+              {bulkModalType === 'status' && (
+                ['active', 'inactive'].map(st => (
+                  <Pressable
+                    key={st}
+                    onPress={() => setBulkSelectedOption(st)}
+                    style={[styles.modalOptionCard, bulkSelectedOption === st && styles.modalOptionCardActive]}
+                  >
+                    <Ionicons
+                      name={bulkSelectedOption === st ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={bulkSelectedOption === st ? colors.brandPrimary : colors.muted}
+                    />
+                    <Text style={[styles.modalOptionText, bulkSelectedOption === st && styles.modalOptionTextActive]}>
+                      {st.toUpperCase()}
+                    </Text>
+                  </Pressable>
+                ))
+              )}
+
+              {bulkModalType === 'branch' && (
+                branches.map(b => (
+                  <Pressable
+                    key={b.branch_id}
+                    onPress={() => setBulkSelectedOption(b.branch_id)}
+                    style={[styles.modalOptionCard, bulkSelectedOption === b.branch_id && styles.modalOptionCardActive]}
+                  >
+                    <Ionicons
+                      name={bulkSelectedOption === b.branch_id ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={bulkSelectedOption === b.branch_id ? colors.brandPrimary : colors.muted}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.modalOptionText, bulkSelectedOption === b.branch_id && styles.modalOptionTextActive]}>
+                        {b.name}
+                      </Text>
+                      {b.address ? <Text style={styles.subText}>{b.address}</Text> : null}
+                    </View>
+                  </Pressable>
+                ))
+              )}
+
+              {bulkModalType === 'post' && (
+                posts.map(p => (
+                  <Pressable
+                    key={p.post_id}
+                    onPress={() => setBulkSelectedOption(p.post_id)}
+                    style={[styles.modalOptionCard, bulkSelectedOption === p.post_id && styles.modalOptionCardActive]}
+                  >
+                    <Ionicons
+                      name={bulkSelectedOption === p.post_id ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={bulkSelectedOption === p.post_id ? colors.brandPrimary : colors.muted}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.modalOptionText, bulkSelectedOption === p.post_id && styles.modalOptionTextActive]}>
+                        {p.title}
+                      </Text>
+                      <Text style={styles.subText}>{p.department}</Text>
+                    </View>
+                  </Pressable>
+                ))
+              )}
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.md }}>
+              <SecondaryButton label="Cancel" onPress={() => setBulkModalType(null)} style={{ flex: 1 }} />
+              <PrimaryButton
+                label={busyBulk ? 'Updating...' : 'Apply Bulk Change'}
+                onPress={handleExecuteBulkAction}
+                disabled={busyBulk}
+                loading={busyBulk}
+                style={{ flex: 2 }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* User Edit/Add Modal */}
       <Modal visible={showForm} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
@@ -278,7 +615,7 @@ export default function UserManagementScreen() {
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: Math.max(insets.bottom, spacing.xl) }}>
               {err ? <Text style={styles.errorText}>{err}</Text> : null}
 
               <FormInput label="Full Name *" value={form.name} onChangeText={t => setForm(p => ({ ...p, name: t }))} placeholder="Employee / User Full Name" />
@@ -327,9 +664,11 @@ export default function UserManagementScreen() {
                 {/* Role */}
                 <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Assigned Role</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                  {roles.map(r => (
+                  {roles
+                    .filter(r => isSuperAdmin || (r.role_id !== 'super_admin' && r.id !== 'rol_super_admin'))
+                    .map(r => (
                     <Pressable
-                      key={r.role_id}
+                      key={r.role_id || r.id}
                       onPress={() => setForm(p => ({ ...p, role_id: r.role_id }))}
                       style={[styles.selectPill, form.role_id === r.role_id && styles.selectPillActive]}
                     >
@@ -342,8 +681,15 @@ export default function UserManagementScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg }}>
-                <SecondaryButton title="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} />
-                <PrimaryButton title={busy ? 'Saving...' : 'Save User'} onPress={save} disabled={busy} style={{ flex: 1 }} />
+                <SecondaryButton label="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} testID="btn-cancel-user" />
+                <PrimaryButton
+                  label={form.user_id ? (busy ? 'Updating...' : 'Update User') : (busy ? 'Creating...' : 'Create User')}
+                  onPress={save}
+                  disabled={busy}
+                  loading={busy}
+                  style={{ flex: 1 }}
+                  testID="btn-save-user"
+                />
               </View>
             </ScrollView>
           </View>
@@ -438,4 +784,23 @@ const styles = StyleSheet.create({
   docName: { fontSize: font.sm, fontWeight: '600', color: colors.onSurface },
   docMeta: { fontSize: font.xs, color: colors.muted, marginTop: 2 },
   delBtn: { padding: 6, borderRadius: radius.sm, backgroundColor: colors.error + '10' },
+  protectedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.sm, backgroundColor: colors.warning + '15' },
+  protectedText: { fontSize: 11, fontWeight: '700', color: colors.warning },
+
+  // Bulk action styles
+  selectHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  selectHeaderBtnActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + '15' },
+  selectHeaderBtnText: { fontSize: font.xs, fontWeight: '700', color: colors.onSurface },
+  bulkSubHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: 10, backgroundColor: '#F8FAFC', borderBottomWidth: 1, borderBottomColor: colors.border },
+  selectAllToggle: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  selectAllToggleText: { fontSize: font.sm, fontWeight: '700', color: colors.brandPrimary },
+  selectedCountText: { fontSize: font.sm, fontWeight: '800', color: colors.onSurface },
+  bulkFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: spacing.md, paddingTop: spacing.sm, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.1, shadowRadius: 5, elevation: 8 },
+  bulkActionsRow: { flexDirection: 'row', gap: 8 },
+  bulkActionButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1 },
+  bulkActionText: { fontSize: 12, fontWeight: '800' },
+  modalOptionCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  modalOptionCardActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + '10' },
+  modalOptionText: { fontSize: font.base, fontWeight: '700', color: colors.onSurface },
+  modalOptionTextActive: { color: colors.brandPrimary },
 });

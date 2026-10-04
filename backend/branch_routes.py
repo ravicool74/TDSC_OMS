@@ -175,6 +175,16 @@ def make_branch_router(db, get_current_user, require_admin, log_audit):
         await log_audit(db, current, "branches", "create", branch_id, None, doc)
         return Branch(**doc)
 
+    @router.post("/bulk-delete")
+    async def bulk_delete_branches(payload: dict, current: any = Depends(require_admin)):
+        ids = [i for i in (payload.get("ids") or []) if i]
+        if not ids:
+            return {"ok": True, "count": 0, "deleted": 0}
+        res = await db.branches.delete_many({"$or": [{"id": {"$in": ids}}, {"branch_id": {"$in": ids}}]})
+        await db.offices.delete_many({"id": {"$in": ids}})
+        await log_audit(db, current, "branches", "bulk_delete", "bulk", None, {"ids": ids, "deleted": res.deleted_count})
+        return {"ok": True, "count": res.deleted_count, "deleted": res.deleted_count}
+
     @router.put("/{bid}", response_model=Branch)
     @router.patch("/{bid}", response_model=Branch)
     async def update_branch(bid: str, payload: BranchUpdate, current: any = Depends(require_admin)):

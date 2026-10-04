@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, Pressable, TextInput } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
@@ -45,6 +45,7 @@ type LineItem = {
 };
 
 export default function NewInvoice() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ type?: string; edit_id?: string }>();
   const isPurchase = params?.type === 'purchase';
@@ -266,7 +267,7 @@ export default function NewInvoice() {
       </SafeAreaView>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 160 }} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 170 + Math.max(insets.bottom, 12) }} keyboardShouldPersistTaps="handled">
           <View style={styles.rowGrid}>
             <Cell label="Invoice No" value={invoiceNo} disabled />
             <Cell label="Date" value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" testID="in-date" />
@@ -413,7 +414,7 @@ export default function NewInvoice() {
         </ScrollView>
 
         {/* Bottom totals + save bar */}
-        <View style={styles.bottomBar}>
+        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <View style={styles.totalRow}>
             <View>
               <Text style={styles.totalLbl}>Total Amount</Text>
@@ -444,7 +445,7 @@ export default function NewInvoice() {
       {/* Payment terms modal (simple picker) */}
       {showTerms ? (
         <Pressable style={styles.termsOverlay} onPress={() => setShowTerms(false)}>
-          <View style={styles.termsSheet}>
+          <View style={[styles.termsSheet, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]}>
             <Text style={styles.termsTitle}>Payment Terms</Text>
             {TERMS.map(t => (
               <Pressable key={t.label} onPress={() => { setTerms(t.label); setShowTerms(false); }} style={styles.termsRow} testID={`term-${t.label}`}>
@@ -459,7 +460,7 @@ export default function NewInvoice() {
       {/* Payment mode modal */}
       {showPayMode ? (
         <Pressable style={styles.termsOverlay} onPress={() => setShowPayMode(false)}>
-          <View style={styles.termsSheet}>
+          <View style={[styles.termsSheet, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]}>
             <Text style={styles.termsTitle}>Payment Mode</Text>
             {PAY_MODES.map(m => (
               <Pressable key={m.key} onPress={() => { setPaymentMode(m.key); setShowPayMode(false); }} style={styles.termsRow} testID={`pm-${m.key}`}>

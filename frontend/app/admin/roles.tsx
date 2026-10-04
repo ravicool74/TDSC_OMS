@@ -163,8 +163,8 @@ export default function RolesScreen() {
               <FormInput label="Description" value={newRoleDesc} onChangeText={setNewRoleDesc} placeholder="Role scope and authority description" />
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.md }}>
-                <SecondaryButton title="Cancel" onPress={() => setShowCreateModal(false)} style={{ flex: 1 }} />
-                <PrimaryButton title={busy ? 'Creating...' : 'Create Role'} onPress={saveCustomRole} disabled={busy} style={{ flex: 1 }} />
+                <SecondaryButton label="Cancel" onPress={() => setShowCreateModal(false)} style={{ flex: 1 }} testID="btn-cancel-role" />
+                <PrimaryButton label={busy ? 'Creating...' : 'Create Role'} onPress={saveCustomRole} disabled={busy} loading={busy} style={{ flex: 1 }} testID="btn-save-role" />
               </View>
             </View>
           </View>

@@ -116,6 +116,15 @@ def make_post_router(db, get_current_user, require_admin, log_audit):
         await log_audit(db, current, "posts", "create", pid, None, doc)
         return Post(**doc)
 
+    @router.post("/bulk-delete")
+    async def bulk_delete_posts(payload: dict, current: any = Depends(require_admin)):
+        ids = [i for i in (payload.get("ids") or []) if i]
+        if not ids:
+            return {"ok": True, "count": 0, "deleted": 0}
+        res = await db.posts.delete_many({"$or": [{"id": {"$in": ids}}, {"post_id": {"$in": ids}}]})
+        await log_audit(db, current, "posts", "bulk_delete", "bulk", None, {"ids": ids, "deleted": res.deleted_count})
+        return {"ok": True, "count": res.deleted_count, "deleted": res.deleted_count}
+
     @router.put("/{pid}", response_model=Post)
     @router.patch("/{pid}", response_model=Post)
     async def update_post(pid: str, payload: PostUpdate, current: any = Depends(require_admin)):

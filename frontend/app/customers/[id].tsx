@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, Platform, Pressable, Linking, Modal, TextInput, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
@@ -13,13 +14,27 @@ import { confirm, notify } from '@/src/dialog';
 const MAX_BYTES = 10 * 1024 * 1024;
 const humanSize = (b: number) => b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1024 / 1024).toFixed(2)} MB`;
 
+const daysUntil = (dateStr?: string | null): number | null => {
+  if (!dateStr) return null;
+  let iso = dateStr.trim();
+  if (/^\d{2}[-/]\d{2}[-/]\d{4}$/.test(iso)) {
+    const [d, m, y] = iso.split(/[-/]/);
+    iso = `${y}-${m}-${d}`;
+  }
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const diff = t - Date.now();
+  return Math.floor(diff / (1000 * 60 * 60 * 24));
+};
+
 const DOC_CATEGORIES = ['PAN', 'Aadhar', 'GST Certificate', 'DSC Certificate', 'Contractor Registration', 'Bank Statement', 'Tender BoQ', 'Other'];
 
 export default function CustomerDetail() {
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
   const canEdit = isAdmin || user?.role === 'manager';
 
   const [c, setC] = useState<any | null>(null);
@@ -194,14 +209,130 @@ export default function CustomerDetail() {
         )}
       />
 
-      <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xxxl }}>
+      <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: Math.max(insets.bottom + 40, spacing.xxxl) }}>
         {/* Header Summary Card */}
         <Card>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{c.name}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Text style={styles.name}>{c.name}</Text>
+                {c.registration_class ? (
+                  <View style={{ backgroundColor: '#EEF2FF', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#C7D2FE' }}>
+                    <Text style={{ fontSize: 11, fontWeight: '800', color: '#4338CA' }}>{c.registration_class}</Text>
+                  </View>
+                ) : null}
+              </View>
               <Text style={styles.code}>{c.customer_code || c.id}</Text>
-              {c.departments ? <Text style={styles.depts}>Departments: {c.departments}</Text> : null}
+              {c.contractor_reg_no ? (
+                <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E293B', marginTop: 4 }}>
+                  Contractor Reg: <Text style={{ color: colors.brandPrimary }}>{c.contractor_reg_no}</Text>
+                  {c.registration_validity ? ` (Valid: ${c.registration_validity})` : ''}
+                </Text>
+              ) : null}
+              {c.departments ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {c.departments.split(',').map((d: string) => d.trim()).filter(Boolean).map((d: string) => (
+                    <View key={d} style={{ backgroundColor: '#DCFCE7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                      <Text style={{ fontSize: 10, fontWeight: '800', color: '#15803D' }}>{d}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          </View>
+
+          {/* Prominent Action Bar */}
+          <View style={{ marginTop: spacing.md, gap: 8, borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: spacing.md }}>
+            {canEdit ? (
+              <Pressable
+                testID="btn-edit-contractor-main"
+                onPress={() => router.push({ pathname: '/customers/new', params: { edit_id: id } } as any)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  backgroundColor: '#D97706',
+                  paddingVertical: 12,
+                  borderRadius: radius.md,
+                }}
+              >
+                <Ionicons name="create" size={18} color="#FFF" />
+                <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>Edit Contractor Profile</Text>
+              </Pressable>
+            ) : null}
+
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <Pressable
+                testID="print-cust-card"
+                onPress={async () => {
+                  try {
+                    const url = await api.customerPdfUrl(id);
+                    if (Platform.OS === 'web' && typeof window !== 'undefined') window.open(url, '_blank');
+                    else await Linking.openURL(url);
+                  } catch (e: any) { notify('Failed', e?.message || 'Try again'); }
+                }}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: '#EFF6FF',
+                  paddingVertical: 10,
+                  borderRadius: radius.md,
+                  borderWidth: 1,
+                  borderColor: '#BFDBFE',
+                }}
+              >
+                <Ionicons name="print-outline" size={16} color={colors.brandPrimary} />
+                <Text style={{ color: colors.brandPrimary, fontWeight: '700', fontSize: 12 }}>Print PDF</Text>
+              </Pressable>
+
+              {c.mobile ? (
+                <Pressable
+                  onPress={() => Linking.openURL(`tel:${c.mobile}`)}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    backgroundColor: '#F0FDF4',
+                    paddingVertical: 10,
+                    borderRadius: radius.md,
+                    borderWidth: 1,
+                    borderColor: '#BBF7D0',
+                  }}
+                >
+                  <Ionicons name="call" size={16} color="#15803D" />
+                  <Text style={{ color: '#15803D', fontWeight: '700', fontSize: 12 }}>Call</Text>
+                </Pressable>
+              ) : null}
+
+              {c.whatsapp || c.mobile ? (
+                <Pressable
+                  onPress={() => {
+                    const clean = (c.whatsapp || c.mobile).replace(/\D/g, '');
+                    Linking.openURL(`https://wa.me/${clean.startsWith('91') ? clean : '91' + clean}`);
+                  }}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    backgroundColor: '#ECFDF5',
+                    paddingVertical: 10,
+                    borderRadius: radius.md,
+                    borderWidth: 1,
+                    borderColor: '#A7F3D0',
+                  }}
+                >
+                  <Ionicons name="logo-whatsapp" size={16} color="#059669" />
+                  <Text style={{ color: '#059669', fontWeight: '700', fontSize: 12 }}>WhatsApp</Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         </Card>
@@ -217,10 +348,21 @@ export default function CustomerDetail() {
           <Row label="Aadhar" value={c.aadhar} />
           {c.address ? <Row label="Address" value={c.address} /> : null}
           {c.gst_no ? <Row label="GST No." value={c.gst_no} /> : null}
-          {c.contractor_reg_no ? <Row label="Reg. No." value={c.contractor_reg_no} /> : null}
-          {c.registration_class ? <Row label="Reg. Class" value={c.registration_class} /> : null}
-          {c.registration_validity ? <Row label="Reg. Validity" value={c.registration_validity} /> : null}
         </Card>
+
+        {/* 2. Contractor Enlistment & Registration */}
+        {(c.contractor_reg_no || c.registration_class || c.registration_validity || c.departments) && (
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="ribbon-outline" size={20} color={colors.brandPrimary} />
+              <Text style={styles.sectionTitle}>Contractor Registration & Enlistment</Text>
+            </View>
+            <Row label="Registration No." value={c.contractor_reg_no || '—'} />
+            <Row label="Reg. Class" value={c.registration_class || '—'} />
+            <Row label="Validity Date" value={c.registration_validity || '—'} />
+            <Row label="Departments" value={c.departments || '—'} />
+          </Card>
+        )}
 
         {/* Custom Fields Card */}
         {(customFieldsList.length > 0 || (c.custom_fields && Object.keys(c.custom_fields).length > 0)) && (
@@ -255,24 +397,54 @@ export default function CustomerDetail() {
           </Card>
         )}
 
-        {/* 2. Digital Signature (DSC) & Encryption Expiry */}
+        {/* 3. Digital Signature (DSC) & Encryption Expiry */}
         <Card>
           <Text style={styles.sectionTitle}>Digital Signature Certificates (DSC)</Text>
-          <View style={styles.dscBlock}>
-            <Text style={styles.dscHeading}>DSC Signing</Text>
-            <Row label="Serial No." value={c.dsc_serial_no || '—'} />
-            <Row label="Issued Date" value={c.dsc_issued_date || '—'} />
-            <Row label="Expiry Date" value={c.dsc_expired_date || '—'} />
-          </View>
-          <View style={[styles.dscBlock, { marginTop: spacing.md }]}>
-            <Text style={styles.dscHeading}>DSC Encryption</Text>
-            <Row label="Serial No." value={c.encryption_serial_no || '—'} />
-            <Row label="Issued Date" value={c.encryption_issued_date || '—'} />
-            <Row label="Expiry Date" value={c.encryption_expired_date || '—'} />
-          </View>
+          {(() => {
+            const signDays = daysUntil(c.dsc_expired_date);
+            const signExpired = signDays !== null && signDays < 0;
+            const signWarn = signDays !== null && signDays <= 30;
+            const encDays = daysUntil(c.encryption_expired_date);
+            const encExpired = encDays !== null && encDays < 0;
+            const encWarn = encDays !== null && encDays <= 30;
+            return (
+              <>
+                <View style={[styles.dscBlock, signWarn && { borderColor: signExpired ? colors.error : colors.warning, borderWidth: 1.5 }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.dscHeading}>DSC Signing</Text>
+                    {signDays !== null ? (
+                      <View style={{ backgroundColor: signExpired ? '#FEE2E2' : signWarn ? '#FEF3C7' : '#DCFCE7', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 }}>
+                        <Text style={{ fontSize: 10, fontWeight: '800', color: signExpired ? colors.error : signWarn ? '#B45309' : '#15803D' }}>
+                          {signExpired ? `Expired (${-signDays}d ago)` : signWarn ? `Expiring in ${signDays}d` : `Active (${signDays}d left)`}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Row label="Serial No." value={c.dsc_serial_no || '—'} />
+                  <Row label="Issued Date" value={c.dsc_issued_date || '—'} />
+                  <Row label="Expiry Date" value={c.dsc_expired_date || '—'} />
+                </View>
+                <View style={[styles.dscBlock, { marginTop: spacing.md }, encWarn && { borderColor: encExpired ? colors.error : colors.warning, borderWidth: 1.5 }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.dscHeading}>DSC Encryption</Text>
+                    {encDays !== null ? (
+                      <View style={{ backgroundColor: encExpired ? '#FEE2E2' : encWarn ? '#FEF3C7' : '#DCFCE7', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 }}>
+                        <Text style={{ fontSize: 10, fontWeight: '800', color: encExpired ? colors.error : encWarn ? '#B45309' : '#15803D' }}>
+                          {encExpired ? `Expired (${-encDays}d ago)` : encWarn ? `Expiring in ${encDays}d` : `Active (${encDays}d left)`}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Row label="Serial No." value={c.encryption_serial_no || '—'} />
+                  <Row label="Issued Date" value={c.encryption_issued_date || '—'} />
+                  <Row label="Expiry Date" value={c.encryption_expired_date || '—'} />
+                </View>
+              </>
+            );
+          })()}
         </Card>
 
-        {/* 3. Credential Vault (Encrypted with Reveal Eye) */}
+        {/* 4. Credential Vault (Encrypted with Reveal Eye) */}
         <Card>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Ionicons name="shield-checkmark" size={20} color={colors.brandPrimary} />
@@ -336,6 +508,7 @@ export default function CustomerDetail() {
               userId={c.gem_user_id}
               email={c.gem_email}
               fieldName="gem_password"
+              extraInfo={c.gem_seller_id ? `Seller ID: ${c.gem_seller_id}` : undefined}
               hasPass={!!c.gem_password}
               revealedVal={revealed['gem_password']}
               loading={revealingField === 'gem_password'}
@@ -355,6 +528,7 @@ export default function CustomerDetail() {
               portalName="ISO Portal"
               userId={c.iso_user_id}
               fieldName="iso_password"
+              extraInfo={c.iso_other_details ? `Scope/Details: ${c.iso_other_details}` : undefined}
               hasPass={!!c.iso_password}
               revealedVal={revealed['iso_password']}
               loading={revealingField === 'iso_password'}
@@ -372,6 +546,19 @@ export default function CustomerDetail() {
             />
           </View>
         </Card>
+
+        {/* 5. Office Notes & Remarks */}
+        {c.notes ? (
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="document-text-outline" size={20} color={colors.brandPrimary} />
+              <Text style={styles.sectionTitle}>Office Notes & Remarks</Text>
+            </View>
+            <Text style={{ color: '#334155', fontSize: font.base, marginTop: 8, lineHeight: 22, backgroundColor: '#F8FAFC', padding: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: '#E2E8F0' }}>
+              {c.notes}
+            </Text>
+          </Card>
+        ) : null}
 
         {/* 4. Document Manager with Expiry Tracking */}
         <Card>
@@ -494,19 +681,21 @@ const VaultRow: React.FC<{
   portalName: string;
   userId?: string | null;
   email?: string | null;
+  extraInfo?: string | null;
   fieldName: string;
   hasPass: boolean;
   revealedVal?: string;
   loading: boolean;
   onReveal: () => void;
-}> = ({ portalName, userId, email, hasPass, revealedVal, loading, onReveal }) => {
-  if (!userId && !hasPass && !email) return null;
+}> = ({ portalName, userId, email, extraInfo, hasPass, revealedVal, loading, onReveal }) => {
+  if (!userId && !hasPass && !email && !extraInfo) return null;
   return (
     <View style={styles.vaultCard}>
       <View style={{ flex: 1 }}>
         <Text style={styles.vaultPortal}>{portalName}</Text>
         <Text style={styles.vaultId}>User ID: <Text style={{ fontWeight: '700' }}>{userId || '—'}</Text></Text>
         {email ? <Text style={styles.vaultSub}>Email: {email}</Text> : null}
+        {extraInfo ? <Text style={[styles.vaultSub, { color: colors.brandPrimary, fontWeight: '600' }]}>{extraInfo}</Text> : null}
         <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 6 }}>
           <Text style={styles.vaultSub}>Password: </Text>
           <Text style={[styles.vaultPass, revealedVal && { color: '#059669', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>

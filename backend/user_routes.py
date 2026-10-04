@@ -73,6 +73,14 @@ class UpdateUserInput(BaseModel):
     post_id: Optional[str] = None
     role_id: Optional[str] = None
 
+class BulkUserActionInput(BaseModel):
+    user_ids: List[str]
+    action: str  # "set_status", "set_branch", "set_post", "set_role", "delete"
+    status: Optional[str] = None
+    branch_id: Optional[str] = None
+    post_id: Optional[str] = None
+    role_id: Optional[str] = None
+
 def make_user_router(db, get_current_user, require_admin, hash_password, put_object, get_object, log_audit):
     router = APIRouter(prefix="/manage-users", tags=["manage-users"])
 
@@ -143,6 +151,97 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
             res.append(ManagedUser(**d))
         return res
 
+    @router.post("/bulk-action")
+    async def bulk_user_action(payload: BulkUserActionInput, current: any = Depends(require_admin)):
+        if not payload.user_ids:
+            return {"ok": True, "count": 0, "message": "No users provided"}
+
+        uids = list(set(payload.user_ids))
+        now = now_utc()
+
+        if payload.action == "delete":
+            # RBAC check: cannot delete yourself
+            if current.user_id in uids:
+                raise HTTPException(status_code=400, detail="Cannot delete your own logged-in account in bulk deletion.")
+
+            # RBAC check: Non-super_admin cannot delete any super_admin
+            super_admins = await db.users.find({
+                "user_id": {"$in": uids},
+                "$or": [{"role": "super_admin"}, {"role_id": "super_admin"}]
+            }).to_list(100)
+
+            if super_admins:
+                if current.role != "super_admin":
+                    raise HTTPException(status_code=403, detail="Admins cannot delete Super Admin accounts.")
+                total_supers = await db.users.count_documents({"$or": [{"role": "super_admin"}, {"role_id": "super_admin"}]})
+                if total_supers - len(super_admins) < 1:
+                    raise HTTPException(status_code=400, detail="Cannot delete all Super Admin accounts. At least one must remain.")
+
+            await db.user_sessions.delete_many({"user_id": {"$in": uids}})
+            res = await db.users.delete_many({"user_id": {"$in": uids}})
+            await log_audit(db, current, "users", "bulk_delete", "bulk", None, {"deleted_uids": uids, "count": res.deleted_count})
+            return {"ok": True, "count": res.deleted_count, "message": f"{res.deleted_count} user(s) deleted"}
+
+        elif payload.action == "set_status":
+            st = payload.status or "active"
+            if st not in ("active", "inactive"):
+                raise HTTPException(status_code=400, detail="Invalid status. Must be 'active' or 'inactive'.")
+            if st == "inactive" and current.user_id in uids:
+                raise HTTPException(status_code=400, detail="Cannot deactivate your own account.")
+
+            res = await db.users.update_many(
+                {"user_id": {"$in": uids}},
+                {"$set": {"status": st, "updated_at": now}}
+            )
+            await log_audit(db, current, "users", "bulk_status", "bulk", None, {"uids": uids, "status": st})
+            return {"ok": True, "count": res.modified_count, "message": f"{res.modified_count} user(s) status updated to {st}"}
+
+        elif payload.action == "set_branch":
+            branch_name = None
+            if payload.branch_id:
+                branch = await db.branches.find_one({"$or": [{"id": payload.branch_id}, {"branch_id": payload.branch_id}]})
+                if branch:
+                    branch_name = branch.get("name")
+            res = await db.users.update_many(
+                {"user_id": {"$in": uids}},
+                {"$set": {"branch_id": payload.branch_id, "branch_name": branch_name, "updated_at": now}}
+            )
+            await log_audit(db, current, "users", "bulk_branch", "bulk", None, {"uids": uids, "branch_id": payload.branch_id})
+            return {"ok": True, "count": res.modified_count, "message": f"{res.modified_count} user(s) branch updated"}
+
+        elif payload.action == "set_post":
+            post_title = None
+            if payload.post_id:
+                post = await db.posts.find_one({"$or": [{"id": payload.post_id}, {"post_id": payload.post_id}]})
+                if post:
+                    post_title = post.get("title")
+            res = await db.users.update_many(
+                {"user_id": {"$in": uids}},
+                {"$set": {"post_id": payload.post_id, "post_title": post_title, "updated_at": now}}
+            )
+            await log_audit(db, current, "users", "bulk_post", "bulk", None, {"uids": uids, "post_id": payload.post_id})
+            return {"ok": True, "count": res.modified_count, "message": f"{res.modified_count} user(s) post updated"}
+
+        elif payload.action == "set_role":
+            target_role = payload.role_id or "employee"
+            if target_role == "super_admin" and current.role != "super_admin":
+                raise HTTPException(status_code=403, detail="Only Super Admin can assign the Super Admin role.")
+
+            role_name = target_role.capitalize()
+            role = await db.roles.find_one({"$or": [{"id": target_role}, {"role_id": target_role}]})
+            if role:
+                role_name = role.get("name")
+
+            res = await db.users.update_many(
+                {"user_id": {"$in": uids}},
+                {"$set": {"role": target_role, "role_id": target_role, "role_name": role_name, "updated_at": now}}
+            )
+            await log_audit(db, current, "users", "bulk_role", "bulk", None, {"uids": uids, "role": target_role})
+            return {"ok": True, "count": res.modified_count, "message": f"{res.modified_count} user(s) role updated to {role_name}"}
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported bulk action: {payload.action}")
+
     @router.get("/{uid}", response_model=ManagedUser)
     async def get_user(uid: str, current: any = Depends(get_current_user)):
         d = await db.users.find_one({"$or": [{"user_id": uid}, {"email": uid.lower()}]}, {"_id": 0, "password_hash": 0})
@@ -164,6 +263,11 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
             existing_user = await db.users.find_one({"username": payload.username.lower()})
             if existing_user:
                 raise HTTPException(status_code=400, detail="Username already taken")
+
+        # RBAC Check: Admin cannot create a super_admin
+        target_role = payload.role_id or "employee"
+        if target_role == "super_admin" and current.role != "super_admin":
+            raise HTTPException(status_code=403, detail="Only Super Admin can create another Super Admin account.")
 
         user_id = await get_next_user_id()
         now = now_utc()
@@ -194,6 +298,11 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
         if not existing:
             raise HTTPException(status_code=404, detail="User not found")
 
+        # RBAC Check: Admin cannot modify a super_admin
+        target_is_super = existing.get("role") == "super_admin" or existing.get("role_id") == "super_admin"
+        if target_is_super and current.role != "super_admin":
+            raise HTTPException(status_code=403, detail="Admins cannot modify a Super Admin account. Only Super Admin can modify a Super Admin.")
+
         updates = {k: v for k, v in payload.dict().items() if v is not None}
         if "email" in updates:
             updates["email"] = updates["email"].lower()
@@ -206,6 +315,10 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
             dupe = await db.users.find_one({"username": updates["username"], "user_id": {"$ne": uid}})
             if dupe:
                 raise HTTPException(status_code=400, detail="Username already in use")
+
+        # RBAC Check: Admin cannot elevate anyone to super_admin
+        if updates.get("role_id") == "super_admin" and current.role != "super_admin":
+            raise HTTPException(status_code=403, detail="Only Super Admin can assign the Super Admin role.")
 
         if "password" in updates and updates["password"]:
             updates["password_hash"] = hash_password(updates.pop("password"))
@@ -227,11 +340,23 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
     @router.delete("/{uid}")
     async def delete_user(uid: str, current: any = Depends(require_admin)):
         if current.user_id == uid:
-            raise HTTPException(status_code=400, detail="Cannot delete your own admin account")
+            raise HTTPException(status_code=400, detail="Cannot delete your own account")
         existing = await db.users.find_one({"user_id": uid})
         if not existing:
             raise HTTPException(status_code=404, detail="User not found")
         
+        # RBAC Check: Admin CANNOT delete super_admin. Super admin CAN delete super_admin (if not the sole one).
+        target_is_super = existing.get("role") == "super_admin" or existing.get("role_id") == "super_admin"
+        if target_is_super:
+            if current.role != "super_admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Admins cannot delete a Super Admin account. Only a Super Admin can delete a Super Admin."
+                )
+            super_count = await db.users.count_documents({"$or": [{"role": "super_admin"}, {"role_id": "super_admin"}]})
+            if super_count <= 1:
+                raise HTTPException(status_code=400, detail="Cannot delete the sole remaining Super Admin account.")
+
         await db.user_sessions.delete_many({"user_id": uid})
         res = await db.users.delete_one({"user_id": uid})
         await log_audit(db, current, "users", "delete", uid, existing, None)

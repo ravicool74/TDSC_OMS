@@ -3,7 +3,16 @@ import * as SecureStore from 'expo-secure-store';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL as string;
+export function getBaseUrl(): string {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return `${window.location.protocol}//${host}:8000`;
+    }
+  }
+  return (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+}
+
 const TOKEN_KEY = 'triveni_session_token';
 
 let inMemoryToken: string | null = null;
@@ -45,7 +54,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     ...(opts.headers as Record<string, string> | undefined),
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${BASE}/api${path}`, { ...opts, headers });
+  const res = await fetch(`${getBaseUrl()}/api${path}`, { ...opts, headers });
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
@@ -68,23 +77,25 @@ export const api = {
   patch: <T>(p: string, body: any) => request<T>(p, { method: 'PATCH', body: JSON.stringify(body) }),
   invoicePdfUrl: async (iid: string) => {
     const token = await tokenStore.get();
-    return `${BASE}/api/invoices/${iid}/pdf?token=${encodeURIComponent(token || '')}`;
+    return `${getBaseUrl()}/api/invoices/${iid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
   incomePdfUrl: async (iid: string) => {
     const token = await tokenStore.get();
-    return `${BASE}/api/income/${iid}/pdf?token=${encodeURIComponent(token || '')}`;
+    return `${getBaseUrl()}/api/income/${iid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
   customerPdfUrl: async (cid: string) => {
     const token = await tokenStore.get();
-    return `${BASE}/api/customers/${cid}/pdf?token=${encodeURIComponent(token || '')}`;
+    return `${getBaseUrl()}/api/customers/${cid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
   expensePdfUrl: async (eid: string) => {
     const token = await tokenStore.get();
-    return `${BASE}/api/expenses/${eid}/pdf?token=${encodeURIComponent(token || '')}`;
+    return `${getBaseUrl()}/api/expenses/${eid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
   put: <T>(p: string, body: any) => request<T>(p, { method: 'PUT', body: JSON.stringify(body) }),
   del: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
-  base: BASE,
+  get base() {
+    return getBaseUrl();
+  },
   uploadTenderFile: async (tid: string, file: { uri: string; name: string; type: string }) => {
     const token = await tokenStore.get();
     const form = new FormData();
@@ -94,7 +105,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/tenders/${tid}/upload`, {
+    const res = await fetch(`${getBaseUrl()}/api/tenders/${tid}/upload`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -111,7 +122,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/customers/${cid}/attachments`, {
+    const res = await fetch(`${getBaseUrl()}/api/customers/${cid}/attachments`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -131,7 +142,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/${kind}/${oid}/attachments`, {
+    const res = await fetch(`${getBaseUrl()}/api/${kind}/${oid}/attachments`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -147,7 +158,7 @@ export const api = {
   },
   deleteVoucherFile: async (kind: 'invoices' | 'expenses' | 'income', oid: string, path: string) => {
     const token = await tokenStore.get();
-    const res = await fetch(`${BASE}/api/${kind}/${oid}/attachments?path=${encodeURIComponent(path)}`, {
+    const res = await fetch(`${getBaseUrl()}/api/${kind}/${oid}/attachments?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
@@ -165,7 +176,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/invoices/upload-signature`, {
+    const res = await fetch(`${getBaseUrl()}/api/invoices/upload-signature`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -184,7 +195,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/employees/${eid}/photo`, {
+    const res = await fetch(`${getBaseUrl()}/api/employees/${eid}/photo`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -203,7 +214,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/tasks/${tid}/attachments`, {
+    const res = await fetch(`${getBaseUrl()}/api/tasks/${tid}/attachments`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -270,7 +281,7 @@ export const api = {
     } else {
       form.append('selfie', { uri: payload.selfie.uri, name: payload.selfie.name, type: payload.selfie.type } as any);
     }
-    const res = await fetch(`${BASE}/api/punches`, {
+    const res = await fetch(`${getBaseUrl()}/api/punches`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -278,25 +289,6 @@ export const api = {
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
     if (!res.ok) throw new Error((data && data.detail) || `Punch failed (${res.status})`);
-    return data;
-  },
-  uploadTaskFile: async (tid: string, file: { uri: string; name: string; type: string }) => {
-    const token = await tokenStore.get();
-    const form = new FormData();
-    if (Platform.OS === 'web') {
-      const blob = await (await fetch(file.uri)).blob();
-      form.append('file', blob, file.name);
-    } else {
-      form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
-    }
-    const res = await fetch(`${BASE}/api/tasks/${tid}/attachments`, {
-      method: 'POST',
-      body: form as any,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
-    if (!res.ok) throw new Error((data && data.detail) || `Upload failed (${res.status})`);
     return data;
   },
   uploadTenderSlot: async (tid: string, slot: 'nit-copy' | 'boq' | 'documents', file: { uri: string; name: string; type: string }) => {
@@ -308,7 +300,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/tenders/${tid}/${slot}`, {
+    const res = await fetch(`${getBaseUrl()}/api/tenders/${tid}/${slot}`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -337,7 +329,7 @@ export const api = {
     if (docDate) form.append('document_date', docDate);
     if (expDate) form.append('expiry_date', expDate);
     if (remarks) form.append('remarks', remarks);
-    const res = await fetch(`${BASE}/api/customers/${cid}/documents`, {
+    const res = await fetch(`${getBaseUrl()}/api/customers/${cid}/documents`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -358,7 +350,7 @@ export const api = {
     }
     form.append('doc_type', docType);
     if (remarks) form.append('remarks', remarks);
-    const res = await fetch(`${BASE}/api/manage-users/${uid}/documents`, {
+    const res = await fetch(`${getBaseUrl()}/api/manage-users/${uid}/documents`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -515,7 +507,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/document-library/folders/${fid}/files/${fileId}/upload`, {
+    const res = await fetch(`${getBaseUrl()}/api/document-library/folders/${fid}/files/${fileId}/upload`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -563,7 +555,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    const res = await fetch(`${BASE}/api/tender-mgmt/calls/${id}/recording`, {
+    const res = await fetch(`${getBaseUrl()}/api/tender-mgmt/calls/${id}/recording`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -616,7 +608,7 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type || 'image/jpeg' } as any);
     }
-    const res = await fetch(`${BASE}/api/accounting/cash-bank/upload-attachment`, {
+    const res = await fetch(`${getBaseUrl()}/api/accounting/cash-bank/upload-attachment`, {
       method: 'POST',
       body: form as any,
       headers: token ? { Authorization: `Bearer ${token}` } : {},

@@ -250,8 +250,8 @@ export default function ServicesScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg }}>
-                <SecondaryButton title="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} />
-                <PrimaryButton title={busy ? 'Saving...' : 'Save Service'} onPress={save} disabled={busy} style={{ flex: 1 }} />
+                <SecondaryButton label="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} testID="btn-cancel-service" />
+                <PrimaryButton label={busy ? 'Saving...' : form.id ? 'Update Service' : 'Create Service'} onPress={save} disabled={busy} loading={busy} style={{ flex: 1 }} testID="btn-save-service" />
               </View>
             </ScrollView>
           </View>

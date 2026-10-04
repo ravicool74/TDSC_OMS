@@ -14,8 +14,8 @@ export interface AppVersionInfo {
   mandatory?: boolean;
 }
 
-export const LOCAL_APP_VERSION = Constants.expoConfig?.version || '1.1.0';
-export const LOCAL_APP_VERSION_CODE = Number(Constants.expoConfig?.android?.versionCode || 2);
+export const LOCAL_APP_VERSION = Constants.expoConfig?.version || '1.2.0';
+export const LOCAL_APP_VERSION_CODE = Number(Constants.expoConfig?.android?.versionCode || 3);
 
 const DISMISSED_KEY = 'tdsc_update_dismissed_timestamp';
 const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://tdscoms.onrender.com';

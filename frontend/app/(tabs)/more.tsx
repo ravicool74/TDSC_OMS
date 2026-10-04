@@ -1,14 +1,15 @@
 import React from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, Image, Alert, Platform, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { colors, spacing, radius, font, roleColor } from '@/src/theme';
 import { useAuth } from '@/src/AuthContext';
 import { Avatar } from '@/src/ui';
-import { useAppUpdate, LOCAL_APP_VERSION } from '@/src/AppUpdateModal';
+import { useAppUpdate, LOCAL_APP_VERSION, LOCAL_APP_VERSION_CODE } from '@/src/AppUpdateModal';
 
 export default function MoreScreen() {
+  const insets = useSafeAreaInsets();
   const { user, logout, deleteAccount } = useAuth();
   const router = useRouter();
   const { checkForUpdates, isChecking } = useAppUpdate();
@@ -36,6 +37,7 @@ export default function MoreScreen() {
   };
 
   const operationalRows = [
+    { icon: 'people', label: 'Contractors & Customers Database', route: '/customers', color: '#0A5CFF', testID: 'row-contractors' },
     { icon: 'wallet', label: 'Accounting & Invoices', route: '/accounting/menu', color: colors.success, testID: 'row-accounting' },
     { icon: 'bar-chart', label: 'Financial & Accounting Reports', route: '/accounting/reports', color: '#2563EB', testID: 'row-reports' },
     { icon: 'construct', label: 'Service Master', route: '/services', color: colors.brandPrimary, testID: 'row-services' },
@@ -54,7 +56,7 @@ export default function MoreScreen() {
     { icon: 'time', label: 'Attendance Settings', route: '/attendance-settings', color: colors.info, testID: 'row-att-settings' },
   ];
 
-  const adminRows = (user?.role === 'admin' || user?.role === 'manager') ? [
+  const adminRows = (user?.role === 'super_admin' || user?.role === 'admin' || user?.role === 'manager') ? [
     { icon: 'business', label: 'Branch Management', route: '/admin/branches', color: colors.brandSecondary, testID: 'row-branches' },
     { icon: 'ribbon', label: 'Post / Designations', route: '/admin/posts', color: colors.warning, testID: 'row-posts' },
     { icon: 'person-add', label: 'System User Directory', route: '/admin/users', color: colors.brandPrimary, testID: 'row-users' },
@@ -65,7 +67,7 @@ export default function MoreScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.root} testID="more-screen">
-      <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + spacing.xxxl }}>
         <View style={styles.profile}>
           <Avatar name={user?.name || 'U'} size={64} />
           <View style={{ flex: 1 }}>
@@ -126,7 +128,7 @@ export default function MoreScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>TDSC Office Management System</Text>
-              <Text style={styles.muted}>Version {LOCAL_APP_VERSION} (Build 2)</Text>
+              <Text style={styles.muted}>Version {LOCAL_APP_VERSION} (Build {LOCAL_APP_VERSION_CODE})</Text>
             </View>
           </View>
           <Pressable
@@ -155,7 +157,7 @@ export default function MoreScreen() {
           <Text style={styles.logoutText}>Logout</Text>
         </Pressable>
 
-        {user?.role !== 'admin' && (
+        {user?.role !== 'admin' && user?.role !== 'super_admin' && (
           <Pressable testID="delete-account-btn" style={styles.deleteAcc} onPress={confirmDelete}>
             <Ionicons name="trash-outline" size={18} color={colors.muted} />
             <Text style={styles.deleteAccText}>Delete My Account</Text>

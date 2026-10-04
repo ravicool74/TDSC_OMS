@@ -148,11 +148,11 @@ async def download_apk():
 @api_router.get("/app/version")
 async def get_app_version():
     return {
-        "version": "1.1.0",
-        "version_code": 2,
+        "version": "1.2.0",
+        "version_code": 3,
         "apk_url": "https://tdscoms.onrender.com/download-apk",
         "fallback_apk_url": "https://frontend-rho-woad-43.vercel.app/TDSC-Office-Manager.apk",
-        "release_notes": "• Multi-criteria search, edit & update for Expenses & Payment-In\n• Official PDF voucher printing with digital verification\n• Day Book, Cash/Bank & financial reports\n• Speed & reliability enhancements",
+        "release_notes": "• Contractor Database: Complete 42+ field profile view, multi-criteria search (Name, GST, Reg No, Mobile, PAN, Class, Dept) & editing\n• Android Navigation: Fixed bottom buttons overlapping with 3-button system navigation bar\n• Enterprise RBAC: Super Admin and Admin hierarchy with staff management\n• Security: Demo credentials removed & session hardening",
         "mandatory": False,
     }
 
@@ -173,7 +173,10 @@ class User(BaseModel):
     user_id: str
     email: EmailStr
     name: str
-    role: str = "employee"  # admin, manager, employee
+    role: str = "employee"  # super_admin, admin, manager, employee
+    role_id: Optional[str] = None
+    role_name: Optional[str] = None
+    status: Optional[str] = "active"
     picture: Optional[str] = None
     phone: Optional[str] = None
     department: Optional[str] = None
@@ -1149,35 +1152,33 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     return User(**user_doc)
 
 
+async def require_super_admin(current: User = Depends(get_current_user)) -> User:
+    if current.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+    return current
+
+
 async def require_admin(current: User = Depends(get_current_user)) -> User:
-    if current.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    if current.role not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="Admin or Super Admin access required")
     return current
 
 
 async def require_admin_or_manager(current: User = Depends(get_current_user)) -> User:
-    if current.role not in ("admin", "manager"):
-        raise HTTPException(status_code=403, detail="Manager or admin access required")
+    if current.role not in ("admin", "super_admin", "manager", "branch_manager"):
+        raise HTTPException(status_code=403, detail="Manager, Admin, or Super Admin access required")
     return current
 
 
 # ============ Auth routes ============
-@api_router.post("/auth/signup", response_model=AuthResponse)
-async def signup(payload: SignupInput):
-    existing = await db.users.find_one({"email": payload.email.lower()})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user = User(
-        user_id=new_id("usr"),
-        email=payload.email.lower(),
-        name=payload.name,
-        role=payload.role if payload.role in ("admin", "manager", "employee") else "employee",
+@api_router.post("/auth/signup")
+async def signup():
+    """Public self-registration is permanently disabled for security.
+    All user accounts must be provisioned by an Administrator or Super Admin."""
+    raise HTTPException(
+        status_code=403,
+        detail="Public self-registration is disabled. Please contact your system administrator to provision your account."
     )
-    doc = user.dict()
-    doc["password_hash"] = hash_password(payload.password)
-    await db.users.insert_one(doc)
-    token = await create_session(user.user_id)
-    return AuthResponse(session_token=token, user=user)
 
 
 @api_router.post("/auth/login", response_model=AuthResponse)
@@ -1212,14 +1213,16 @@ async def exchange_session(payload: SessionExchangeInput):
     session_token = data.get("session_token") or make_session_token()
 
     existing = await db.users.find_one({"email": email}, {"_id": 0})
-    if existing:
-        user_id = existing["user_id"]
-        existing.pop("password_hash", None)
-        user = User(**{**existing, "name": name, "picture": picture})
-        await db.users.update_one({"user_id": user_id}, {"$set": {"name": name, "picture": picture}})
-    else:
-        user = User(user_id=new_id("usr"), email=email, name=name, picture=picture, role="employee")
-        await db.users.insert_one(user.dict())
+    if not existing:
+        raise HTTPException(
+            status_code=403,
+            detail="Account not found. Public registration is disabled. Please contact your system administrator to provision your account."
+        )
+
+    user_id = existing["user_id"]
+    existing.pop("password_hash", None)
+    user = User(**{**existing, "name": name, "picture": picture})
+    await db.users.update_one({"user_id": user_id}, {"$set": {"name": name, "picture": picture}})
 
     await db.user_sessions.insert_one({
         "session_token": session_token,
@@ -1250,9 +1253,9 @@ async def delete_my_account(current: User = Depends(get_current_user)):
     references so their business data (tasks, invoices) does not orphan.
     Admins cannot self-delete via this endpoint to avoid locking the tenant out.
     """
-    if current.role == "admin":
-        # Prevent lockout — an admin must be removed by another admin.
-        raise HTTPException(status_code=400, detail="Admin accounts cannot self-delete. Please contact another admin.")
+    if current.role in ("admin", "super_admin"):
+        # Prevent lockout — administrative accounts cannot self-delete.
+        raise HTTPException(status_code=400, detail="Admin and Super Admin accounts cannot self-delete. Please use User Management.")
     uid = current.user_id
     email = current.email
     # Delete auth sessions
@@ -1450,6 +1453,28 @@ async def bulk_delete_customers(payload: dict, current: User = Depends(require_a
     return {"deleted": res.deleted_count}
 
 
+class BulkCustomerActionInput(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+    action: str  # "delete", "set_department"
+    department: Optional[str] = None
+
+
+@api_router.post("/customers/bulk-action")
+async def bulk_customer_action(payload: BulkCustomerActionInput, current: User = Depends(require_admin)):
+    ids = [i for i in (payload.ids or []) if i]
+    if not ids:
+        return {"ok": True, "count": 0, "deleted": 0}
+    if payload.action == "delete":
+        res = await db.customers.delete_many({"id": {"$in": ids}})
+        return {"ok": True, "count": res.deleted_count, "deleted": res.deleted_count}
+    elif payload.action == "set_department":
+        dept = payload.department or "All"
+        res = await db.customers.update_many({"id": {"$in": ids}}, {"$set": {"departments": dept}})
+        return {"ok": True, "count": res.modified_count, "department": dept}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid bulk action")
+
+
 @api_router.get("/customers/{cid}/pdf")
 async def get_customer_pdf(cid: str, token: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
     tk = None
@@ -1592,6 +1617,29 @@ async def update_employee(eid: str, payload: dict, current: User = Depends(requi
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
     return Employee(**d)
+
+
+class BulkEmployeeActionInput(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+    action: str  # "delete", "assign_office"
+    office_id: Optional[str] = None
+
+
+@api_router.post("/employees/bulk-action")
+async def bulk_employee_action(payload: BulkEmployeeActionInput, current: User = Depends(require_admin_or_manager)):
+    ids = [i for i in (payload.ids or []) if i]
+    if not ids:
+        return {"ok": True, "count": 0, "deleted": 0}
+    if payload.action == "delete":
+        if current.role not in ("admin", "super_admin"):
+            raise HTTPException(status_code=403, detail="Admin or Super Admin access required to delete employees")
+        res = await db.employees.delete_many({"id": {"$in": ids}})
+        return {"ok": True, "count": res.deleted_count, "deleted": res.deleted_count}
+    elif payload.action == "assign_office":
+        res = await db.employees.update_many({"id": {"$in": ids}}, {"$set": {"office_id": payload.office_id}})
+        return {"ok": True, "count": res.modified_count, "office_id": payload.office_id}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid bulk action")
 
 
 @api_router.delete("/employees/{eid}")
@@ -1982,6 +2030,62 @@ async def bulk_delete_tasks(payload: BulkDeleteInput, current: User = Depends(re
         return {"deleted": 0}
     res = await db.tasks.delete_many({"id": {"$in": ids}})
     return {"deleted": res.deleted_count}
+
+
+class BulkTaskActionInput(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+    action: str  # "delete", "move_stage", "assign", "set_priority"
+    stage_id: Optional[str] = None
+    stage_name: Optional[str] = None
+    assignee_id: Optional[str] = None
+    assignee_name: Optional[str] = None
+    priority: Optional[str] = None
+
+
+@api_router.post("/tasks/bulk-action")
+async def bulk_task_action(payload: BulkTaskActionInput, current: User = Depends(require_admin_or_manager)):
+    ids = [i for i in (payload.ids or []) if i]
+    if not ids:
+        return {"ok": True, "count": 0, "deleted": 0}
+    if payload.action == "delete":
+        if current.role not in ("admin", "super_admin"):
+            raise HTTPException(status_code=403, detail="Admin or Super Admin access required to delete tasks")
+        res = await db.tasks.delete_many({"id": {"$in": ids}})
+        return {"ok": True, "count": res.deleted_count, "deleted": res.deleted_count}
+    elif payload.action == "move_stage":
+        stg_id = payload.stage_id
+        stg_name = payload.stage_name
+        update_doc: Dict[str, Any] = {"updated_at": now_utc()}
+        if stg_id:
+            update_doc["stage_id"] = stg_id
+            update_doc["current_stage_id"] = stg_id
+            if stg_id in ("todo", "doing", "done"):
+                update_doc["status"] = stg_id
+            else:
+                update_doc["status"] = "doing"
+        if stg_name:
+            update_doc["stage_name"] = stg_name
+            update_doc["current_stage_name"] = stg_name
+        res = await db.tasks.update_many({"id": {"$in": ids}}, {"$set": update_doc})
+        return {"ok": True, "count": res.modified_count}
+    elif payload.action == "assign":
+        res = await db.tasks.update_many(
+            {"id": {"$in": ids}},
+            {"$set": {
+                "assignee_id": payload.assignee_id,
+                "assignee_name": payload.assignee_name,
+                "updated_at": now_utc()
+            }}
+        )
+        return {"ok": True, "count": res.modified_count}
+    elif payload.action == "set_priority":
+        p = (payload.priority or "medium").lower()
+        if p not in ("urgent", "high", "medium", "low"):
+            p = "medium"
+        res = await db.tasks.update_many({"id": {"$in": ids}}, {"$set": {"priority": p, "updated_at": now_utc()}})
+        return {"ok": True, "count": res.modified_count}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid bulk action")
 
 
 @api_router.delete("/tasks/{tid}")
@@ -4211,36 +4315,34 @@ async def startup():
         except Exception as _e:
             logger.exception("Customer code migration failed: %s", _e)
 
-        # Seed demo accounts — controlled by SEED_DEMO_ACCOUNTS env var.
-        # Disabled by default in production. Enable only in preview environments by
-        # setting SEED_DEMO_ACCOUNTS=true AND providing SEED_*_PASSWORD values via env.
-        if os.environ.get("SEED_DEMO_ACCOUNTS", "true").lower() in ("1", "true", "yes"):
-            admin_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@triveni.com")
-            admin_pass = os.environ.get("SEED_ADMIN_PASSWORD", "admin123")
-            if admin_pass and not await db.users.find_one({"email": admin_email}):
-                admin = User(user_id=new_id("usr"), email=admin_email, name="Triveni Admin", role="admin")
-                doc = admin.dict()
-                doc["password_hash"] = hash_password(admin_pass)
-                await db.users.insert_one(doc)
-                logger.info("Seeded admin user")
+        # Seed administrative accounts (Super Admin & Admin)
+        super_email = os.environ.get("SEED_SUPERADMIN_EMAIL", "superadmin@triveni.com")
+        super_pass = os.environ.get("SEED_SUPERADMIN_PASSWORD", "superadmin123")
+        existing_super = await db.users.find_one({"$or": [{"email": super_email}, {"role": "super_admin"}]})
+        if not existing_super and super_pass:
+            s_admin = User(user_id=new_id("usr"), email=super_email, name="Super Admin", role="super_admin")
+            s_doc = s_admin.dict()
+            s_doc["role_id"] = "super_admin"
+            s_doc["role_name"] = "Super Admin"
+            s_doc["status"] = "active"
+            s_doc["password_hash"] = hash_password(super_pass)
+            await db.users.insert_one(s_doc)
+            logger.info("Seeded initial Super Admin: %s", super_email)
+        elif existing_super and existing_super.get("role") != "super_admin":
+            await db.users.update_one({"_id": existing_super["_id"]}, {"$set": {"role": "super_admin", "role_id": "super_admin"}})
 
-            mgr_email = os.environ.get("SEED_MANAGER_EMAIL", "manager@triveni.com")
-            mgr_pass = os.environ.get("SEED_MANAGER_PASSWORD", "manager123")
-            if mgr_pass and not await db.users.find_one({"email": mgr_email}):
-                mgr = User(user_id=new_id("usr"), email=mgr_email, name="Ravi Manager", role="manager")
-                doc = mgr.dict()
-                doc["password_hash"] = hash_password(mgr_pass)
-                await db.users.insert_one(doc)
-
-            emp_email = os.environ.get("SEED_EMPLOYEE_EMAIL", "employee@triveni.com")
-            emp_pass = os.environ.get("SEED_EMPLOYEE_PASSWORD", "employee123")
-            if emp_pass and not await db.users.find_one({"email": emp_email}):
-                emp = User(user_id=new_id("usr"), email=emp_email, name="Anita Employee", role="employee")
-                doc = emp.dict()
-                doc["password_hash"] = hash_password(emp_pass)
-                await db.users.insert_one(doc)
-        else:
-            logger.info("SEED_DEMO_ACCOUNTS disabled — skipping demo user seeding")
+        admin_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@triveni.com")
+        admin_pass = os.environ.get("SEED_ADMIN_PASSWORD", "admin123")
+        existing_admin = await db.users.find_one({"email": admin_email})
+        if not existing_admin and admin_pass:
+            admin = User(user_id=new_id("usr"), email=admin_email, name="Triveni Admin", role="admin")
+            doc = admin.dict()
+            doc["role_id"] = "admin"
+            doc["role_name"] = "Administrator"
+            doc["status"] = "active"
+            doc["password_hash"] = hash_password(admin_pass)
+            await db.users.insert_one(doc)
+            logger.info("Seeded initial Admin: %s", admin_email)
 
         try:
             await run_in_threadpool(init_storage)

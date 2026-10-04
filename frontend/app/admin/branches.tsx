@@ -49,6 +49,50 @@ export default function BranchesScreen() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
+  // Bulk selection state
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [busyBulk, setBusyBulk] = useState(false);
+
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+  const toggleSelect = (id: string) => setSelected(p => ({ ...p, [id]: !p[id] }));
+  const toggleSelectAll = () => {
+    if (!branches) return;
+    const all = branches.length > 0 && branches.every(b => selected[b.id || b.branch_id]);
+    if (all) { setSelected({}); return; }
+    const next: Record<string, boolean> = {};
+    branches.forEach(b => { next[b.id || b.branch_id] = true; });
+    setSelected(next);
+  };
+  const exitSelectMode = () => { setSelectMode(false); setSelected({}); };
+
+  const handleBulkDelete = async () => {
+    const ids = Object.keys(selected).filter(k => selected[k]);
+    if (ids.length === 0) return;
+    const ok = Platform.OS === 'web'
+      ? window.confirm(`Permanently delete ${ids.length} selected branch(es)?`)
+      : await new Promise(res => {
+          Alert.alert('Delete Selected Branches?', `${ids.length} branches will be permanently removed.`, [
+            { text: 'Cancel', style: 'cancel', onPress: () => res(false) },
+            { text: 'Delete All', style: 'destructive', onPress: () => res(true) },
+          ]);
+        });
+    if (!ok) return;
+
+    setBusyBulk(true);
+    try {
+      const res: any = await api.post('/branches/bulk-delete', { ids });
+      setToastMsg(res?.message || 'Branches deleted');
+      exitSelectMode();
+      await load();
+    } catch (e: any) {
+      if (Platform.OS === 'web') window.alert(e?.message || 'Delete failed');
+      else Alert.alert('Error', e?.message || 'Delete failed');
+    } finally {
+      setBusyBulk(false);
+    }
+  };
+
   // Auto-hide toast after 4 seconds
   useEffect(() => {
     if (toastMsg) {
@@ -174,10 +218,28 @@ export default function BranchesScreen() {
         title="Branch Management"
         subtitle="Manage TDSC company offices & geofences"
         right={
-          <Pressable onPress={openNew} style={styles.addHeaderBtn} accessibilityLabel="Add Branch" accessibilityRole="button">
-            <Ionicons name="add-circle" size={18} color={colors.onBrandPrimary} />
-            <Text style={styles.addHeaderBtnText}>+ Add Branch</Text>
-          </Pressable>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <Pressable
+              onPress={() => {
+                if (selectMode) exitSelectMode();
+                else setSelectMode(true);
+              }}
+              style={[styles.selectHeaderBtn, selectMode && styles.selectHeaderBtnActive]}
+            >
+              <Ionicons
+                name={selectMode ? "close-circle" : "checkbox-outline"}
+                size={16}
+                color={selectMode ? colors.brandPrimary : colors.onSurface}
+              />
+              <Text style={[styles.selectHeaderBtnText, selectMode && { color: colors.brandPrimary }]}>
+                {selectMode ? 'Cancel' : 'Select'}
+              </Text>
+            </Pressable>
+            <Pressable onPress={openNew} style={styles.addHeaderBtn} accessibilityLabel="Add Branch" accessibilityRole="button">
+              <Ionicons name="add-circle" size={18} color={colors.onBrandPrimary} />
+              <Text style={styles.addHeaderBtnText}>+ Add Branch</Text>
+            </Pressable>
+          </View>
         }
       />
 
@@ -225,6 +287,22 @@ export default function BranchesScreen() {
         </View>
       </View>
 
+      {selectMode && (
+        <View style={styles.bulkSubHeader}>
+          <Pressable onPress={toggleSelectAll} style={styles.selectAllToggle}>
+            <Ionicons
+              name={branches && branches.length > 0 && branches.every(b => selected[b.id || b.branch_id]) ? "checkbox" : "square-outline"}
+              size={20}
+              color={colors.brandPrimary}
+            />
+            <Text style={styles.selectAllToggleText}>
+              {branches && branches.length > 0 && branches.every(b => selected[b.id || b.branch_id]) ? "Deselect All" : "Select All"}
+            </Text>
+          </Pressable>
+          <Text style={styles.selectedCountText}>{selectedCount} selected</Text>
+        </View>
+      )}
+
       {branches === null ? (
         <ScreenLoader />
       ) : branches.length === 0 ? (
@@ -239,10 +317,19 @@ export default function BranchesScreen() {
         <FlatList
           data={branches}
           keyExtractor={item => item.id || item.branch_id || String(Math.random())}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: selectMode ? 100 : 40 }]}
           renderItem={({ item }) => (
             <Card style={styles.branchCard}>
               <View style={styles.cardHeader}>
+                {selectMode && (
+                  <Pressable onPress={() => toggleSelect(item.id || item.branch_id)} hitSlop={8} style={{ marginRight: 4 }}>
+                    <Ionicons
+                      name={selected[item.id || item.branch_id] ? "checkbox" : "square-outline"}
+                      size={22}
+                      color={selected[item.id || item.branch_id] ? colors.brandPrimary : colors.muted}
+                    />
+                  </Pressable>
+                )}
                 <View style={styles.branchIcon}>
                   <Ionicons name="business" size={22} color={colors.brandPrimary} />
                 </View>
@@ -327,6 +414,25 @@ export default function BranchesScreen() {
         />
       )}
 
+      {/* Bulk Delete Floating Bar */}
+      {selectMode && (
+        <View style={styles.bulkFloatingBar}>
+          <Pressable
+            disabled={selectedCount === 0 || busyBulk}
+            onPress={handleBulkDelete}
+            style={[styles.bulkDelBtn, { opacity: selectedCount === 0 || busyBulk ? 0.5 : 1 }]}
+          >
+            <Ionicons name="trash" size={16} color="#FFF" />
+            <Text style={styles.bulkDelBtnText}>
+              {busyBulk ? 'Deleting…' : `Delete Selected (${selectedCount})`}
+            </Text>
+          </Pressable>
+          <Pressable onPress={exitSelectMode} style={styles.bulkCancelBtn}>
+            <Text style={{ color: colors.onSurface, fontWeight: '700' }}>Cancel</Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* Add / Edit Branch Modal */}
       <Modal visible={showForm} animationType="slide" transparent onRequestClose={() => setShowForm(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
@@ -396,12 +502,14 @@ export default function BranchesScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg }}>
-                <SecondaryButton title="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} />
+                <SecondaryButton label="Cancel" onPress={() => setShowForm(false)} style={{ flex: 1 }} testID="btn-cancel-branch" />
                 <PrimaryButton
-                  title={form.id ? (busy ? 'Updating Branch...' : 'Update Branch') : (busy ? 'Saving Branch...' : 'Save Branch')}
+                  label={form.id ? (busy ? 'Updating Branch...' : 'Update Branch') : (busy ? 'Creating Branch...' : 'Create Branch')}
                   onPress={save}
                   disabled={busy}
+                  loading={busy}
                   style={{ flex: 1 }}
+                  testID="btn-save-branch"
                 />
               </View>
             </ScrollView>
@@ -433,10 +541,11 @@ export default function BranchesScreen() {
 
             <View style={styles.confirmButtons}>
               <SecondaryButton
-                title="Cancel"
+                label="Cancel"
                 onPress={() => setBranchToDelete(null)}
                 disabled={deleteBusy}
                 style={{ flex: 1 }}
+                testID="btn-cancel-delete-branch"
               />
               <Pressable
                 onPress={executeDelete}
@@ -660,4 +769,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: font.base,
   },
+
+  // Bulk action styles
+  selectHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  selectHeaderBtnActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + '15' },
+  selectHeaderBtnText: { fontSize: font.xs, fontWeight: '700', color: colors.onSurface },
+  bulkSubHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: 10, backgroundColor: '#F8FAFC', borderBottomWidth: 1, borderBottomColor: colors.border },
+  selectAllToggle: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  selectAllToggleText: { fontSize: font.sm, fontWeight: '700', color: colors.brandPrimary },
+  selectedCountText: { fontSize: font.sm, fontWeight: '800', color: colors.onSurface },
+  bulkFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', gap: 8, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.1, shadowRadius: 5, elevation: 8 },
+  bulkDelBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: radius.md, backgroundColor: colors.error },
+  bulkDelBtnText: { color: '#FFF', fontWeight: '800', fontSize: font.sm },
+  bulkCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceSecondary },
 });

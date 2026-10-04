@@ -8,22 +8,22 @@ import { useAuth } from '@/src/AuthContext';
 import { PrimaryButton } from '@/src/ui';
 
 export default function LoginScreen() {
-  const { loginEmail, signup, loginGoogle } = useAuth();
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const { loginEmail, loginGoogle } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [role, setRole] = useState<'admin' | 'manager' | 'employee'>('employee');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const submit = async () => {
+    if (!email.trim() || !password) {
+      setErr('Please enter both email and password');
+      return;
+    }
     setErr(null); setBusy(true);
     try {
-      if (mode === 'login') await loginEmail(email.trim(), password);
-      else await signup(email.trim(), password, name.trim() || email.split('@')[0], role);
+      await loginEmail(email.trim(), password);
     } catch (e: any) {
-      setErr(e?.message || 'Failed');
+      setErr(e?.message || 'Login failed');
     } finally { setBusy(false); }
   };
 
@@ -45,21 +45,6 @@ export default function LoginScreen() {
           </LinearGradient>
 
           <View style={styles.card}>
-            <View style={styles.tabs}>
-              <Pressable testID="tab-login" onPress={() => setMode('login')} style={[styles.tab, mode === 'login' && styles.tabActive]}>
-                <Text style={[styles.tabText, mode === 'login' && styles.tabTextActive]}>Login</Text>
-              </Pressable>
-              <Pressable testID="tab-signup" onPress={() => setMode('signup')} style={[styles.tab, mode === 'signup' && styles.tabActive]}>
-                <Text style={[styles.tabText, mode === 'signup' && styles.tabTextActive]}>Sign Up</Text>
-              </Pressable>
-            </View>
-
-            {mode === 'signup' && (
-              <View style={styles.field}>
-                <Text style={styles.label}>Name</Text>
-                <TextInput testID="input-name" value={name} onChangeText={setName} placeholder="Your full name" style={styles.input} />
-              </View>
-            )}
             <View style={styles.field}>
               <Text style={styles.label}>Email</Text>
               <TextInput testID="input-email" value={email} onChangeText={setEmail} placeholder="you@triveni.com" autoCapitalize="none" keyboardType="email-address" style={styles.input} />
@@ -69,22 +54,9 @@ export default function LoginScreen() {
               <TextInput testID="input-password" value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry style={styles.input} />
             </View>
 
-            {mode === 'signup' && (
-              <View style={styles.field}>
-                <Text style={styles.label}>Role</Text>
-                <View style={styles.roleRow}>
-                  {(['employee', 'manager', 'admin'] as const).map(r => (
-                    <Pressable key={r} testID={`role-${r}`} style={[styles.roleChip, role === r && styles.roleChipActive]} onPress={() => setRole(r)}>
-                      <Text style={[styles.roleChipText, role === r && styles.roleChipTextActive]}>{r}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-            )}
-
             {err ? <Text style={styles.err} testID="login-error">{err}</Text> : null}
 
-            <PrimaryButton testID="submit-btn" label={mode === 'login' ? 'Login' : 'Create account'} onPress={submit} loading={busy} />
+            <PrimaryButton testID="submit-btn" label="Login" onPress={submit} loading={busy} />
 
             <View style={styles.divider}><View style={styles.line} /><Text style={styles.dividerText}>OR</Text><View style={styles.line} /></View>
 
@@ -92,76 +64,6 @@ export default function LoginScreen() {
               <Ionicons name="logo-google" size={18} color={colors.onSurface} />
               <Text style={styles.googleText}>Continue with Google</Text>
             </Pressable>
-
-            {String(process.env.EXPO_PUBLIC_SHOW_DEMO_CREDS || 'false').toLowerCase() === 'true' ? (
-              <View style={styles.demoBox}>
-                <Text style={styles.demoTitle}>⚡ Quick 1-Click Demo Login:</Text>
-                <View style={{ gap: 8, marginTop: 6 }}>
-                  <Pressable
-                    testID="quick-admin-login"
-                    onPress={async () => {
-                      setEmail('admin@triveni.com');
-                      setPassword('admin123');
-                      setErr(null);
-                      setBusy(true);
-                      try { await loginEmail('admin@triveni.com', 'admin123'); }
-                      catch (e: any) { setErr(e?.message || 'Login failed'); }
-                      finally { setBusy(false); }
-                    }}
-                    style={styles.demoQuickBtn}
-                  >
-                    <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.demoQuickBtnTitle}>Login as Admin</Text>
-                      <Text style={styles.demoQuickBtnSub}>admin@triveni.com • Full Access</Text>
-                    </View>
-                    <Ionicons name="arrow-forward-circle" size={20} color={colors.brandPrimary} />
-                  </Pressable>
-
-                  <Pressable
-                    testID="quick-manager-login"
-                    onPress={async () => {
-                      setEmail('manager@triveni.com');
-                      setPassword('manager123');
-                      setErr(null);
-                      setBusy(true);
-                      try { await loginEmail('manager@triveni.com', 'manager123'); }
-                      catch (e: any) { setErr(e?.message || 'Login failed'); }
-                      finally { setBusy(false); }
-                    }}
-                    style={styles.demoQuickBtn}
-                  >
-                    <Ionicons name="person" size={18} color={colors.brandSecondary} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.demoQuickBtnTitle}>Login as Manager</Text>
-                      <Text style={styles.demoQuickBtnSub}>manager@triveni.com • Staff & Leaves</Text>
-                    </View>
-                    <Ionicons name="arrow-forward-circle" size={20} color={colors.brandSecondary} />
-                  </Pressable>
-
-                  <Pressable
-                    testID="quick-employee-login"
-                    onPress={async () => {
-                      setEmail('employee@triveni.com');
-                      setPassword('employee123');
-                      setErr(null);
-                      setBusy(true);
-                      try { await loginEmail('employee@triveni.com', 'employee123'); }
-                      catch (e: any) { setErr(e?.message || 'Login failed'); }
-                      finally { setBusy(false); }
-                    }}
-                    style={styles.demoQuickBtn}
-                  >
-                    <Ionicons name="people" size={18} color="#16A34A" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.demoQuickBtnTitle}>Login as Employee</Text>
-                      <Text style={styles.demoQuickBtnSub}>employee@triveni.com • Attendance Punch</Text>
-                    </View>
-                    <Ionicons name="arrow-forward-circle" size={20} color="#16A34A" />
-                  </Pressable>
-                </View>
-              </View>
-            ) : null}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -177,28 +79,13 @@ const styles = StyleSheet.create({
   brand: { color: colors.onBrandPrimary, fontSize: font.xxl, fontWeight: '800' },
   brandSub: { color: colors.onBrandPrimary, opacity: 0.85, marginTop: 4, fontSize: font.base },
   card: { backgroundColor: colors.surface, marginHorizontal: spacing.lg, marginTop: -spacing.xl, borderRadius: radius.lg, padding: spacing.xl, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
-  tabs: { flexDirection: 'row', backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: 4 },
-  tab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: radius.sm },
-  tabActive: { backgroundColor: colors.surface },
-  tabText: { color: colors.muted, fontWeight: '600' },
-  tabTextActive: { color: colors.brandPrimary },
   field: { gap: 6 },
   label: { fontSize: font.sm, color: colors.muted, fontWeight: '600' },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 12, fontSize: font.lg, color: colors.onSurface, backgroundColor: colors.surface },
-  roleRow: { flexDirection: 'row', gap: 8 },
-  roleChip: { flex: 1, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
-  roleChipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
-  roleChipText: { color: colors.onSurface, fontWeight: '600', textTransform: 'capitalize' },
-  roleChipTextActive: { color: colors.onBrandPrimary },
   err: { color: colors.error, fontSize: font.base, textAlign: 'center' },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   line: { flex: 1, height: 1, backgroundColor: colors.border },
   dividerText: { color: colors.muted, fontSize: font.sm },
   googleBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, minHeight: 48, backgroundColor: colors.surface },
   googleText: { color: colors.onSurface, fontWeight: '600', fontSize: font.lg },
-  demoBox: { padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
-  demoTitle: { fontWeight: '800', color: colors.onSurface, marginBottom: 4, fontSize: font.sm },
-  demoQuickBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.surface, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
-  demoQuickBtnTitle: { fontSize: font.sm, fontWeight: '800', color: colors.onSurface },
-  demoQuickBtnSub: { fontSize: 11, color: colors.muted, marginTop: 1 },
 });

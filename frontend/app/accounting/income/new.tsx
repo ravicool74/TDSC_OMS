@@ -4,6 +4,7 @@ import {
   Pressable, TextInput, ActivityIndicator, Alert, Modal, Linking
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { ScreenHeader } from '@/src/ScreenHeader';
@@ -42,6 +43,7 @@ export type LinkedVoucher = {
 };
 
 export default function NewPaymentIn() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ customer_id?: string }>();
 
@@ -420,7 +422,7 @@ export default function NewPaymentIn() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-payment-in">
       <ScreenHeader title="Payment-In (Add Income)" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 60 }}>
+        <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 60 + insets.bottom }}>
 
           {/* Section 1: Auto-Generated Voucher Number & Date */}
           <View style={styles.card}>

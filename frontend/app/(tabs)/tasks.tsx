@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, RefreshControl, ScrollView, Modal, TextInput, Alert, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { colors, spacing, radius, font } from '@/src/theme';
@@ -18,9 +18,10 @@ const fmtCurr = (v: number | string | null | undefined) => {
 };
 
 export default function TasksScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
   const canEdit = isAdmin || user?.role === 'manager';
 
   // Two Main Parts: (i) Payment Follow-up & (ii) Task Follow-up
@@ -29,10 +30,14 @@ export default function TasksScreen() {
   const [filter, setFilter] = useState<string>('all');
   const [refreshing, setRefreshing] = useState(false);
 
-  // Bulk select mode
+  // Bulk select mode & actions
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busyBulk, setBusyBulk] = useState(false);
+  const [bulkModal, setBulkModal] = useState<'stage' | 'assign' | 'priority' | null>(null);
+  const [bulkStage, setBulkStage] = useState('todo');
+  const [bulkPriority, setBulkPriority] = useState('medium');
+  const [staffList, setStaffList] = useState<any[]>([]);
 
   // Service Workflow Configuration Modal for Admin
   const [workflowModal, setWorkflowModal] = useState(false);
@@ -117,12 +122,38 @@ export default function TasksScreen() {
     if (!ok) return;
     setBusyBulk(true);
     try {
-      const res: any = await api.post('/tasks/bulk-delete', { ids });
-      notify('Deleted', `${res?.deleted || 0} tasks deleted`);
+      const res: any = await api.post('/tasks/bulk-action', { task_ids: ids, action: 'delete' });
+      notify('Deleted', res?.message || `${res?.deleted || 0} tasks deleted`);
       exitSelectMode();
       await load();
     } catch (e: any) { notify('Failed', e?.message || 'Try again'); }
     finally { setBusyBulk(false); }
+  };
+
+  const handleBulkAction = async (action: 'move_stage' | 'assign' | 'set_priority', extra: any) => {
+    const ids = Object.keys(selected).filter(k => selected[k]);
+    if (ids.length === 0) return;
+    setBusyBulk(true);
+    try {
+      const payload = { task_ids: ids, action, ...extra };
+      const res: any = await api.post('/tasks/bulk-action', payload);
+      notify('Updated', res?.message || `${res?.modified || 0} tasks updated`);
+      setBulkModal(null);
+      exitSelectMode();
+      await load();
+    } catch (e: any) {
+      notify('Failed', e?.message || 'Bulk action failed');
+    } finally {
+      setBusyBulk(false);
+    }
+  };
+
+  const openAssignModal = async () => {
+    setBulkModal('assign');
+    try {
+      const emps = await api.get<any[]>('/employees').catch(() => []);
+      setStaffList(emps || []);
+    } catch {}
   };
 
   const deleteOne = async (id: string, taskNo: string) => {
@@ -498,21 +529,138 @@ export default function TasksScreen() {
 
       {/* Bulk-action bar */}
       {selectMode ? (
-        <View style={styles.bulkBar} testID="bulk-bar">
-          <Pressable testID="bulk-cancel" onPress={exitSelectMode} style={[styles.bulkBtn, { backgroundColor: colors.surfaceSecondary }]}>
-            <Text style={{ color: colors.onSurface, fontWeight: '700' }}>Cancel</Text>
+        <View style={[styles.bulkBar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]} testID="bulk-bar">
+          <Pressable
+            disabled={selectedCount === 0 || busyBulk}
+            onPress={() => setBulkModal('stage')}
+            style={[styles.bulkBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }]}
+          >
+            <Ionicons name="git-branch-outline" size={15} color={colors.brandPrimary} />
+            <Text style={{ color: colors.brandPrimary, fontWeight: '800', fontSize: 12 }}>Stage</Text>
           </Pressable>
+
+          <Pressable
+            disabled={selectedCount === 0 || busyBulk}
+            onPress={openAssignModal}
+            style={[styles.bulkBtn, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0', borderWidth: 1 }]}
+          >
+            <Ionicons name="person-outline" size={15} color="#15803D" />
+            <Text style={{ color: '#15803D', fontWeight: '800', fontSize: 12 }}>Assign</Text>
+          </Pressable>
+
+          <Pressable
+            disabled={selectedCount === 0 || busyBulk}
+            onPress={() => setBulkModal('priority')}
+            style={[styles.bulkBtn, { backgroundColor: '#FFFBEB', borderColor: '#FDE68A', borderWidth: 1 }]}
+          >
+            <Ionicons name="flag-outline" size={15} color="#B45309" />
+            <Text style={{ color: '#B45309', fontWeight: '800', fontSize: 12 }}>Priority</Text>
+          </Pressable>
+
           <Pressable
             testID="bulk-delete"
             disabled={selectedCount === 0 || busyBulk}
             onPress={bulkDelete}
-            style={[styles.bulkBtn, { backgroundColor: selectedCount === 0 ? '#CA5F5F' : colors.error, opacity: selectedCount === 0 || busyBulk ? 0.5 : 1 }]}
+            style={[styles.bulkBtn, { backgroundColor: '#FEF2F2', borderColor: '#FECACA', borderWidth: 1 }]}
           >
-            <Ionicons name="trash" size={16} color="#FFF" />
-            <Text style={{ color: '#FFF', fontWeight: '800' }}>{busyBulk ? 'Deleting…' : `Delete Selected (${selectedCount})`}</Text>
+            <Ionicons name="trash-outline" size={15} color={colors.error} />
+            <Text style={{ color: colors.error, fontWeight: '800', fontSize: 12 }}>Delete ({selectedCount})</Text>
+          </Pressable>
+
+          <Pressable testID="bulk-cancel" onPress={exitSelectMode} style={[styles.bulkBtn, { backgroundColor: '#F1F5F9', flex: 0.8 }]}>
+            <Text style={{ color: colors.onSurface, fontWeight: '700', fontSize: 12 }}>Cancel</Text>
           </Pressable>
         </View>
       ) : null}
+
+      {/* Bulk Action Options Modal */}
+      <Modal visible={!!bulkModal} animationType="fade" transparent onRequestClose={() => setBulkModal(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.wfModalCard, { maxHeight: '75%', padding: spacing.lg }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md }}>
+              <View>
+                <Text style={styles.wfModalTitle}>
+                  {bulkModal === 'stage' ? 'Bulk Move Stage' :
+                   bulkModal === 'assign' ? 'Bulk Assign Staff' : 'Bulk Set Priority'}
+                </Text>
+                <Text style={styles.wfModalSubtitle}>Apply to {selectedCount} selected tasks</Text>
+              </View>
+              <Pressable onPress={() => setBulkModal(null)} hitSlop={10}>
+                <Ionicons name="close" size={24} color={colors.onSurface} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
+              {bulkModal === 'stage' && (
+                ['todo', 'doing', 'done'].map(st => (
+                  <Pressable
+                    key={st}
+                    onPress={() => handleBulkAction('move_stage', { stage: st })}
+                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderRadius: radius.md, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0' }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: colors.onSurface }}>
+                      {st === 'todo' ? 'To Do (Pending)' : st === 'doing' ? 'In Progress (Doing)' : 'Completed (Done)'}
+                    </Text>
+                    <Ionicons name="arrow-forward" size={18} color={colors.brandPrimary} />
+                  </Pressable>
+                ))
+              )}
+
+              {bulkModal === 'priority' && (
+                [
+                  { label: 'Urgent', val: 'urgent', color: '#DC2626' },
+                  { label: 'High', val: 'high', color: '#EA580C' },
+                  { label: 'Medium', val: 'medium', color: '#D97706' },
+                  { label: 'Low', val: 'low', color: '#16A34A' },
+                ].map(p => (
+                  <Pressable
+                    key={p.val}
+                    onPress={() => handleBulkAction('set_priority', { priority: p.val })}
+                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderRadius: radius.md, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0' }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name="flag" size={16} color={p.color} />
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: colors.onSurface }}>{p.label}</Text>
+                    </View>
+                    <Ionicons name="checkmark-circle-outline" size={18} color={p.color} />
+                  </Pressable>
+                ))
+              )}
+
+              {bulkModal === 'assign' && (
+                <>
+                  <Pressable
+                    onPress={() => handleBulkAction('assign', { assigned_to: null, assigned_name: 'Unassigned' })}
+                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderRadius: radius.md, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA' }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: colors.error }}>Unassign (Clear Assignee)</Text>
+                    <Ionicons name="close-circle-outline" size={18} color={colors.error} />
+                  </Pressable>
+                  {staffList.length === 0 ? (
+                    <Text style={{ textAlign: 'center', color: colors.muted, marginVertical: 20 }}>No staff members available</Text>
+                  ) : (
+                    staffList.map(s => (
+                      <Pressable
+                        key={s.id || s.user_id}
+                        onPress={() => handleBulkAction('assign', { assigned_to: s.id || s.user_id, assigned_name: s.name })}
+                        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderRadius: radius.md, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0' }}
+                      >
+                        <View>
+                          <Text style={{ fontSize: 14, fontWeight: '700', color: colors.onSurface }}>{s.name}</Text>
+                          <Text style={{ fontSize: 11, color: colors.muted }}>{s.designation || s.role || 'Staff'}</Text>
+                        </View>
+                        <Ionicons name="person-add-outline" size={18} color={colors.brandPrimary} />
+                      </Pressable>
+                    ))
+                  )}
+                </>
+              )}
+            </ScrollView>
+
+            <SecondaryButton label="Cancel" onPress={() => setBulkModal(null)} style={{ marginTop: spacing.md }} />
+          </View>
+        </View>
+      </Modal>
 
       {/* Admin Service Workflow Configuration Modal */}
       <Modal visible={workflowModal} animationType="slide" transparent onRequestClose={() => setWorkflowModal(false)}>

@@ -100,10 +100,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(resp.user);
   }, []);
 
-  const signup = useCallback(async (email: string, password: string, name: string, role = 'employee') => {
-    const resp = await api.post<{ session_token: string; user: AppUser }>('/auth/signup', { email, password, name, role });
-    await tokenStore.set(resp.session_token);
-    setUser(resp.user);
+  const signup = useCallback(async () => {
+    throw new Error('Public registration is disabled. Please contact your system administrator.');
   }, []);
 
   const loginGoogle = useCallback(async () => {

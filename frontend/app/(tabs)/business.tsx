@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, RefreshControl, TextInput, Platform, Linking } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
@@ -26,6 +26,7 @@ const daysUntil = (dateStr?: string | null): number | null => {
 };
 
 export default function BusinessScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -200,10 +201,43 @@ export default function BusinessScreen() {
                         <Avatar name={item.name} />
                       )}
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.itemTitle}>{item.name}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <Text style={styles.itemTitle}>{item.name}</Text>
+                          {item.registration_class ? (
+                            <View style={{ backgroundColor: '#EEF2FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#C7D2FE' }}>
+                              <Text style={{ fontSize: 10, fontWeight: '800', color: '#4338CA' }}>{item.registration_class}</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         {item.customer_code ? <Text style={[styles.muted, { color: colors.brandPrimary, fontWeight: '700' }]}>{item.customer_code}</Text> : null}
-                        {item.mobile ? <Text style={styles.muted}>📱 {item.mobile}</Text> : null}
-                        {item.pan ? <Text style={styles.muted}>PAN: {item.pan}</Text> : null}
+                        {item.contractor_reg_no ? <Text style={[styles.muted, { color: '#0F172A', fontWeight: '600' }]}>Reg: {item.contractor_reg_no}</Text> : null}
+                        {item.departments ? <Text style={[styles.muted, { color: '#047857' }]} numberOfLines={1}>Depts: {item.departments}</Text> : null}
+                        {item.mobile ? (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                            <Text style={styles.muted}>📱 {item.mobile}</Text>
+                            <Pressable
+                              hitSlop={6}
+                              onPress={(e) => { e?.stopPropagation?.(); Linking.openURL(`tel:${item.mobile}`); }}
+                              style={{ paddingHorizontal: 6, paddingVertical: 2, backgroundColor: '#EFF6FF', borderRadius: 4 }}
+                            >
+                              <Ionicons name="call" size={12} color={colors.brandPrimary} />
+                            </Pressable>
+                            {item.whatsapp ? (
+                              <Pressable
+                                hitSlop={6}
+                                onPress={(e) => {
+                                  e?.stopPropagation?.();
+                                  const clean = item.whatsapp.replace(/\D/g, '');
+                                  Linking.openURL(`https://wa.me/${clean.startsWith('91') ? clean : '91' + clean}`);
+                                }}
+                                style={{ paddingHorizontal: 6, paddingVertical: 2, backgroundColor: '#DCFCE7', borderRadius: 4 }}
+                              >
+                                <Ionicons name="logo-whatsapp" size={12} color="#15803D" />
+                              </Pressable>
+                            ) : null}
+                          </View>
+                        ) : null}
+                        {item.pan ? <Text style={styles.muted}>PAN: {item.pan}{item.gst_no ? ` • GST: ${item.gst_no}` : ''}</Text> : null}
                         {dscWarn ? (
                           <Text style={[styles.muted, { color: dscExpired ? colors.error : colors.warning, fontWeight: '700' }]}>
                             {dscExpired ? `⚠ DSC expired ${-dscDays!}d ago` : `⚠ DSC expires in ${dscDays}d`}
@@ -217,23 +251,28 @@ export default function BusinessScreen() {
                     </View>
                     {(canEdit || isAdmin) && !selectMode ? (
                       <View style={{ flexDirection: 'row', gap: 6, marginTop: 10, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 8 }}>
-                        <Pressable testID={`print-${item.id}`} onPress={(e) => { e?.stopPropagation?.(); printCustomer(item); }}
+                        <Pressable testID={`view-${item.id}`} onPress={(e) => { e?.stopPropagation?.(); router.push(`/customers/${item.id}` as any); }}
                           style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#EFF6FF', paddingVertical: 8, borderRadius: 6 }}>
-                          <Ionicons name="print" size={14} color={colors.brandPrimary} />
-                          <Text style={{ color: colors.brandPrimary, fontWeight: '800', fontSize: 12 }}>Print</Text>
+                          <Ionicons name="eye-outline" size={14} color={colors.brandPrimary} />
+                          <Text style={{ color: colors.brandPrimary, fontWeight: '800', fontSize: 12 }}>Details</Text>
                         </Pressable>
                         {canEdit ? (
                           <Pressable testID={`edit-${item.id}`} onPress={(e) => { e?.stopPropagation?.(); router.push({ pathname: '/customers/new', params: { edit_id: item.id } } as any); }}
-                            style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEF3C7', paddingVertical: 8, borderRadius: 6 }}>
+                            style={{ flex: 1.2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEF3C7', paddingVertical: 8, borderRadius: 6 }}>
                             <Ionicons name="create-outline" size={14} color="#B45309" />
-                            <Text style={{ color: '#B45309', fontWeight: '800', fontSize: 12 }}>Edit</Text>
+                            <Text style={{ color: '#B45309', fontWeight: '800', fontSize: 12 }}>Edit Profile</Text>
                           </Pressable>
                         ) : null}
+                        <Pressable testID={`print-${item.id}`} onPress={(e) => { e?.stopPropagation?.(); printCustomer(item); }}
+                          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#F1F5F9', paddingVertical: 8, borderRadius: 6 }}>
+                          <Ionicons name="print-outline" size={14} color="#334155" />
+                          <Text style={{ color: '#334155', fontWeight: '800', fontSize: 12 }}>Print</Text>
+                        </Pressable>
                         {isAdmin ? (
                           <Pressable testID={`del-${item.id}`} onPress={(e) => { e?.stopPropagation?.(); deleteCustomer(item); }}
-                            style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEE2E2', paddingVertical: 8, borderRadius: 6 }}>
+                            style={{ flex: 0.8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEE2E2', paddingVertical: 8, borderRadius: 6 }}>
                             <Ionicons name="trash-outline" size={14} color={colors.error} />
-                            <Text style={{ color: colors.error, fontWeight: '800', fontSize: 12 }}>Delete</Text>
+                            <Text style={{ color: colors.error, fontWeight: '800', fontSize: 12 }}>Del</Text>
                           </Pressable>
                         ) : null}
                       </View>
@@ -277,7 +316,7 @@ export default function BusinessScreen() {
       )}
     </SafeAreaView>
       {selectMode ? (
-        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', gap: 8, padding: 16, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.border }} testID="bulk-bar">
+        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', gap: 8, padding: 16, paddingBottom: Math.max(insets.bottom, 16), backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.border }} testID="bulk-bar">
           <Pressable onPress={exitSelect} testID="bulk-cancel" style={{ flex: 1, paddingVertical: 14, borderRadius: 8, alignItems: 'center', backgroundColor: colors.surfaceSecondary }}>
             <Text style={{ color: colors.onSurface, fontWeight: '700' }}>Cancel</Text>
           </Pressable>

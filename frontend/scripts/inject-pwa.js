@@ -28,11 +28,4 @@ if (fs.existsSync(indexPath)) {
     fs.writeFileSync(indexPath, html, 'utf8');
     console.log('Successfully injected iOS Safari PWA tags into dist/index.html');
   }
-
-  const distDir = path.join(__dirname, '..', 'dist');
-  const publicDir = path.join(__dirname, '..', 'public');
-  if (fs.existsSync(distDir)) {
-    fs.cpSync(distDir, publicDir, { recursive: true });
-    console.log('Successfully synced dist to public directory');
-  }
 }

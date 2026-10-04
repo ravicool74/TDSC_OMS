@@ -13,6 +13,7 @@ import {
   Alert,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { ScreenHeader } from '@/src/ScreenHeader';
@@ -65,6 +66,7 @@ const Section: React.FC<SectionProps> = ({ title, icon, children, defaultOpen, t
 };
 
 export default function NewCustomer() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ edit_id?: string }>();
   const editId = params?.edit_id || null;
@@ -231,7 +233,7 @@ export default function NewCustomer() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-customer">
       <ScreenHeader title={isEdit ? 'Edit Customer (42 Fields)' : 'Add Customer (42 Fields)'} />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={[styles.body, { paddingBottom: Math.max(insets.bottom + 40, spacing.xxxl) }]} keyboardShouldPersistTaps="handled">
           <View style={styles.notice}>
             <Ionicons name="shield-checkmark" size={18} color={colors.brandPrimary} />
             <Text style={styles.noticeText}>

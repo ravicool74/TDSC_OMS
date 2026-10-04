@@ -73,30 +73,50 @@ export const Avatar: React.FC<{ name: string; size?: number; uri?: string | null
   );
 };
 
-export const PrimaryButton: React.FC<{ label: string; onPress: () => void; loading?: boolean; testID?: string; disabled?: boolean; style?: ViewStyle; icon?: any }>
-  = ({ label, onPress, loading, testID, disabled, style, icon }) => (
-  <Pressable
-    testID={testID}
-    onPress={onPress}
-    disabled={disabled || loading}
-    style={({ pressed }) => [styles.primaryBtn, (disabled || loading) && { opacity: 0.6 }, pressed && { opacity: 0.8 }, style]}
-  >
-    {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
-      <>
-        {icon ? <Ionicons name={icon} size={18} color={colors.onBrandPrimary} style={{ marginRight: 6 }} /> : null}
-        <Text style={styles.primaryBtnText}>{label}</Text>
-      </>
-    )}
-  </Pressable>
-);
+export const PrimaryButton: React.FC<{
+  label?: string;
+  title?: string;
+  onPress: () => void;
+  loading?: boolean;
+  testID?: string;
+  disabled?: boolean;
+  style?: ViewStyle;
+  icon?: any;
+}> = ({ label, title, onPress, loading, testID, disabled, style, icon }) => {
+  const text = label || title || '';
+  return (
+    <Pressable
+      testID={testID}
+      onPress={onPress}
+      disabled={disabled || loading}
+      style={({ pressed }) => [styles.primaryBtn, (disabled || loading) && { opacity: 0.6 }, pressed && { opacity: 0.8 }, style]}
+    >
+      {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+        <>
+          {icon ? <Ionicons name={icon} size={18} color={colors.onBrandPrimary} style={{ marginRight: 6 }} /> : null}
+          <Text style={styles.primaryBtnText}>{text}</Text>
+        </>
+      )}
+    </Pressable>
+  );
+};
 
-export const SecondaryButton: React.FC<{ label: string; onPress: () => void; testID?: string; icon?: any; style?: ViewStyle }>
-  = ({ label, onPress, testID, icon, style }) => (
-  <Pressable testID={testID} onPress={onPress} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.7 }, style]}>
-    {icon ? <Ionicons name={icon} size={18} color={colors.brandPrimary} style={{ marginRight: 6 }} /> : null}
-    <Text style={styles.secondaryBtnText}>{label}</Text>
-  </Pressable>
-);
+export const SecondaryButton: React.FC<{
+  label?: string;
+  title?: string;
+  onPress: () => void;
+  testID?: string;
+  icon?: any;
+  style?: ViewStyle;
+}> = ({ label, title, onPress, testID, icon, style }) => {
+  const text = label || title || '';
+  return (
+    <Pressable testID={testID} onPress={onPress} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.7 }, style]}>
+      {icon ? <Ionicons name={icon} size={18} color={colors.brandPrimary} style={{ marginRight: 6 }} /> : null}
+      <Text style={styles.secondaryBtnText}>{text}</Text>
+    </Pressable>
+  );
+};
 
 export const Card: React.FC<{ children: React.ReactNode; style?: ViewStyle }> = ({ children, style }) => (
   <View style={[styles.card, style]}>{children}</View>
