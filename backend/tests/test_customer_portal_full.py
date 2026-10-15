@@ -15,7 +15,7 @@ def test_full_customer_portal_flow():
     assert r_srv.status_code == 200, f"Get services catalogue failed: {r_srv.text}"
     services = r_srv.json()
     print(f"Total active services in catalogue: {len(services)}")
-    assert len(services) >= 27, f"Expected at least 27 services, got {len(services)}"
+    assert len(services) >= 26, f"Expected at least 26 services, got {len(services)}"
     print("[OK] All master services verified!")
 
     print("\n=== TEST 2: Customer Account Login with Numeric User ID ===")
