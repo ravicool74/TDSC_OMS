@@ -103,17 +103,7 @@ cd "e:\MY PROJECTS\tdscoms\backend"
 
 ---
 
-## 4. Default Demo Accounts
-
-| Role | Email | Password |
-| :--- | :--- | :--- |
-| **System Administrator** | `admin@triveni.com` | `admin123` |
-| **Branch Manager** | `manager@triveni.com` | `manager123` |
-| **Staff Employee** | `employee@triveni.com` | `employee123` |
-
----
-
-## 5. App Installation, Distribution & 1-Click Updates
+## 4. App Installation, Distribution & 1-Click Updates
 
 Complete operational guide available in [APP_INSTALLATION_AND_UPDATES.md](APP_INSTALLATION_AND_UPDATES.md).
 

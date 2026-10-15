@@ -1,7 +1,7 @@
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, EmailStr, Field
 
@@ -39,7 +39,17 @@ class ManagedUser(BaseModel):
     role_name: Optional[str] = "Employee"
     role: str = "employee"  # backward compat string
 
+    # Employee Mapping Details
+    employee_id: Optional[str] = None
+    employee_code: Optional[str] = None
+    pan: Optional[str] = None
+    aadhar: Optional[str] = None
+    date_of_joining: Optional[str] = None
+
     documents: List[UserDocument] = Field(default_factory=list)
+    permissions: Dict[str, List[str]] = Field(default_factory=dict)
+    allowed_menus: List[str] = Field(default_factory=list)
+    app_menu_matrix: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -58,6 +68,17 @@ class CreateUserInput(BaseModel):
     post_id: Optional[str] = None
     role_id: Optional[str] = "employee"
 
+    # Employee Mapping Details
+    employee_id: Optional[str] = None
+    employee_code: Optional[str] = None
+    pan: Optional[str] = None
+    aadhar: Optional[str] = None
+    date_of_joining: Optional[str] = None
+
+    permissions: Optional[Dict[str, List[str]]] = None
+    allowed_menus: Optional[List[str]] = None
+    app_menu_matrix: Optional[Dict[str, Any]] = None
+
 class UpdateUserInput(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
@@ -72,6 +93,17 @@ class UpdateUserInput(BaseModel):
     branch_id: Optional[str] = None
     post_id: Optional[str] = None
     role_id: Optional[str] = None
+
+    # Employee Mapping Details
+    employee_id: Optional[str] = None
+    employee_code: Optional[str] = None
+    pan: Optional[str] = None
+    aadhar: Optional[str] = None
+    date_of_joining: Optional[str] = None
+
+    permissions: Optional[Dict[str, List[str]]] = None
+    allowed_menus: Optional[List[str]] = None
+    app_menu_matrix: Optional[Dict[str, Any]] = None
 
 class BulkUserActionInput(BaseModel):
     user_ids: List[str]
@@ -105,12 +137,40 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
             post = await db.posts.find_one({"$or": [{"id": doc["post_id"]}, {"post_id": doc["post_id"]}]})
             if post:
                 doc["post_title"] = post.get("title")
-        # Resolve Role Name
+        # Resolve Role Name, Permissions, and Menus
         if doc.get("role_id"):
             role = await db.roles.find_one({"$or": [{"id": doc["role_id"]}, {"role_id": doc["role_id"]}]})
             if role:
                 doc["role_name"] = role.get("name")
                 doc["role"] = role.get("role_id")
+                if not doc.get("permissions"):
+                    doc["permissions"] = role.get("permissions", {})
+                if not doc.get("allowed_menus"):
+                    doc["allowed_menus"] = role.get("allowed_menus", [])
+                if not doc.get("app_menu_matrix"):
+                    from role_routes import build_role_menu_matrix
+                    doc["app_menu_matrix"] = role.get("app_menu_matrix", build_role_menu_matrix(doc["role_id"]))
+
+        # Super Admin override
+        if doc.get("role") == "super_admin" or doc.get("role_id") == "super_admin":
+            from role_routes import ALL_MENU_IDS, get_all_perms, build_role_menu_matrix
+            doc["permissions"] = get_all_perms()
+            doc["allowed_menus"] = list(ALL_MENU_IDS)
+            doc["app_menu_matrix"] = build_role_menu_matrix("super_admin")
+        elif not doc.get("allowed_menus") and doc.get("role") == "admin":
+            from role_routes import ALL_MENU_IDS, build_role_menu_matrix
+            doc["allowed_menus"] = list(ALL_MENU_IDS)
+            if not doc.get("app_menu_matrix"):
+                doc["app_menu_matrix"] = build_role_menu_matrix("admin")
+
+        # Resolve Employee details if employee_id present
+        if doc.get("employee_id"):
+            emp = await db.employees.find_one({"$or": [{"id": doc["employee_id"]}, {"employee_code": doc["employee_id"]}], "_id": 0})
+            if emp:
+                if not doc.get("employee_code"): doc["employee_code"] = emp.get("employee_code") or emp.get("id")
+                if not doc.get("pan"): doc["pan"] = emp.get("pan")
+                if not doc.get("aadhar"): doc["aadhar"] = emp.get("aadhar")
+                if not doc.get("date_of_joining"): doc["date_of_joining"] = emp.get("date_of_joining")
         return doc
 
     @router.get("", response_model=List[ManagedUser])
@@ -136,6 +196,10 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
                 {"email": regex},
                 {"mobile": regex},
                 {"username": regex},
+                {"employee_code": regex},
+                {"employee_id": regex},
+                {"pan": regex},
+                {"aadhar": regex},
                 {"branch_name": regex},
                 {"post_title": regex},
             ]
@@ -336,6 +400,86 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
         updated = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
         await log_audit(db, current, "users", "update", uid, None, updated)
         return ManagedUser(**updated)
+
+    @router.get("/{uid}/permissions")
+    async def get_user_permissions(uid: str, current: any = Depends(require_admin)):
+        existing = await db.users.find_one({"user_id": uid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        has_custom = bool(existing.get("app_menu_matrix"))
+        enriched = await enrich_mapping(dict(existing))
+        role_key = existing.get("role_id") or existing.get("role") or "employee"
+        from role_routes import build_role_menu_matrix
+        role_matrix = build_role_menu_matrix(role_key)
+        
+        return {
+            "user_id": uid,
+            "name": existing.get("name"),
+            "email": existing.get("email"),
+            "role_id": role_key,
+            "role_name": enriched.get("role_name", role_key.capitalize()),
+            "is_custom": has_custom,
+            "app_menu_matrix": enriched.get("app_menu_matrix") or role_matrix,
+            "role_matrix": role_matrix,
+        }
+
+    @router.put("/{uid}/permissions")
+    async def set_user_permissions(uid: str, payload: dict, current: any = Depends(require_admin)):
+        existing = await db.users.find_one({"user_id": uid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        target_is_super = existing.get("role") == "super_admin" or existing.get("role_id") == "super_admin"
+        if target_is_super and current.role != "super_admin":
+            raise HTTPException(status_code=403, detail="Only Super Admin can modify Super Admin permissions.")
+
+        matrix = payload.get("app_menu_matrix") or {}
+        allowed = payload.get("allowed_menus")
+        if allowed is None:
+            derived = []
+            for item_k, item_v in (matrix.get("dashboard") or {}).items():
+                if isinstance(item_v, dict) and item_v.get("view"):
+                    derived.append(item_k)
+            for item_k, item_v in (matrix.get("business") or {}).items():
+                if isinstance(item_v, dict) and item_v.get("view"):
+                    derived.append(item_k)
+            for item_k, item_v in (matrix.get("task") or {}).items():
+                if isinstance(item_v, dict) and item_v.get("view"):
+                    derived.append(item_k)
+            for sec_k, sec_v in (matrix.get("more") or {}).items():
+                if isinstance(sec_v, dict):
+                    for sub_k, sub_v in sec_v.items():
+                        if isinstance(sub_v, dict) and sub_v.get("view"):
+                            derived.append(sub_k)
+            allowed = list(set(derived))
+
+        await db.users.update_one(
+            {"user_id": uid},
+            {"$set": {
+                "app_menu_matrix": matrix,
+                "allowed_menus": allowed,
+                "updated_at": now_utc(),
+            }}
+        )
+        await log_audit(db, current, "users", "custom_permissions", uid, None, {"app_menu_matrix": matrix})
+        return {"ok": True, "message": f"Custom permissions saved for {existing.get('name')}"}
+
+    @router.post("/{uid}/reset-permissions")
+    async def reset_user_permissions(uid: str, current: any = Depends(require_admin)):
+        existing = await db.users.find_one({"user_id": uid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        await db.users.update_one(
+            {"user_id": uid},
+            {
+                "$unset": {"app_menu_matrix": "", "allowed_menus": ""},
+                "$set": {"updated_at": now_utc()}
+            }
+        )
+        await log_audit(db, current, "users", "reset_permissions", uid, None, {"action": "reset_to_role_default"})
+        return {"ok": True, "message": f"Permissions reset to role defaults for {existing.get('name')}"}
 
     @router.delete("/{uid}")
     async def delete_user(uid: str, current: any = Depends(require_admin)):

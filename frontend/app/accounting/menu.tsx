@@ -26,6 +26,7 @@ const BUSINESS: Section[] = [
       { icon: 'arrow-down-circle', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Payment-In', route: '/accounting/income/new' },
       { icon: 'list', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'All Payments-In', route: '/accounting/income' },
       { icon: 'return-down-back', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Sale Return / Credit Note', route: '/accounting/invoices/new', params: { type: 'sale_return' } },
+      { icon: 'list', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'All Sale Return / Credit Notes', route: '/accounting/invoices', params: { type: 'sale_return' } },
       { icon: 'clipboard', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Estimate / Quotation', route: '/accounting/estimates' },
       { icon: 'document-text', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Proforma Invoice', route: '/accounting/proforma' },
       { icon: 'cart', iconColor: '#0891B2', iconBg: '#CFFAFE', label: 'Sale Order', route: '/accounting/estimates', params: { type: 'order' } },
@@ -49,6 +50,8 @@ const BUSINESS: Section[] = [
     rows: [
       { icon: 'wallet', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Add Expense', route: '/accounting/expenses/new' },
       { icon: 'list', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'All Expenses', route: '/accounting/expenses' },
+      { icon: 'checkmark-done-circle', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Expense Approval', route: '/accounting/expenses/approval' },
+      { icon: 'add-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: 'New Expense Approval', route: '/accounting/expenses/approval/new' },
       { icon: 'grid', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Categories & Items', route: '/accounting/items' },
     ],
   },

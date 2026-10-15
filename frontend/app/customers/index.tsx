@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -51,6 +51,15 @@ export default function ContractorsDirectoryScreen() {
   const [selectedDept, setSelectedDept] = useState('All');
   const [selectedClass, setSelectedClass] = useState('All');
   const [selectedDscFilter, setSelectedDscFilter] = useState('All');
+  const [selectedBranch, setSelectedBranch] = useState('All');
+  const [selectedDistrict, setSelectedDistrict] = useState('All');
+
+  const [branchesList, setBranchesList] = useState<any[]>([]);
+  const [districtsList, setDistrictsList] = useState<any[]>([]);
+  const [branchFilterModal, setBranchFilterModal] = useState(false);
+  const [districtFilterModal, setDistrictFilterModal] = useState(false);
+  const [branchFilterSearch, setBranchFilterSearch] = useState('');
+  const [districtFilterSearch, setDistrictFilterSearch] = useState('');
 
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -64,6 +73,19 @@ export default function ContractorsDirectoryScreen() {
     } catch {
       setCustomers([]);
     }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const b: any = await api.getBranches();
+        if (Array.isArray(b)) setBranchesList(b);
+      } catch {}
+      try {
+        const d: any = await api.getDistricts();
+        if (Array.isArray(d)) setDistrictsList(d);
+      } catch {}
+    })();
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -205,6 +227,36 @@ export default function ContractorsDirectoryScreen() {
     }
   };
 
+  const bulkExportPdf = async () => {
+    if (!customers) return;
+    const ids = Object.keys(selected).filter(k => selected[k]);
+    if (ids.length === 0) {
+      notify('Select Contractors', 'Please select at least one contractor to export PDF.');
+      return;
+    }
+    setBusyBulk(true);
+    try {
+      const blob = await api.exportContractorsPdf(ids);
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `contractors_directory_${Date.now()}.pdf`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.open(url, '_blank');
+        notify('Export Successful', `Exported ${ids.length} contractor(s) to PDF`);
+      } else {
+        notify('PDF Ready', `Generated PDF for ${ids.length} contractors`);
+      }
+    } catch (e: any) {
+      notify('Export Failed', e?.message || 'Could not generate PDF');
+    } finally {
+      setBusyBulk(false);
+    }
+  };
+
   const stats = useMemo(() => {
     if (!customers) return { total: 0, dscExpiring: 0, dscExpired: 0, dscActive: 0 };
     let expiring = 0;
@@ -272,9 +324,34 @@ export default function ContractorsDirectoryScreen() {
         }
       }
 
+      // 5. Branch Filter
+      if (selectedBranch !== 'All') {
+        const b = (c.branch_name || c.branch || '').toLowerCase();
+        if (b !== selectedBranch.toLowerCase()) return false;
+      }
+
+      // 6. District Filter
+      if (selectedDistrict !== 'All') {
+        const d = (c.district || '').toLowerCase();
+        if (d !== selectedDistrict.toLowerCase()) return false;
+      }
+
       return true;
     });
-  }, [customers, q, selectedDept, selectedClass, selectedDscFilter]);
+  }, [customers, q, selectedDept, selectedClass, selectedDscFilter, selectedBranch, selectedDistrict]);
+
+  const isAnyFilterActive = useMemo(() => {
+    return !!q || selectedDept !== 'All' || selectedClass !== 'All' || selectedDscFilter !== 'All' || selectedBranch !== 'All' || selectedDistrict !== 'All';
+  }, [q, selectedDept, selectedClass, selectedDscFilter, selectedBranch, selectedDistrict]);
+
+  const clearAllFilters = useCallback(() => {
+    setQ('');
+    setSelectedDept('All');
+    setSelectedClass('All');
+    setSelectedDscFilter('All');
+    setSelectedBranch('All');
+    setSelectedDistrict('All');
+  }, []);
 
   return (
     <SafeAreaView edges={['top']} style={styles.root} testID="contractor-database-screen">
@@ -307,6 +384,14 @@ export default function ContractorsDirectoryScreen() {
                 {filtered && filtered.every(c => selected[c.id]) ? 'Deselect All' : 'Select All'}
               </Text>
             </Pressable>
+            <Pressable
+              onPress={() => setSelected({})}
+              testID="clear-selection"
+              style={[styles.selectAllBtn, { marginLeft: 6, backgroundColor: '#F1F5F9' }]}
+            >
+              <Ionicons name="close-circle-outline" size={18} color={colors.muted} />
+              <Text style={[styles.selectAllTxt, { color: colors.muted }]}>Clear</Text>
+            </Pressable>
           </>
         ) : (
           <>
@@ -321,7 +406,7 @@ export default function ContractorsDirectoryScreen() {
             </View>
 
             <View style={{ flexDirection: 'row', gap: 8 }}>
-              {isAdmin ? (
+              {canEdit ? (
                 <Pressable
                   testID="enter-select"
                   onPress={() => setSelectMode(true)}
@@ -380,6 +465,44 @@ export default function ContractorsDirectoryScreen() {
         ) : null}
       </View>
 
+      {/* Branch & District Filters + Clear Filters */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 4, gap: 8, flexWrap: 'wrap' }}>
+        <Pressable
+          onPress={() => { setBranchFilterSearch(''); setBranchFilterModal(true); }}
+          style={[styles.filterDropdownBtn, selectedBranch !== 'All' && styles.filterDropdownBtnActive]}
+          testID="filter-branch-btn"
+        >
+          <Ionicons name="business-outline" size={13} color={selectedBranch !== 'All' ? '#FFF' : colors.brandPrimary} />
+          <Text style={[styles.filterDropdownTxt, selectedBranch !== 'All' && styles.filterDropdownTxtActive]}>
+            {selectedBranch === 'All' ? 'Branch: All' : `Branch: ${selectedBranch}`}
+          </Text>
+          <Ionicons name="chevron-down" size={13} color={selectedBranch !== 'All' ? '#FFF' : colors.muted} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => { setDistrictFilterSearch(''); setDistrictFilterModal(true); }}
+          style={[styles.filterDropdownBtn, selectedDistrict !== 'All' && styles.filterDropdownBtnActive]}
+          testID="filter-district-btn"
+        >
+          <Ionicons name="location-outline" size={13} color={selectedDistrict !== 'All' ? '#FFF' : colors.brandPrimary} />
+          <Text style={[styles.filterDropdownTxt, selectedDistrict !== 'All' && styles.filterDropdownTxtActive]}>
+            {selectedDistrict === 'All' ? 'District: All' : `District: ${selectedDistrict}`}
+          </Text>
+          <Ionicons name="chevron-down" size={13} color={selectedDistrict !== 'All' ? '#FFF' : colors.muted} />
+        </Pressable>
+
+        {isAnyFilterActive ? (
+          <Pressable
+            onPress={clearAllFilters}
+            style={styles.clearAllFiltersBtn}
+            testID="clear-all-filters-btn"
+          >
+            <Ionicons name="close-circle" size={14} color={colors.error} />
+            <Text style={styles.clearAllFiltersTxt}>Clear Filters</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
       {/* Filter Chips Horizontal Rows */}
       <View style={{ marginBottom: 4 }}>
         {/* Department Filters */}
@@ -426,14 +549,14 @@ export default function ContractorsDirectoryScreen() {
       {filtered === null ? (
         <ScreenLoader />
       ) : filtered.length === 0 ? (
-        q || selectedDept !== 'All' || selectedClass !== 'All' || selectedDscFilter !== 'All' ? (
+        isAnyFilterActive ? (
           <EmptyState
             testID="contractors-nomatch"
             icon="search-outline"
             title="No matching contractors"
             subtitle="Try adjusting your search criteria or filter chips"
             actionLabel="Clear Filters"
-            onAction={() => { setQ(''); setSelectedDept('All'); setSelectedClass('All'); setSelectedDscFilter('All'); }}
+            onAction={clearAllFilters}
           />
         ) : (
           <EmptyState
@@ -708,6 +831,16 @@ export default function ContractorsDirectoryScreen() {
           </Pressable>
 
           <Pressable
+            testID="bulk-export-pdf"
+            disabled={selectedCount === 0 || busyBulk}
+            onPress={bulkExportPdf}
+            style={[styles.bulkBtnExtra, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}
+          >
+            <Ionicons name="document-text-outline" size={15} color="#DC2626" />
+            <Text style={{ color: '#DC2626', fontWeight: '800', fontSize: 12 }}>PDF</Text>
+          </Pressable>
+
+          <Pressable
             testID="bulk-delete"
             disabled={selectedCount === 0 || busyBulk}
             onPress={bulkDelete}
@@ -764,6 +897,138 @@ export default function ContractorsDirectoryScreen() {
             >
               <Text style={{ color: colors.onSurface, fontWeight: '700' }}>Cancel</Text>
             </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Branch Filter Modal */}
+      <Modal visible={branchFilterModal} animationType="fade" transparent onRequestClose={() => setBranchFilterModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxHeight: '80%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={styles.modalHeaderIcon}><Ionicons name="business" size={18} color="#FFF" /></View>
+                <View>
+                  <Text style={styles.modalTitle}>Filter by TDSC Branch</Text>
+                  <Text style={styles.modalSub}>Select branch to view contractors</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setBranchFilterModal(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <View style={{ padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+              <TextInput
+                value={branchFilterSearch}
+                onChangeText={setBranchFilterSearch}
+                placeholder="Search branches..."
+                placeholderTextColor={colors.muted}
+                style={styles.modalInput}
+                autoFocus
+              />
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.md, gap: 6 }}>
+              <Pressable
+                onPress={() => { setSelectedBranch('All'); setBranchFilterModal(false); }}
+                style={[styles.pickerItem, selectedBranch === 'All' && styles.pickerItemActive]}
+              >
+                <Ionicons name="globe-outline" size={16} color={selectedBranch === 'All' ? colors.brandPrimary : colors.muted} />
+                <Text style={[styles.pickerItemTitle, selectedBranch === 'All' && styles.pickerItemTitleActive]}>All Branches</Text>
+                {selectedBranch === 'All' ? <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} /> : null}
+              </Pressable>
+              {branchesList
+                .filter(b => {
+                  const q = branchFilterSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  const name = b.name || b.branch_name || '';
+                  const code = b.code || '';
+                  const city = b.city || '';
+                  return name.toLowerCase().includes(q) || code.toLowerCase().includes(q) || city.toLowerCase().includes(q);
+                })
+                .map(b => {
+                  const bName = b.name || b.branch_name;
+                  const isSel = selectedBranch === bName;
+                  return (
+                    <Pressable
+                      key={b.id || b.branch_id || bName}
+                      onPress={() => { setSelectedBranch(bName); setBranchFilterModal(false); }}
+                      style={[styles.pickerItem, isSel && styles.pickerItemActive]}
+                    >
+                      <Ionicons name="business" size={16} color={isSel ? colors.brandPrimary : colors.muted} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.pickerItemTitle, isSel && styles.pickerItemTitleActive]}>{bName}</Text>
+                        {(b.code || b.city) ? (
+                          <Text style={styles.pickerItemSub}>Code: {b.code || '—'} • {b.city || ''}</Text>
+                        ) : null}
+                      </View>
+                      {isSel ? <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} /> : null}
+                    </Pressable>
+                  );
+                })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* District Filter Modal */}
+      <Modal visible={districtFilterModal} animationType="fade" transparent onRequestClose={() => setDistrictFilterModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxHeight: '80%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={styles.modalHeaderIcon}><Ionicons name="location" size={18} color="#FFF" /></View>
+                <View>
+                  <Text style={styles.modalTitle}>Filter by District</Text>
+                  <Text style={styles.modalSub}>Select district to view contractors</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setDistrictFilterModal(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <View style={{ padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+              <TextInput
+                value={districtFilterSearch}
+                onChangeText={setDistrictFilterSearch}
+                placeholder="Search districts..."
+                placeholderTextColor={colors.muted}
+                style={styles.modalInput}
+                autoFocus
+              />
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.md, gap: 6 }}>
+              <Pressable
+                onPress={() => { setSelectedDistrict('All'); setDistrictFilterModal(false); }}
+                style={[styles.pickerItem, selectedDistrict === 'All' && styles.pickerItemActive]}
+              >
+                <Ionicons name="globe-outline" size={16} color={selectedDistrict === 'All' ? colors.brandPrimary : colors.muted} />
+                <Text style={[styles.pickerItemTitle, selectedDistrict === 'All' && styles.pickerItemTitleActive]}>All Districts</Text>
+                {selectedDistrict === 'All' ? <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} /> : null}
+              </Pressable>
+              {districtsList
+                .filter(d => {
+                  const q = districtFilterSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return d.name && d.name.toLowerCase().includes(q);
+                })
+                .map(d => {
+                  const isSel = selectedDistrict === d.name;
+                  return (
+                    <Pressable
+                      key={d.id || d.name}
+                      onPress={() => { setSelectedDistrict(d.name); setDistrictFilterModal(false); }}
+                      style={[styles.pickerItem, isSel && styles.pickerItemActive]}
+                    >
+                      <Ionicons name="location-outline" size={16} color={isSel ? colors.brandPrimary : colors.muted} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.pickerItemTitle, isSel && styles.pickerItemTitleActive]}>{d.name}</Text>
+                        {d.state ? <Text style={styles.pickerItemSub}>{d.state}</Text> : null}
+                      </View>
+                      {isSel ? <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} /> : null}
+                    </Pressable>
+                  );
+                })}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1013,5 +1278,121 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 8,
     borderWidth: 1,
+  },
+
+  // Filter dropdown buttons & clear button
+  filterDropdownBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  filterDropdownBtnActive: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandPrimary,
+  },
+  filterDropdownTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  filterDropdownTxtActive: {
+    color: '#FFF',
+  },
+  clearAllFiltersBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  clearAllFiltersTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.error,
+  },
+
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  modalHeaderIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.brandPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalTitle: { fontSize: font.lg, fontWeight: '800', color: colors.onSurface },
+  modalSub: { fontSize: 10, color: colors.muted },
+  modalInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: font.base,
+    color: colors.onSurface,
+  },
+
+  // Picker item styles
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  pickerItemActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: colors.brandPrimary,
+  },
+  pickerItemTitle: {
+    fontSize: font.sm,
+    fontWeight: '700',
+    color: colors.onSurface,
+  },
+  pickerItemTitleActive: {
+    color: colors.brandPrimary,
+  },
+  pickerItemSub: {
+    fontSize: 10,
+    color: colors.muted,
+    marginTop: 2,
   },
 });

@@ -8,6 +8,7 @@ import { api } from '@/src/api';
 import { Avatar, Card, EmptyState, ScreenLoader, StatusBadge } from '@/src/ui';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { canView, canWrite } from '@/src/rbac';
 
 type Segment = 'customers' | 'accounts';
 
@@ -29,8 +30,13 @@ export default function BusinessScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
-  const canEdit = isAdmin || user?.role === 'manager';
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const canViewCustomers = canView(user, 'business', 'customers');
+  const canViewAccounts = canView(user, 'business', 'accounts');
+  const canWriteCustomers = canWrite(user, 'business', 'customers');
+  const canWriteAccounts = canWrite(user, 'business', 'accounts');
+  const canEdit = canWriteCustomers;
+
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busyBulk, setBusyBulk] = useState(false);
@@ -45,12 +51,20 @@ export default function BusinessScreen() {
     } catch (e: any) { notify('Failed', e?.message || 'Try again'); }
   };
   const deleteCustomer = async (c: any) => {
+    if (!canWriteCustomers) {
+      notify('Permission Denied', 'Aapke pass customer delete karne ka right nahi hai.');
+      return;
+    }
     const ok = await confirm('Delete Customer?', `${c.name} delete kar diya jayega. Yeh action undo nahi ho sakta.`, { confirmText: 'Delete', destructive: true });
     if (!ok) return;
     try { await api.del(`/customers/${c.id}`); await load(); }
     catch (e: any) { notify('Failed', e?.message || 'Try again'); }
   };
   const bulkDelete = async () => {
+    if (!canWriteCustomers) {
+      notify('Permission Denied', 'Aapke pass bulk delete karne ka right nahi hai.');
+      return;
+    }
     const ids = Object.keys(selected).filter(k => selected[k]);
     if (ids.length === 0) return;
     const ok = await confirm('Delete Selected?', `${ids.length} customers permanently delete kar diye jayenge.`, { confirmText: 'Delete All', destructive: true });
@@ -60,7 +74,17 @@ export default function BusinessScreen() {
     catch (e: any) { notify('Failed', e?.message || 'Try again'); }
     finally { setBusyBulk(false); }
   };
-  const [seg, setSeg] = useState<Segment>('customers');
+  const defaultSeg: Segment = canViewCustomers ? 'customers' : (canViewAccounts ? 'accounts' : 'customers');
+  const [seg, setSeg] = useState<Segment>(defaultSeg);
+
+  React.useEffect(() => {
+    if (!canViewCustomers && canViewAccounts && seg === 'customers') {
+      setSeg('accounts');
+    } else if (canViewCustomers && !canViewAccounts && seg === 'accounts') {
+      setSeg('customers');
+    }
+  }, [canViewCustomers, canViewAccounts]);
+
   const [customers, setCustomers] = useState<any[] | null>(null);
   const [accounts, setAccounts] = useState<any[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -68,10 +92,13 @@ export default function BusinessScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [c, a] = await Promise.all([api.get<any[]>('/customers'), api.get<any[]>('/accounts')]);
+      const [c, a] = await Promise.all([
+        canViewCustomers ? api.get<any[]>('/customers') : Promise.resolve([]),
+        canViewAccounts ? api.get<any[]>('/accounts') : Promise.resolve([]),
+      ]);
       setCustomers(c); setAccounts(a);
     } catch { setCustomers([]); setAccounts([]); }
-  }, []);
+  }, [canViewCustomers, canViewAccounts]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -101,6 +128,22 @@ export default function BusinessScreen() {
     return accounts.filter(a => (a.title || '').toLowerCase().includes(s) || (a.party || '').toLowerCase().includes(s));
   }, [accounts, q]);
 
+  if (!canViewCustomers && !canViewAccounts) {
+    return (
+      <SafeAreaView edges={['top']} style={styles.root} testID="business-screen">
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: spacing.xl }}>
+          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.md }}>
+            <Ionicons name="lock-closed" size={36} color={colors.error} />
+          </View>
+          <Text style={[styles.h1, { fontSize: 20, textAlign: 'center' }]}>Business Access Restricted</Text>
+          <Text style={[styles.muted, { textAlign: 'center', marginTop: spacing.sm, maxWidth: 320, lineHeight: 20 }]}>
+            Administrator ne aapke account ke liye Business module (Customers aur Accounts) view karne ki permission disable ki hui hai.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <>
     <SafeAreaView edges={['top']} style={styles.root} testID="business-screen">
@@ -124,31 +167,35 @@ export default function BusinessScreen() {
         ) : (
           <>
             <Text style={styles.h1}>Business</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {isAdmin && seg === 'customers' ? (
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+              {canWriteCustomers && seg === 'customers' ? (
                 <Pressable testID="enter-select" onPress={() => setSelectMode(true)} style={[styles.addBtn, { backgroundColor: '#EFF6FF' }]}>
                   <Ionicons name="checkbox-outline" size={22} color={colors.brandPrimary} />
                 </Pressable>
               ) : null}
-              <Pressable
-                testID="add-btn"
-                style={styles.addBtn}
-                onPress={() => router.push(seg === 'customers' ? '/customers/new' as any : '/accounts/new' as any)}
-              >
-                <Ionicons name="add" size={22} color={colors.onBrandPrimary} />
-              </Pressable>
+              {((seg === 'customers' && canWriteCustomers) || (seg === 'accounts' && canWriteAccounts)) ? (
+                <Pressable
+                  testID="add-btn"
+                  style={styles.addBtn}
+                  onPress={() => router.push(seg === 'customers' ? '/customers/new' as any : '/accounts/new' as any)}
+                >
+                  <Ionicons name="add" size={22} color={colors.onBrandPrimary} />
+                </Pressable>
+              ) : null}
             </View>
           </>
         )}
       </View>
-      <View style={styles.segments}>
-        <Pressable testID="seg-customers" onPress={() => setSeg('customers')} style={[styles.seg, seg === 'customers' && styles.segActive]}>
-          <Text style={[styles.segText, seg === 'customers' && styles.segTextActive]}>Customers</Text>
-        </Pressable>
-        <Pressable testID="seg-accounts" onPress={() => setSeg('accounts')} style={[styles.seg, seg === 'accounts' && styles.segActive]}>
-          <Text style={[styles.segText, seg === 'accounts' && styles.segTextActive]}>Accounts</Text>
-        </Pressable>
-      </View>
+      {canViewCustomers && canViewAccounts && (
+        <View style={styles.segments}>
+          <Pressable testID="seg-customers" onPress={() => setSeg('customers')} style={[styles.seg, seg === 'customers' && styles.segActive]}>
+            <Text style={[styles.segText, seg === 'customers' && styles.segTextActive]}>Customers</Text>
+          </Pressable>
+          <Pressable testID="seg-accounts" onPress={() => setSeg('accounts')} style={[styles.seg, seg === 'accounts' && styles.segActive]}>
+            <Text style={[styles.segText, seg === 'accounts' && styles.segTextActive]}>Accounts</Text>
+          </Pressable>
+        </View>
+      )}
 
       <View style={styles.searchBar}>
         <Ionicons name="search" size={18} color={colors.muted} />
@@ -172,7 +219,14 @@ export default function BusinessScreen() {
           q ? (
             <EmptyState testID="customers-nomatch" icon="search-outline" title="No matches" subtitle={`Nothing found for "${q}"`} />
           ) : (
-            <EmptyState testID="customers-empty" icon="people-outline" title="No customers yet" subtitle="Add your first client to get started" actionLabel="Add Customer" onAction={() => router.push('/customers/new' as any)} />
+            <EmptyState
+              testID="customers-empty"
+              icon="people-outline"
+              title="No customers yet"
+              subtitle={canWriteCustomers ? "Add your first client to get started" : "No client records registered yet"}
+              actionLabel={canWriteCustomers ? "Add Customer" : undefined}
+              onAction={canWriteCustomers ? () => router.push('/customers/new' as any) : undefined}
+            />
           )
         ) : (
           <FlatList
@@ -268,7 +322,7 @@ export default function BusinessScreen() {
                           <Ionicons name="print-outline" size={14} color="#334155" />
                           <Text style={{ color: '#334155', fontWeight: '800', fontSize: 12 }}>Print</Text>
                         </Pressable>
-                        {isAdmin ? (
+                        {canWriteCustomers ? (
                           <Pressable testID={`del-${item.id}`} onPress={(e) => { e?.stopPropagation?.(); deleteCustomer(item); }}
                             style={{ flex: 0.8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEE2E2', paddingVertical: 8, borderRadius: 6 }}>
                             <Ionicons name="trash-outline" size={14} color={colors.error} />
@@ -288,7 +342,14 @@ export default function BusinessScreen() {
           q ? (
             <EmptyState testID="accounts-nomatch" icon="search-outline" title="No matches" subtitle={`Nothing found for "${q}"`} />
           ) : (
-            <EmptyState testID="accounts-empty" icon="cash-outline" title="No account entries" subtitle="Track invoices and expenses" actionLabel="Add Entry" onAction={() => router.push('/accounts/new' as any)} />
+            <EmptyState
+              testID="accounts-empty"
+              icon="cash-outline"
+              title="No account entries"
+              subtitle="Track invoices and expenses"
+              actionLabel={canWriteAccounts ? "Add Entry" : undefined}
+              onAction={canWriteAccounts ? () => router.push('/accounts/new' as any) : undefined}
+            />
           )
         ) : (
           <FlatList

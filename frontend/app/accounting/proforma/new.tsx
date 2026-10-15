@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
@@ -24,13 +24,57 @@ interface ItemRow {
 
 export default function NewProforma() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ edit_id?: string }>();
+  const editId = params?.edit_id || null;
+
   const [date, setDate] = useState(today());
   const [party, setParty] = useState<PickedParty | null>(null);
   const [showPartyPick, setShowPartyPick] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [showItemPick, setShowItemPick] = useState(false);
   const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState('draft');
   const [saving, setSaving] = useState(false);
+  const [loadingExisting, setLoadingExisting] = useState(false);
+  const [proformaNo, setProformaNo] = useState('');
+
+  useEffect(() => {
+    if (!editId) return;
+    (async () => {
+      setLoadingExisting(true);
+      try {
+        const ex = await api.get<any>(`/accounting/proforma/${editId}`);
+        if (ex) {
+          setProformaNo(ex.proforma_no || '');
+          setDate(ex.date || today());
+          setParty({
+            id: ex.customer_id,
+            name: ex.customer_name,
+            mobile: ex.customer_mobile || '',
+            pan: '',
+            aadhar: '',
+            gst_no: null,
+            customer_code: ex.customer_code || null,
+          } as any);
+          setItems((ex.items || []).map((it: any, idx: number) => ({
+            key: `${it.item_id || idx}_${idx}`,
+            item_id: it.item_id,
+            name: it.name || '',
+            qty: String(it.qty ?? 1),
+            rate: String(it.rate ?? 0),
+            discount: String(it.discount ?? 0),
+            tax_rate: String(it.tax_rate ?? 18),
+          })));
+          setNotes(ex.notes || '');
+          setStatus(ex.status || 'draft');
+        }
+      } catch (e: any) {
+        Alert.alert('Load Error', e?.message || 'Unable to load proforma invoice');
+      } finally {
+        setLoadingExisting(false);
+      }
+    })();
+  }, [editId]);
 
   const addItemFromCatalog = (item: PickedItem) => {
     setItems(prev => [
@@ -110,10 +154,16 @@ export default function NewProforma() {
           tax_rate: Number(it.tax_rate || 18),
         })),
         notes: notes.trim() || undefined,
+        status: status || 'draft',
       };
 
-      const res: any = await api.post('/accounting/proforma', payload);
-      Alert.alert('Proforma Created', `Proforma Invoice ${res.proforma_no} saved successfully.`);
+      if (editId) {
+        const res: any = await api.patch(`/accounting/proforma/${editId}`, payload);
+        Alert.alert('Proforma Updated', `Proforma Invoice ${res.proforma_no || proformaNo} updated successfully.`);
+      } else {
+        const res: any = await api.post('/accounting/proforma', payload);
+        Alert.alert('Proforma Created', `Proforma Invoice ${res.proforma_no} saved successfully.`);
+      }
       router.replace('/accounting/proforma' as any);
     } catch (e: any) {
       Alert.alert('Failed', e?.message || 'Unable to save proforma invoice');
@@ -124,8 +174,14 @@ export default function NewProforma() {
 
   return (
     <View style={styles.root}>
-      <ScreenHeader title="New Proforma Invoice" />
+      <ScreenHeader title={editId ? `Edit Proforma (${proformaNo || 'Invoice'})` : "New Proforma Invoice"} />
 
+      {loadingExisting ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+          <Text style={{ color: colors.muted, marginTop: 8 }}>Loading proforma details...</Text>
+        </View>
+      ) : (
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Client & Date</Text>
@@ -276,8 +332,9 @@ export default function NewProforma() {
           />
         </View>
 
-        <PrimaryButton label="Save Proforma Invoice" onPress={save} loading={saving} />
+        <PrimaryButton label={editId ? "Update Proforma Invoice" : "Save Proforma Invoice"} onPress={save} loading={saving} />
       </ScrollView>
+      )}
 
       <CustomerSearchModal
         visible={showPartyPick}

@@ -21,6 +21,7 @@ import { api } from '@/src/api';
 import { Card, EmptyState, ScreenLoader, PrimaryButton } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput, OptionRow } from '@/src/forms';
+import { confirm, notify } from '@/src/dialog';
 
 const HEADER_BG = '#FFFFFF';
 const HEADER_FG = '#0F172A';
@@ -100,6 +101,41 @@ export default function CashBankScreen() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Search states for each section
+  const [searchBanks, setSearchBanks] = useState('');
+  const [searchCash, setSearchCash] = useState('');
+  const [searchCheques, setSearchCheques] = useState('');
+  const [searchLoans, setSearchLoans] = useState('');
+
+  // Editing IDs
+  const [editingBankId, setEditingBankId] = useState<string | null>(null);
+  const [editingLoanId, setEditingLoanId] = useState<string | null>(null);
+
+  // Edit Contra / Cash Adjustment Modal
+  const [showEditContraModal, setShowEditContraModal] = useState(false);
+  const [editingContraId, setEditingContraId] = useState<string | null>(null);
+  const [contraForm, setContraForm] = useState({
+    particulars: '',
+    amount: '',
+    date: new Date().toISOString().split('T')[0],
+  });
+  const [contraBusy, setContraBusy] = useState(false);
+
+  // Edit Cheque Modal
+  const [showEditChequeModal, setShowEditChequeModal] = useState(false);
+  const [editingChequeId, setEditingChequeId] = useState<string | null>(null);
+  const [chequeForm, setChequeForm] = useState({
+    cheque_no: '',
+    cheque_date: '',
+    customer_name: '',
+    bank_name: '',
+    amount: '',
+    reference_no: '',
+    description: '',
+    status: 'open' as 'open' | 'closed',
+  });
+  const [chequeEditBusy, setChequeEditBusy] = useState(false);
 
   // Modals
   const [showAddBank, setShowAddBank] = useState(false);
@@ -333,7 +369,7 @@ export default function CashBankScreen() {
     }
   };
 
-  // Add Bank Account
+  // Add & Edit Bank Account
   const handleSaveBank = async () => {
     if (!bankForm.name.trim() || !bankForm.bank_name.trim() || !bankForm.account_no.trim()) {
       setBankErr('Account Nickname, Bank Name, and Account Number are required.');
@@ -342,22 +378,64 @@ export default function CashBankScreen() {
     setBankBusy(true);
     setBankErr(null);
     try {
-      await api.post('/bank-accounts', {
-        name: bankForm.name.trim(),
-        bank_name: bankForm.bank_name.trim(),
-        account_no: bankForm.account_no.trim(),
-        ifsc: bankForm.ifsc.trim() || null,
-        opening_balance: parseFloat(bankForm.opening_balance) || 0,
-        is_active: true,
-      });
+      if (editingBankId) {
+        await api.patch(`/bank-accounts/${editingBankId}`, {
+          name: bankForm.name.trim(),
+          bank_name: bankForm.bank_name.trim(),
+          account_no: bankForm.account_no.trim(),
+          ifsc: bankForm.ifsc.trim() || null,
+          opening_balance: parseFloat(bankForm.opening_balance) || 0,
+        });
+        notify('Success', 'Bank account updated successfully!');
+      } else {
+        await api.post('/bank-accounts', {
+          name: bankForm.name.trim(),
+          bank_name: bankForm.bank_name.trim(),
+          account_no: bankForm.account_no.trim(),
+          ifsc: bankForm.ifsc.trim() || null,
+          opening_balance: parseFloat(bankForm.opening_balance) || 0,
+          is_active: true,
+        });
+        notify('Success', 'Bank account added successfully!');
+      }
       setShowAddBank(false);
+      setEditingBankId(null);
       setBankForm({ name: '', bank_name: '', account_no: '', ifsc: '', opening_balance: '0' });
       await loadData();
-      Alert.alert('Success', 'Bank account added successfully!');
     } catch (e: any) {
-      setBankErr(e?.message || 'Failed to add bank');
+      setBankErr(e?.message || 'Failed to save bank');
     } finally {
       setBankBusy(false);
+    }
+  };
+
+  const openEditBank = (b: BankAccount) => {
+    setEditingBankId(b.id);
+    setBankForm({
+      name: b.name || '',
+      bank_name: b.bank_name || '',
+      account_no: b.account_no || '',
+      ifsc: b.ifsc || '',
+      opening_balance: String(b.opening_balance || 0),
+    });
+    setBankErr(null);
+    setShowAddBank(true);
+  };
+
+  const handleDeleteBank = async (b: BankAccount) => {
+    const ok = await confirm(
+      'Delete Bank Account?',
+      `Are you sure you want to delete bank account "${b.name}" (${b.bank_name})? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.del(`/bank-accounts/${b.id}`);
+      notify('Deleted', `Bank account ${b.name} deleted.`);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Could not delete bank account');
     }
   };
 
@@ -390,7 +468,70 @@ export default function CashBankScreen() {
     }
   };
 
-  // Add Loan Account
+  // Edit & Delete Cheque Handlers
+  const openEditCheque = (c: ChequeItem) => {
+    setEditingChequeId(c.id);
+    setChequeForm({
+      cheque_no: c.cheque_no || '',
+      cheque_date: c.cheque_date || '',
+      customer_name: c.customer_name || '',
+      bank_name: c.bank_name || '',
+      amount: String(c.amount || 0),
+      reference_no: c.reference_no || '',
+      description: c.description || '',
+      status: c.status || 'open',
+    });
+    setShowEditChequeModal(true);
+  };
+
+  const handleSaveChequeEdit = async () => {
+    if (!editingChequeId) return;
+    const numAmt = parseFloat(chequeForm.amount);
+    if (isNaN(numAmt) || numAmt <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid cheque amount.');
+      return;
+    }
+    setChequeEditBusy(true);
+    try {
+      await api.updateCheque(editingChequeId, {
+        cheque_no: chequeForm.cheque_no.trim(),
+        cheque_date: chequeForm.cheque_date,
+        customer_name: chequeForm.customer_name.trim(),
+        bank_name: chequeForm.bank_name.trim(),
+        amount: numAmt,
+        reference_no: chequeForm.reference_no.trim() || undefined,
+        description: chequeForm.description.trim() || undefined,
+        status: chequeForm.status,
+      });
+      notify('Updated', `Cheque ${chequeForm.cheque_no} updated.`);
+      setShowEditChequeModal(false);
+      setEditingChequeId(null);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Update Failed', e?.message || 'Could not update cheque');
+    } finally {
+      setChequeEditBusy(false);
+    }
+  };
+
+  const handleDeleteCheque = async (c: ChequeItem) => {
+    const ok = await confirm(
+      'Delete Cheque?',
+      `Are you sure you want to delete cheque #${c.cheque_no} (${c.customer_name})? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.deleteCheque(c.id);
+      notify('Deleted', `Cheque #${c.cheque_no} deleted.`);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Could not delete cheque');
+    }
+  };
+
+  // Add & Edit Loan Account
   const handleSaveLoan = async () => {
     if (!loanForm.account_name.trim() || !loanForm.account_number.trim() || !loanForm.lender_bank.trim()) {
       setLoanErr('Account Name, Account Number, and Lender Bank are required.');
@@ -405,19 +546,37 @@ export default function CashBankScreen() {
     setLoanBusy(true);
     setLoanErr(null);
     try {
-      await api.createLoanAccount({
-        account_name: loanForm.account_name.trim(),
-        account_number: loanForm.account_number.trim(),
-        lender_bank: loanForm.lender_bank.trim(),
-        description: loanForm.description.trim() || null,
-        opening_balance: openBal,
-        balance_as_of: loanForm.balance_as_of,
-        loan_received_in: loanForm.loan_received_in,
-        interest_rate: parseFloat(loanForm.interest_rate) || 8.5,
-        duration_months: parseInt(loanForm.duration_months, 10) || 36,
-        processing_fee: parseFloat(loanForm.processing_fee) || 0,
-      });
+      if (editingLoanId) {
+        await api.updateLoanAccount(editingLoanId, {
+          account_name: loanForm.account_name.trim(),
+          account_number: loanForm.account_number.trim(),
+          lender_bank: loanForm.lender_bank.trim(),
+          description: loanForm.description.trim() || null,
+          opening_balance: openBal,
+          balance_as_of: loanForm.balance_as_of,
+          loan_received_in: loanForm.loan_received_in,
+          interest_rate: parseFloat(loanForm.interest_rate) || 8.5,
+          duration_months: parseInt(loanForm.duration_months, 10) || 36,
+          processing_fee: parseFloat(loanForm.processing_fee) || 0,
+        });
+        notify('Success', 'Loan account updated successfully!');
+      } else {
+        await api.createLoanAccount({
+          account_name: loanForm.account_name.trim(),
+          account_number: loanForm.account_number.trim(),
+          lender_bank: loanForm.lender_bank.trim(),
+          description: loanForm.description.trim() || null,
+          opening_balance: openBal,
+          balance_as_of: loanForm.balance_as_of,
+          loan_received_in: loanForm.loan_received_in,
+          interest_rate: parseFloat(loanForm.interest_rate) || 8.5,
+          duration_months: parseInt(loanForm.duration_months, 10) || 36,
+          processing_fee: parseFloat(loanForm.processing_fee) || 0,
+        });
+        notify('Success', 'Loan account added successfully!');
+      }
       setShowAddLoanModal(false);
+      setEditingLoanId(null);
       setLoanForm({
         account_name: '',
         account_number: '',
@@ -431,20 +590,155 @@ export default function CashBankScreen() {
         processing_fee: '0',
       });
       await loadData();
-      Alert.alert('Loan Account Created', 'Loan account added successfully!');
     } catch (e: any) {
-      setLoanErr(e?.message || 'Failed to create loan account');
+      setLoanErr(e?.message || 'Failed to save loan account');
     } finally {
       setLoanBusy(false);
     }
   };
 
+  const openEditLoan = (l: LoanAccount) => {
+    setEditingLoanId(l.id);
+    setLoanForm({
+      account_name: l.account_name || '',
+      account_number: l.account_number || '',
+      lender_bank: l.lender_bank || '',
+      description: l.description || '',
+      opening_balance: String(l.opening_balance || 0),
+      balance_as_of: l.balance_as_of || new Date().toISOString().split('T')[0],
+      loan_received_in: l.loan_received_in || 'cash',
+      interest_rate: String(l.interest_rate || 8.5),
+      duration_months: String(l.duration_months || 36),
+      processing_fee: String(l.processing_fee || 0),
+    });
+    setLoanErr(null);
+    setShowAddLoanModal(true);
+  };
+
+  const handleDeleteLoan = async (l: LoanAccount) => {
+    const ok = await confirm(
+      'Delete Loan Account?',
+      `Are you sure you want to delete loan account "${l.account_name}"? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.deleteLoanAccount(l.id);
+      notify('Deleted', `Loan account ${l.account_name} deleted.`);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Could not delete loan account');
+    }
+  };
+
+  // Contra / Cash Adjustment Handlers
+  const openEditContra = (tx: any) => {
+    setEditingContraId(tx.id);
+    const amtStr = String(tx.inflow && tx.inflow !== '—' ? tx.inflow : (tx.outflow && tx.outflow !== '—' ? tx.outflow : '0')).replace(/[^0-9.]/g, '');
+    setContraForm({
+      particulars: tx.particulars || '',
+      amount: amtStr,
+      date: tx.date || new Date().toISOString().split('T')[0],
+    });
+    setShowEditContraModal(true);
+  };
+
+  const handleSaveContra = async () => {
+    if (!editingContraId) return;
+    const numAmt = parseFloat(contraForm.amount);
+    if (isNaN(numAmt) || numAmt <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid amount.');
+      return;
+    }
+    setContraBusy(true);
+    try {
+      await api.updateContraTransaction(editingContraId, {
+        particulars: contraForm.particulars.trim(),
+        amount: numAmt,
+        date: contraForm.date,
+      });
+      notify('Updated', 'Cash entry updated successfully.');
+      setShowEditContraModal(false);
+      setEditingContraId(null);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Update Failed', e?.message || 'Could not update cash entry');
+    } finally {
+      setContraBusy(false);
+    }
+  };
+
+  const handleDeleteContra = async (tx: any) => {
+    const ok = await confirm(
+      'Delete Cash Entry?',
+      `Are you sure you want to delete entry "${tx.particulars}"?`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.deleteContraTransaction(tx.id);
+      notify('Deleted', 'Cash entry deleted.');
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Could not delete entry');
+    }
+  };
+
+  // Filtered Banks
+  const filteredBanks = useMemo(() => {
+    const q = searchBanks.trim().toLowerCase();
+    if (!q) return banks;
+    return banks.filter(b =>
+      (b.name || '').toLowerCase().includes(q) ||
+      (b.bank_name || '').toLowerCase().includes(q) ||
+      (b.account_no || '').toLowerCase().includes(q) ||
+      (b.ifsc || '').toLowerCase().includes(q)
+    );
+  }, [banks, searchBanks]);
+
+  // Filtered Cash Entries
+  const filteredCashEntries = useMemo(() => {
+    const entries = cashSummary?.recent_entries || [];
+    const q = searchCash.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((tx: any) =>
+      (tx.particulars || '').toLowerCase().includes(q) ||
+      (tx.date || '').toLowerCase().includes(q) ||
+      (tx.mode || '').toLowerCase().includes(q) ||
+      String(tx.inflow || '').toLowerCase().includes(q) ||
+      String(tx.outflow || '').toLowerCase().includes(q)
+    );
+  }, [cashSummary?.recent_entries, searchCash]);
+
   // Filtered Cheques list
   const filteredCheques = useMemo(() => {
-    if (chequeFilter === 'open') return cheques.filter(c => c.status === 'open');
-    if (chequeFilter === 'closed') return cheques.filter(c => c.status === 'closed');
-    return cheques;
-  }, [cheques, chequeFilter]);
+    let list = cheques;
+    if (chequeFilter === 'open') list = cheques.filter(c => c.status === 'open');
+    else if (chequeFilter === 'closed') list = cheques.filter(c => c.status === 'closed');
+    const q = searchCheques.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(c =>
+      (c.cheque_no || '').toLowerCase().includes(q) ||
+      (c.customer_name || '').toLowerCase().includes(q) ||
+      (c.bank_name || '').toLowerCase().includes(q) ||
+      (c.reference_no || '').toLowerCase().includes(q) ||
+      (c.description || '').toLowerCase().includes(q)
+    );
+  }, [cheques, chequeFilter, searchCheques]);
+
+  // Filtered Loans
+  const filteredLoans = useMemo(() => {
+    const q = searchLoans.trim().toLowerCase();
+    if (!q) return loans;
+    return loans.filter(l =>
+      (l.account_name || '').toLowerCase().includes(q) ||
+      (l.lender_bank || '').toLowerCase().includes(q) ||
+      (l.account_number || '').toLowerCase().includes(q) ||
+      (l.description || '').toLowerCase().includes(q)
+    );
+  }, [loans, searchLoans]);
 
   // Total Bank Balances
   const totalBankBalance = useMemo(() => {
@@ -588,16 +882,36 @@ export default function CashBankScreen() {
 
               {/* Bank Accounts List */}
               <Text style={styles.sectionHeading}>Your Bank Accounts</Text>
-              {banks.length === 0 ? (
+              <View style={styles.tabSearchBox}>
+                <Ionicons name="search" size={16} color={colors.muted} />
+                <TextInput
+                  testID="search-banks"
+                  style={styles.tabSearchInput}
+                  placeholder="Search bank accounts..."
+                  placeholderTextColor={colors.muted}
+                  value={searchBanks}
+                  onChangeText={setSearchBanks}
+                />
+                {searchBanks ? (
+                  <Pressable onPress={() => setSearchBanks('')}>
+                    <Ionicons name="close-circle" size={16} color={colors.muted} />
+                  </Pressable>
+                ) : null}
+              </View>
+              {filteredBanks.length === 0 ? (
                 <EmptyState
                   testID="empty-banks"
                   icon="business-outline"
-                  title="No Bank Accounts"
+                  title={searchBanks ? "No matching banks" : "No Bank Accounts"}
                   actionLabel="Add Bank Account"
-                  onAction={() => setShowAddBank(true)}
+                  onAction={() => {
+                    setEditingBankId(null);
+                    setBankForm({ name: '', bank_name: '', account_no: '', ifsc: '', opening_balance: '0' });
+                    setShowAddBank(true);
+                  }}
                 />
               ) : (
-                banks.map(b => (
+                filteredBanks.map(b => (
                   <View key={b.id} style={styles.bankItemCard} testID={`bank-card-${b.id}`}>
                     <View style={styles.bankItemHeader}>
                       <View style={styles.bankItemAvatar}>
@@ -614,6 +928,24 @@ export default function CashBankScreen() {
                           {inr(b.opening_balance)}
                         </Text>
                       </View>
+                    </View>
+                    <View style={styles.itemActionRow}>
+                      <Pressable
+                        testID={`edit-bank-${b.id}`}
+                        onPress={() => openEditBank(b)}
+                        style={styles.itemEditBtn}
+                      >
+                        <Ionicons name="pencil" size={14} color={BLUE} />
+                        <Text style={[styles.itemActionBtnText, { color: BLUE }]}>Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        testID={`del-bank-${b.id}`}
+                        onPress={() => handleDeleteBank(b)}
+                        style={styles.itemDelBtn}
+                      >
+                        <Ionicons name="trash-outline" size={14} color={RED} />
+                        <Text style={[styles.itemActionBtnText, { color: RED }]}>Delete</Text>
+                      </Pressable>
                     </View>
                   </View>
                 ))
@@ -679,27 +1011,65 @@ export default function CashBankScreen() {
 
               {/* Recent Cash Ledger */}
               <Text style={styles.sectionHeading}>Recent Cash & Contra Transactions</Text>
-              {cashSummary?.recent_entries && cashSummary.recent_entries.length > 0 ? (
-                cashSummary.recent_entries.map((tx: any) => (
-                  <View key={tx.id} style={styles.txRowCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.txParticulars}>{tx.particulars}</Text>
-                      <Text style={styles.txDate}>{tx.date} • {tx.mode}</Text>
+              <View style={styles.tabSearchBox}>
+                <Ionicons name="search" size={16} color={colors.muted} />
+                <TextInput
+                  testID="search-cash"
+                  style={styles.tabSearchInput}
+                  placeholder="Search cash & contra entries..."
+                  placeholderTextColor={colors.muted}
+                  value={searchCash}
+                  onChangeText={setSearchCash}
+                />
+                {searchCash ? (
+                  <Pressable onPress={() => setSearchCash('')}>
+                    <Ionicons name="close-circle" size={16} color={colors.muted} />
+                  </Pressable>
+                ) : null}
+              </View>
+              {filteredCashEntries && filteredCashEntries.length > 0 ? (
+                filteredCashEntries.map((tx: any) => (
+                  <View key={tx.id} style={styles.txRowCard} testID={`cash-card-${tx.id}`}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.txParticulars}>{tx.particulars}</Text>
+                        <Text style={styles.txDate}>{tx.date} • {tx.mode}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        {tx.inflow !== '—' && (
+                          <Text style={[styles.txAmount, { color: GREEN }]}>+{tx.inflow}</Text>
+                        )}
+                        {tx.outflow !== '—' && (
+                          <Text style={[styles.txAmount, { color: RED }]}>-{tx.outflow}</Text>
+                        )}
+                      </View>
                     </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      {tx.inflow !== '—' && (
-                        <Text style={[styles.txAmount, { color: GREEN }]}>+{tx.inflow}</Text>
-                      )}
-                      {tx.outflow !== '—' && (
-                        <Text style={[styles.txAmount, { color: RED }]}>-{tx.outflow}</Text>
-                      )}
+                    <View style={styles.itemActionRow}>
+                      <Pressable
+                        testID={`edit-cash-${tx.id}`}
+                        onPress={() => openEditContra(tx)}
+                        style={styles.itemEditBtn}
+                      >
+                        <Ionicons name="pencil" size={14} color={BLUE} />
+                        <Text style={[styles.itemActionBtnText, { color: BLUE }]}>Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        testID={`del-cash-${tx.id}`}
+                        onPress={() => handleDeleteContra(tx)}
+                        style={styles.itemDelBtn}
+                      >
+                        <Ionicons name="trash-outline" size={14} color={RED} />
+                        <Text style={[styles.itemActionBtnText, { color: RED }]}>Delete</Text>
+                      </Pressable>
                     </View>
                   </View>
                 ))
               ) : (
                 <View style={styles.emptyCard}>
                   <Ionicons name="document-text-outline" size={32} color={colors.muted} />
-                  <Text style={{ color: colors.muted, marginTop: 6 }}>No recent contra cash entries recorded.</Text>
+                  <Text style={{ color: colors.muted, marginTop: 6 }}>
+                    {searchCash ? 'No matching cash entries found.' : 'No recent contra cash entries recorded.'}
+                  </Text>
                 </View>
               )}
             </View>
@@ -734,6 +1104,24 @@ export default function CashBankScreen() {
                 })}
               </View>
 
+              {/* Cheques Search Box */}
+              <View style={styles.tabSearchBox}>
+                <Ionicons name="search" size={16} color={colors.muted} />
+                <TextInput
+                  testID="search-cheques"
+                  style={styles.tabSearchInput}
+                  placeholder="Search cheques by no, party, bank..."
+                  placeholderTextColor={colors.muted}
+                  value={searchCheques}
+                  onChangeText={setSearchCheques}
+                />
+                {searchCheques ? (
+                  <Pressable onPress={() => setSearchCheques('')}>
+                    <Ionicons name="close-circle" size={16} color={colors.muted} />
+                  </Pressable>
+                ) : null}
+              </View>
+
               {/* Open Cheques Total Value Banner */}
               <View style={[styles.overviewCard, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
                 <View style={{ flex: 1 }}>
@@ -750,7 +1138,9 @@ export default function CashBankScreen() {
               {filteredCheques.length === 0 ? (
                 <View style={styles.emptyCard}>
                   <Ionicons name="newspaper-outline" size={36} color={colors.muted} />
-                  <Text style={{ color: colors.muted, marginTop: 8 }}>No cheques found in this section.</Text>
+                  <Text style={{ color: colors.muted, marginTop: 8 }}>
+                    {searchCheques ? 'No matching cheques found.' : 'No cheques found in this section.'}
+                  </Text>
                 </View>
               ) : (
                 filteredCheques.map(c => {
@@ -788,8 +1178,8 @@ export default function CashBankScreen() {
                         )}
                       </View>
 
-                      {isOpen && (
-                        <View style={styles.chequeActionRow}>
+                      <View style={styles.chequeActionRow}>
+                        {isOpen && (
                           <Pressable
                             testID={`deposit-btn-${c.id}`}
                             onPress={() => handleOpenChequeDeposit(c)}
@@ -798,8 +1188,24 @@ export default function CashBankScreen() {
                             <Ionicons name="cloud-upload" size={16} color="#FFF" />
                             <Text style={styles.btnTextWhite}>Deposit</Text>
                           </Pressable>
-                        </View>
-                      )}
+                        )}
+                        <Pressable
+                          testID={`edit-cheque-${c.id}`}
+                          onPress={() => openEditCheque(c)}
+                          style={styles.itemEditBtn}
+                        >
+                          <Ionicons name="pencil" size={14} color={BLUE} />
+                          <Text style={[styles.itemActionBtnText, { color: BLUE }]}>Edit</Text>
+                        </Pressable>
+                        <Pressable
+                          testID={`del-cheque-${c.id}`}
+                          onPress={() => handleDeleteCheque(c)}
+                          style={styles.itemDelBtn}
+                        >
+                          <Ionicons name="trash-outline" size={14} color={RED} />
+                          <Text style={[styles.itemActionBtnText, { color: RED }]}>Delete</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   );
                 })
@@ -837,16 +1243,47 @@ export default function CashBankScreen() {
 
               {/* Loans Listing */}
               <Text style={styles.sectionHeading}>Business Loan Accounts</Text>
-              {loans.length === 0 ? (
+              <View style={styles.tabSearchBox}>
+                <Ionicons name="search" size={16} color={colors.muted} />
+                <TextInput
+                  testID="search-loans"
+                  style={styles.tabSearchInput}
+                  placeholder="Search loans by account, bank..."
+                  placeholderTextColor={colors.muted}
+                  value={searchLoans}
+                  onChangeText={setSearchLoans}
+                />
+                {searchLoans ? (
+                  <Pressable onPress={() => setSearchLoans('')}>
+                    <Ionicons name="close-circle" size={16} color={colors.muted} />
+                  </Pressable>
+                ) : null}
+              </View>
+              {filteredLoans.length === 0 ? (
                 <EmptyState
                   testID="empty-loans"
                   icon="wallet-outline"
-                  title="No Loan Accounts"
+                  title={searchLoans ? "No matching loan accounts" : "No Loan Accounts"}
                   actionLabel="Add Loan Account"
-                  onAction={() => setShowAddLoanModal(true)}
+                  onAction={() => {
+                    setEditingLoanId(null);
+                    setLoanForm({
+                      account_name: '',
+                      account_number: '',
+                      lender_bank: '',
+                      description: '',
+                      opening_balance: '',
+                      balance_as_of: new Date().toISOString().split('T')[0],
+                      loan_received_in: 'cash',
+                      interest_rate: '8.5',
+                      duration_months: '36',
+                      processing_fee: '0',
+                    });
+                    setShowAddLoanModal(true);
+                  }}
                 />
               ) : (
-                loans.map(l => (
+                filteredLoans.map(l => (
                   <View key={l.id} style={styles.loanCard} testID={`loan-card-${l.id}`}>
                     <View style={styles.loanCardHeader}>
                       <View style={{ flex: 1 }}>
@@ -888,6 +1325,25 @@ export default function CashBankScreen() {
                         <Text style={styles.loanFooterText}>Processing Fee: {inr(l.processing_fee)}</Text>
                       ) : null}
                     </View>
+
+                    <View style={styles.itemActionRow}>
+                      <Pressable
+                        testID={`edit-loan-${l.id}`}
+                        onPress={() => openEditLoan(l)}
+                        style={styles.itemEditBtn}
+                      >
+                        <Ionicons name="pencil" size={14} color={BLUE} />
+                        <Text style={[styles.itemActionBtnText, { color: BLUE }]}>Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        testID={`del-loan-${l.id}`}
+                        onPress={() => handleDeleteLoan(l)}
+                        style={styles.itemDelBtn}
+                      >
+                        <Ionicons name="trash-outline" size={14} color={RED} />
+                        <Text style={[styles.itemActionBtnText, { color: RED }]}>Delete</Text>
+                      </Pressable>
+                    </View>
                   </View>
                 ))
               )}
@@ -897,18 +1353,18 @@ export default function CashBankScreen() {
       )}
 
       {/* ========================================================================= */}
-      {/* MODAL 1: ADD BANK ACCOUNT */}
+      {/* MODAL 1: ADD / EDIT BANK ACCOUNT */}
       {/* ========================================================================= */}
-      <Modal transparent visible={showAddBank} animationType="slide" onRequestClose={() => setShowAddBank(false)}>
+      <Modal transparent visible={showAddBank} animationType="slide" onRequestClose={() => { setShowAddBank(false); setEditingBankId(null); }}>
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxWidth: 540 }}>
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
                 <View>
-                  <Text style={styles.modalTitle}>Add Bank Account</Text>
-                  <Text style={styles.modalSubtitle}>Register company current or savings bank account</Text>
+                  <Text style={styles.modalTitle}>{editingBankId ? 'Edit Bank Account' : 'Add Bank Account'}</Text>
+                  <Text style={styles.modalSubtitle}>{editingBankId ? 'Update details of your bank account' : 'Register company current or savings bank account'}</Text>
                 </View>
-                <Pressable onPress={() => setShowAddBank(false)} hitSlop={10} testID="close-add-bank">
+                <Pressable onPress={() => { setShowAddBank(false); setEditingBankId(null); }} hitSlop={10} testID="close-add-bank">
                   <Ionicons name="close" size={22} color={colors.onSurface} />
                 </Pressable>
               </View>
@@ -953,7 +1409,7 @@ export default function CashBankScreen() {
 
                 {bankErr && <Text style={styles.errorText}>{bankErr}</Text>}
 
-                <PrimaryButton label="Save Bank Account" onPress={handleSaveBank} loading={bankBusy} testID="submit-add-bank" />
+                <PrimaryButton label={editingBankId ? 'Update Bank Account' : 'Save Bank Account'} onPress={handleSaveBank} loading={bankBusy} testID="submit-add-bank" />
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
@@ -1458,18 +1914,18 @@ export default function CashBankScreen() {
       </Modal>
 
       {/* ========================================================================= */}
-      {/* MODAL 4: ADD LOAN ACCOUNT (10 EXACT FIELDS) */}
+      {/* MODAL 4: ADD / EDIT LOAN ACCOUNT (10 EXACT FIELDS) */}
       {/* ========================================================================= */}
-      <Modal transparent visible={showAddLoanModal} animationType="slide" onRequestClose={() => setShowAddLoanModal(false)}>
+      <Modal transparent visible={showAddLoanModal} animationType="slide" onRequestClose={() => { setShowAddLoanModal(false); setEditingLoanId(null); }}>
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxWidth: 560 }}>
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
                 <View>
-                  <Text style={styles.modalTitle}>Add Loan Account</Text>
-                  <Text style={styles.modalSubtitle}>Register business bank loan or overdraft facility</Text>
+                  <Text style={styles.modalTitle}>{editingLoanId ? 'Edit Loan Account' : 'Add Loan Account'}</Text>
+                  <Text style={styles.modalSubtitle}>{editingLoanId ? 'Update business loan account details' : 'Register business bank loan or overdraft facility'}</Text>
                 </View>
-                <Pressable onPress={() => setShowAddLoanModal(false)} hitSlop={10} testID="close-loan-modal">
+                <Pressable onPress={() => { setShowAddLoanModal(false); setEditingLoanId(null); }} hitSlop={10} testID="close-loan-modal">
                   <Ionicons name="close" size={22} color={colors.onSurface} />
                 </Pressable>
               </View>
@@ -1608,11 +2064,156 @@ export default function CashBankScreen() {
 
                 {/* Save Button */}
                 <PrimaryButton
-                  label="Save Loan Account"
+                  label={editingLoanId ? 'Update Loan Account' : 'Save Loan Account'}
                   onPress={handleSaveLoan}
                   loading={loanBusy}
                   testID="submit-loan-account"
                 />
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL 5: EDIT CONTRA / CASH ENTRY */}
+      {/* ========================================================================= */}
+      <Modal transparent visible={showEditContraModal} animationType="slide" onRequestClose={() => { setShowEditContraModal(false); setEditingContraId(null); }}>
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxWidth: 480 }}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>Edit Cash Entry</Text>
+                  <Text style={styles.modalSubtitle}>Update contra / cash transaction details</Text>
+                </View>
+                <Pressable onPress={() => { setShowEditContraModal(false); setEditingContraId(null); }} hitSlop={10} testID="close-edit-contra">
+                  <Ionicons name="close" size={22} color={colors.onSurface} />
+                </Pressable>
+              </View>
+
+              <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
+                <FormInput
+                  label="Particulars / Description *"
+                  value={contraForm.particulars}
+                  onChangeText={v => setContraForm(p => ({ ...p, particulars: v }))}
+                  placeholder="e.g. Cash Transfer"
+                  testID="in-contra-particulars"
+                />
+                <FormInput
+                  label="Amount (₹) *"
+                  value={contraForm.amount}
+                  onChangeText={v => setContraForm(p => ({ ...p, amount: v }))}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                  testID="in-contra-amount"
+                />
+                <FormInput
+                  label="Date *"
+                  value={contraForm.date}
+                  onChangeText={v => setContraForm(p => ({ ...p, date: v }))}
+                  placeholder="YYYY-MM-DD"
+                  testID="in-contra-date"
+                />
+                <PrimaryButton label="Save Changes" onPress={handleSaveContra} loading={contraBusy} testID="submit-edit-contra" />
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL 6: EDIT CHEQUE */}
+      {/* ========================================================================= */}
+      <Modal transparent visible={showEditChequeModal} animationType="slide" onRequestClose={() => { setShowEditChequeModal(false); setEditingChequeId(null); }}>
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxWidth: 520 }}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>Edit Cheque</Text>
+                  <Text style={styles.modalSubtitle}>Update cheque details or status</Text>
+                </View>
+                <Pressable onPress={() => { setShowEditChequeModal(false); setEditingChequeId(null); }} hitSlop={10} testID="close-edit-cheque">
+                  <Ionicons name="close" size={22} color={colors.onSurface} />
+                </Pressable>
+              </View>
+
+              <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
+                <FormInput
+                  label="Cheque Number *"
+                  value={chequeForm.cheque_no}
+                  onChangeText={v => setChequeForm(p => ({ ...p, cheque_no: v }))}
+                  placeholder="e.g. 000124"
+                  testID="in-edit-chq-no"
+                />
+                <FormInput
+                  label="Party / Customer Name *"
+                  value={chequeForm.customer_name}
+                  onChangeText={v => setChequeForm(p => ({ ...p, customer_name: v }))}
+                  placeholder="Party Name"
+                  testID="in-edit-chq-party"
+                />
+                <FormInput
+                  label="Drawn Bank Name *"
+                  value={chequeForm.bank_name}
+                  onChangeText={v => setChequeForm(p => ({ ...p, bank_name: v }))}
+                  placeholder="e.g. HDFC Bank"
+                  testID="in-edit-chq-bank"
+                />
+                <FormInput
+                  label="Amount (₹) *"
+                  value={chequeForm.amount}
+                  onChangeText={v => setChequeForm(p => ({ ...p, amount: v }))}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                  testID="in-edit-chq-amount"
+                />
+                <FormInput
+                  label="Cheque Date *"
+                  value={chequeForm.cheque_date}
+                  onChangeText={v => setChequeForm(p => ({ ...p, cheque_date: v }))}
+                  placeholder="YYYY-MM-DD"
+                  testID="in-edit-chq-date"
+                />
+                <FormInput
+                  label="Reference No"
+                  value={chequeForm.reference_no}
+                  onChangeText={v => setChequeForm(p => ({ ...p, reference_no: v }))}
+                  placeholder="Ref No"
+                  testID="in-edit-chq-ref"
+                />
+                <FormInput
+                  label="Note / Description"
+                  value={chequeForm.description}
+                  onChangeText={v => setChequeForm(p => ({ ...p, description: v }))}
+                  placeholder="Remark..."
+                  testID="in-edit-chq-desc"
+                />
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Cheque Status</Text>
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <Pressable
+                      testID="edit-chq-status-open"
+                      onPress={() => setChequeForm(p => ({ ...p, status: 'open' }))}
+                      style={[styles.pillSelect, chequeForm.status === 'open' && styles.pillSelectActive]}
+                    >
+                      <Text style={[styles.pillSelectText, chequeForm.status === 'open' && styles.pillSelectTextActive]}>
+                        OPEN
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      testID="edit-chq-status-closed"
+                      onPress={() => setChequeForm(p => ({ ...p, status: 'closed' }))}
+                      style={[styles.pillSelect, chequeForm.status === 'closed' && styles.pillSelectActive]}
+                    >
+                      <Text style={[styles.pillSelectText, chequeForm.status === 'closed' && styles.pillSelectTextActive]}>
+                        CLOSED / DEPOSITED
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+                <PrimaryButton label="Save Changes" onPress={handleSaveChequeEdit} loading={chequeEditBusy} testID="submit-edit-cheque" />
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
@@ -2242,5 +2843,54 @@ const styles = StyleSheet.create({
     color: RED,
     fontSize: 12,
     fontWeight: '600',
+  },
+  tabSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    height: 42,
+    marginBottom: spacing.md,
+    gap: 8,
+  },
+  tabSearchInput: {
+    flex: 1,
+    fontSize: font.sm,
+    color: colors.onSurface,
+    padding: 0,
+  },
+  itemActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  itemEditBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+    backgroundColor: '#EFF6FF',
+    gap: 4,
+  },
+  itemDelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+    backgroundColor: '#FEE2E2',
+    gap: 4,
+  },
+  itemActionBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

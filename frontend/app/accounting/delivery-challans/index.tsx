@@ -7,6 +7,7 @@ import { api } from '@/src/api';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { PrimaryButton, SecondaryButton } from '@/src/ui';
 import { CustomerSearchModal, PickedParty } from '@/src/CustomerSearchModal';
+import { confirm, notify } from '@/src/dialog';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -16,8 +17,10 @@ export default function DeliveryChallansList() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
-  // New Challan Modal
+  // Challan Modal (Create & Edit)
   const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingNo, setEditingNo] = useState<string | null>(null);
   const [party, setParty] = useState<PickedParty | null>(null);
   const [showPartyPick, setShowPartyPick] = useState(false);
   const [date, setDate] = useState(today());
@@ -44,6 +47,58 @@ export default function DeliveryChallansList() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  const openNew = () => {
+    setEditingId(null);
+    setEditingNo(null);
+    setParty(null);
+    setDate(today());
+    setVehicleNo('');
+    setDispatchThrough('');
+    setItemName('');
+    setItemQty('1');
+    setNotes('');
+    setShowModal(true);
+  };
+
+  const openEdit = (item: any) => {
+    setEditingId(item.id);
+    setEditingNo(item.challan_no || '');
+    setParty({
+      id: item.customer_id,
+      name: item.customer_name,
+      mobile: item.customer_mobile || '',
+      pan: '',
+      aadhar: '',
+      gst_no: null,
+      customer_code: null,
+    } as any);
+    setDate(item.date || today());
+    setVehicleNo(item.vehicle_no || '');
+    setDispatchThrough(item.dispatch_through || '');
+    const firstItem = (item.items && item.items[0]) || {};
+    setItemName(firstItem.name || '');
+    setItemQty(String(firstItem.qty || 1));
+    setNotes(item.notes || '');
+    setShowModal(true);
+  };
+
+  const deleteChallan = async (item: any) => {
+    const ok = await confirm(
+      'Delete Delivery Challan?',
+      `Are you sure you want to delete challan "${item.challan_no}"? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.del(`/accounting/delivery-challans/${item.id}`);
+      notify('Deleted', `Delivery Challan ${item.challan_no} deleted successfully.`);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Unable to delete delivery challan');
+    }
+  };
+
   const saveChallan = async () => {
     if (!party) {
       Alert.alert('Required', 'Please select a customer.');
@@ -69,8 +124,18 @@ export default function DeliveryChallansList() {
         }],
         notes: notes.trim() || undefined,
       };
-      await api.post('/accounting/delivery-challans', payload);
+
+      if (editingId) {
+        await api.patch(`/accounting/delivery-challans/${editingId}`, payload);
+        notify('Updated', `Delivery Challan ${editingNo || ''} updated successfully.`);
+      } else {
+        await api.post('/accounting/delivery-challans', payload);
+        notify('Success', 'Delivery Challan created.');
+      }
+
       setShowModal(false);
+      setEditingId(null);
+      setEditingNo(null);
       setParty(null);
       setItemName('');
       setItemQty('1');
@@ -78,9 +143,8 @@ export default function DeliveryChallansList() {
       setDispatchThrough('');
       setNotes('');
       await load();
-      Alert.alert('Success', 'Delivery Challan created.');
     } catch (e: any) {
-      Alert.alert('Failed', e?.message || 'Unable to create delivery challan');
+      Alert.alert('Failed', e?.message || 'Unable to save delivery challan');
     } finally {
       setSaving(false);
     }
@@ -93,7 +157,7 @@ export default function DeliveryChallansList() {
         right={(
           <Pressable
             style={styles.addBtn}
-            onPress={() => setShowModal(true)}
+            onPress={openNew}
             testID="new-challan-btn"
           >
             <Ionicons name="add" size={18} color="#FFF" />
@@ -103,20 +167,27 @@ export default function DeliveryChallansList() {
       />
 
       <View style={styles.filterBar}>
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={16} color={colors.muted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search challan no, party, vehicle..."
-            value={search}
-            onChangeText={setSearch}
-            onSubmitEditing={load}
-          />
-          {search ? (
-            <Pressable onPress={() => { setSearch(''); load(); }}>
-              <Ionicons name="close-circle" size={16} color={colors.muted} />
-            </Pressable>
-          ) : null}
+        <View style={styles.searchRow}>
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={16} color={colors.muted} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search challan no, party, vehicle..."
+              value={search}
+              onChangeText={setSearch}
+              onSubmitEditing={load}
+              testID="search-challan-input"
+            />
+            {search ? (
+              <Pressable onPress={() => { setSearch(''); load(); }}>
+                <Ionicons name="close-circle" size={16} color={colors.muted} />
+              </Pressable>
+            ) : null}
+          </View>
+          <Pressable style={styles.searchActionBtn} onPress={load} testID="search-challan-btn">
+            <Ionicons name="search" size={15} color="#FFF" />
+            <Text style={styles.searchActionBtnTxt}>Search</Text>
+          </Pressable>
         </View>
       </View>
 
@@ -132,7 +203,7 @@ export default function DeliveryChallansList() {
           <Text style={styles.emptySub}>Issue official dispatch documents and track physical delivery of tokens & documents.</Text>
           <Pressable
             style={[styles.addBtn, { marginTop: 16 }]}
-            onPress={() => setShowModal(true)}
+            onPress={openNew}
           >
             <Ionicons name="add" size={18} color="#FFF" />
             <Text style={styles.addBtnText}>Create Delivery Challan</Text>
@@ -178,17 +249,42 @@ export default function DeliveryChallansList() {
                   <Text style={styles.notesText}>Note: {item.notes}</Text>
                 ) : null}
               </View>
+
+              {/* Actions Footer */}
+              <View style={styles.cardFooter}>
+                <View style={styles.actionBtnsRow}>
+                  <Pressable
+                    style={styles.editBtn}
+                    onPress={() => openEdit(item)}
+                    testID={`edit-challan-${item.id}`}
+                  >
+                    <Ionicons name="create-outline" size={15} color="#4338CA" />
+                    <Text style={styles.editBtnText}>Edit</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={styles.deleteBtn}
+                    onPress={() => deleteChallan(item)}
+                    testID={`del-challan-${item.id}`}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                    <Text style={styles.deleteBtnText}>Delete</Text>
+                  </Pressable>
+                </View>
+              </View>
             </View>
           )}
         />
       )}
 
-      {/* New Challan Modal */}
+      {/* New / Edit Challan Modal */}
       <Modal visible={showModal} animationType="slide" transparent onRequestClose={() => setShowModal(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>New Delivery Challan</Text>
+              <Text style={styles.modalTitle}>
+                {editingId ? `Edit Delivery Challan (${editingNo || ''})` : 'New Delivery Challan'}
+              </Text>
               <Pressable onPress={() => setShowModal(false)} hitSlop={10}>
                 <Ionicons name="close" size={22} color={colors.onSurface} />
               </Pressable>
@@ -247,7 +343,12 @@ export default function DeliveryChallansList() {
 
               <View style={{ flexDirection: 'row', gap: 10, marginTop: spacing.sm }}>
                 <SecondaryButton label="Cancel" onPress={() => setShowModal(false)} style={{ flex: 1 }} />
-                <PrimaryButton label={saving ? 'Saving...' : 'Save Challan'} onPress={saveChallan} loading={saving} style={{ flex: 1 }} />
+                <PrimaryButton
+                  label={editingId ? (saving ? 'Updating...' : 'Update Challan') : (saving ? 'Saving...' : 'Save Challan')}
+                  onPress={saveChallan}
+                  loading={saving}
+                  style={{ flex: 1 }}
+                />
               </View>
             </ScrollView>
           </View>
@@ -268,8 +369,11 @@ const styles = StyleSheet.create({
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#DB2777', paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill },
   addBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12 },
   filterBar: { padding: spacing.md, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: colors.border },
-  searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F1F5F9', borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 6 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F1F5F9', borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 6 },
   searchInput: { flex: 1, fontSize: font.sm, color: '#0F172A' },
+  searchActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#DB2777', paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.md },
+  searchActionBtnTxt: { color: '#FFF', fontWeight: '800', fontSize: 12 },
   card: { backgroundColor: '#FFF', borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, ...shadow.card },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   chNo: { fontSize: 11, fontWeight: '800', color: '#DB2777' },
@@ -282,6 +386,12 @@ const styles = StyleSheet.create({
   infoVal: { fontSize: 11, color: '#0F172A', fontWeight: '700' },
   itemLine: { fontSize: 11, color: '#334155', fontWeight: '600', marginTop: 2 },
   notesText: { fontSize: 11, fontStyle: 'italic', color: colors.muted, marginTop: 4 },
+  cardFooter: { marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  actionBtnsRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#EEF2FF', paddingVertical: 7, borderRadius: radius.md, borderWidth: 1, borderColor: '#C7D2FE' },
+  editBtnText: { color: '#4338CA', fontWeight: '800', fontSize: 12 },
+  deleteBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEF2F2', paddingVertical: 7, borderRadius: radius.md, borderWidth: 1, borderColor: '#FECACA' },
+  deleteBtnText: { color: '#DC2626', fontWeight: '800', fontSize: 12 },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   emptyTitle: { fontSize: font.lg, fontWeight: '800', color: '#0F172A', marginTop: 12 },
   emptySub: { fontSize: font.sm, color: colors.muted, textAlign: 'center', marginTop: 4, maxWidth: 280 },

@@ -46,12 +46,17 @@ export default function LoginScreen() {
 
           <View style={styles.card}>
             <View style={styles.field}>
-              <Text style={styles.label}>Email</Text>
-              <TextInput testID="input-email" value={email} onChangeText={setEmail} placeholder="you@triveni.com" autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+              <Text style={styles.label}>Email / Customer User ID</Text>
+              <TextInput testID="input-email" value={email} onChangeText={setEmail} placeholder="Staff email or 8-digit Customer ID (e.g. 00000017)" autoCapitalize="none" keyboardType="email-address" style={styles.input} />
             </View>
             <View style={styles.field}>
               <Text style={styles.label}>Password</Text>
               <TextInput testID="input-password" value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry style={styles.input} />
+            </View>
+
+            <View style={styles.hintBox}>
+              <Ionicons name="information-circle-outline" size={16} color={colors.brandPrimary} />
+              <Text style={styles.hintText}>Contractors / Customers: Use your 8-digit Numeric Customer ID and password provided by Triveni office.</Text>
             </View>
 
             {err ? <Text style={styles.err} testID="login-error">{err}</Text> : null}
@@ -83,6 +88,8 @@ const styles = StyleSheet.create({
   label: { fontSize: font.sm, color: colors.muted, fontWeight: '600' },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 12, fontSize: font.lg, color: colors.onSurface, backgroundColor: colors.surface },
   err: { color: colors.error, fontSize: font.base, textAlign: 'center' },
+  hintBox: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#EFF6FF', padding: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: '#BFDBFE' },
+  hintText: { flex: 1, fontSize: font.xs, color: '#1E40AF', lineHeight: 16 },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   line: { flex: 1, height: 1, backgroundColor: colors.border },
   dividerText: { color: colors.muted, fontSize: font.sm },

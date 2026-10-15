@@ -52,14 +52,16 @@ export const Chip: React.FC<{ label: string; selected?: boolean; onPress?: () =>
 
 export const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   let bg = colors.surfaceSecondary; let fg = colors.onSurfaceSecondary;
-  const s = status.toLowerCase();
-  if (s === 'paid' || s === 'approved' || s === 'done' || s === 'awarded' || s === 'present') { bg = '#DCFCE7'; fg = '#065F46'; }
-  else if (s === 'pending' || s === 'todo' || s === 'open') { bg = '#FEF3C7'; fg = '#92400E'; }
-  else if (s === 'doing' || s === 'submitted') { bg = colors.brandTertiary; fg = colors.onBrandTertiary; }
-  else if (s === 'rejected' || s === 'lost' || s === 'absent') { bg = '#FEE2E2'; fg = '#991B1B'; }
+  const s = (status || '').toLowerCase().replace(/_/g, ' ');
+  if (s === 'paid' || s === 'approved' || s === 'done' || s === 'awarded' || s === 'present' || s === 'completed') { bg = '#DCFCE7'; fg = '#065F46'; }
+  else if (s === 'pending' || s === 'todo' || s === 'open' || s === 'waiting for customer') { bg = '#FEF3C7'; fg = '#92400E'; }
+  else if (s === 'doing' || s === 'submitted' || s === 'in progress') { bg = '#DBEAFE'; fg = '#1E40AF'; }
+  else if (s === 'assigned' || s === 'under review') { bg = '#EDE9FE'; fg = '#5B21B6'; }
+  else if (s === 'on hold') { bg = '#F3F4F6'; fg = '#4B5563'; }
+  else if (s === 'rejected' || s === 'lost' || s === 'absent' || s === 'cancelled') { bg = '#FEE2E2'; fg = '#991B1B'; }
   return (
     <View style={[styles.badge, { backgroundColor: bg }]}>
-      <Text style={[styles.badgeText, { color: fg }]}>{status.toUpperCase()}</Text>
+      <Text style={[styles.badgeText, { color: fg }]}>{(status || '').toUpperCase().replace(/_/g, ' ')}</Text>
     </View>
   );
 };
@@ -108,17 +110,24 @@ export const SecondaryButton: React.FC<{
   testID?: string;
   icon?: any;
   style?: ViewStyle;
-}> = ({ label, title, onPress, testID, icon, style }) => {
+  disabled?: boolean;
+  loading?: boolean;
+}> = ({ label, title, onPress, testID, icon, style, disabled, loading }) => {
   const text = label || title || '';
   return (
-    <Pressable testID={testID} onPress={onPress} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.7 }, style]}>
+    <Pressable
+      testID={testID}
+      onPress={onPress}
+      disabled={disabled || loading}
+      style={({ pressed }) => [styles.secondaryBtn, (disabled || loading) && { opacity: 0.6 }, pressed && { opacity: 0.7 }, style]}
+    >
       {icon ? <Ionicons name={icon} size={18} color={colors.brandPrimary} style={{ marginRight: 6 }} /> : null}
       <Text style={styles.secondaryBtnText}>{text}</Text>
     </Pressable>
   );
 };
 
-export const Card: React.FC<{ children: React.ReactNode; style?: ViewStyle }> = ({ children, style }) => (
+export const Card: React.FC<{ children: React.ReactNode; style?: any }> = ({ children, style }) => (
   <View style={[styles.card, style]}>{children}</View>
 );
 

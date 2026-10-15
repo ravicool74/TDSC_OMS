@@ -55,6 +55,27 @@ export default function ProformaList() {
     }
   };
 
+  const editProforma = (item: any) => {
+    router.push({ pathname: '/accounting/proforma/new', params: { edit_id: item.id } } as any);
+  };
+
+  const deleteProforma = async (item: any) => {
+    const ok = await confirm(
+      'Delete Proforma Invoice?',
+      `Are you sure you want to delete proforma invoice "${item.proforma_no}"? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.del(`/accounting/proforma/${item.id}`);
+      notify('Deleted', `Proforma invoice ${item.proforma_no} deleted successfully.`);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Unable to delete proforma invoice');
+    }
+  };
+
   return (
     <View style={styles.root} testID="proforma-screen">
       <ScreenHeader
@@ -72,20 +93,27 @@ export default function ProformaList() {
       />
 
       <View style={styles.filterBar}>
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={16} color={colors.muted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search proforma no, contractor..."
-            value={search}
-            onChangeText={setSearch}
-            onSubmitEditing={load}
-          />
-          {search ? (
-            <Pressable onPress={() => { setSearch(''); load(); }}>
-              <Ionicons name="close-circle" size={16} color={colors.muted} />
-            </Pressable>
-          ) : null}
+        <View style={styles.searchRow}>
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={16} color={colors.muted} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search proforma no, customer, mobile..."
+              value={search}
+              onChangeText={setSearch}
+              onSubmitEditing={load}
+              testID="search-proforma-input"
+            />
+            {search ? (
+              <Pressable onPress={() => { setSearch(''); load(); }}>
+                <Ionicons name="close-circle" size={16} color={colors.muted} />
+              </Pressable>
+            ) : null}
+          </View>
+          <Pressable style={styles.searchActionBtn} onPress={load} testID="search-proforma-btn">
+            <Ionicons name="search" size={15} color="#FFF" />
+            <Text style={styles.searchActionBtnTxt}>Search</Text>
+          </Pressable>
         </View>
       </View>
 
@@ -113,12 +141,13 @@ export default function ProformaList() {
           keyExtractor={item => item.id}
           contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}
           renderItem={({ item }) => (
-            <View style={styles.card}>
+            <View style={styles.card} testID={`prof-card-${item.id}`}>
               <View style={styles.cardHeader}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.profNo}>{item.proforma_no}</Text>
                   <Text style={styles.custName}>{item.customer_name}</Text>
                   {item.customer_code ? <Text style={styles.custCode}>{item.customer_code}</Text> : null}
+                  {item.customer_mobile ? <Text style={styles.custCode}>Mob: {item.customer_mobile}</Text> : null}
                 </View>
                 <View style={[styles.statusBadge, {
                   backgroundColor: item.status === 'converted' ? '#DCFCE7' : '#FEF3C7'
@@ -146,28 +175,53 @@ export default function ProformaList() {
                 </View>
               </View>
 
+              {/* Actions Footer */}
               <View style={styles.cardFooter}>
-                {item.status !== 'converted' ? (
+                <View style={styles.actionBtnsRow}>
+                  {/* Edit Button */}
                   <Pressable
-                    style={styles.convertBtn}
-                    onPress={() => convertToInvoice(item)}
-                    disabled={convertingId === item.id}
+                    style={styles.editBtn}
+                    onPress={() => editProforma(item)}
+                    testID={`edit-prof-${item.id}`}
                   >
-                    {convertingId === item.id ? (
-                      <ActivityIndicator size="small" color="#FFF" />
-                    ) : (
-                      <>
-                        <Ionicons name="arrow-forward-circle" size={16} color="#FFF" />
-                        <Text style={styles.convertBtnText}>Convert to Tax Invoice</Text>
-                      </>
-                    )}
+                    <Ionicons name="create-outline" size={15} color="#4338CA" />
+                    <Text style={styles.editBtnText}>Edit</Text>
                   </Pressable>
-                ) : (
-                  <View style={styles.convertedTag}>
-                    <Ionicons name="checkmark-circle" size={16} color="#059669" />
-                    <Text style={styles.convertedTagText}>Converted to Tax Invoice</Text>
-                  </View>
-                )}
+
+                  {/* Delete Button */}
+                  <Pressable
+                    style={styles.deleteBtn}
+                    onPress={() => deleteProforma(item)}
+                    testID={`del-prof-${item.id}`}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                    <Text style={styles.deleteBtnText}>Delete</Text>
+                  </Pressable>
+
+                  {/* Convert Action */}
+                  {item.status !== 'converted' ? (
+                    <Pressable
+                      style={styles.convertBtn}
+                      onPress={() => convertToInvoice(item)}
+                      disabled={convertingId === item.id}
+                      testID={`convert-prof-${item.id}`}
+                    >
+                      {convertingId === item.id ? (
+                        <ActivityIndicator size="small" color="#FFF" />
+                      ) : (
+                        <>
+                          <Ionicons name="arrow-forward-circle" size={15} color="#FFF" />
+                          <Text style={styles.convertBtnText}>Convert to Invoice</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  ) : (
+                    <View style={styles.convertedTag}>
+                      <Ionicons name="checkmark-circle" size={15} color="#059669" />
+                      <Text style={styles.convertedTagText}>Converted</Text>
+                    </View>
+                  )}
+                </View>
               </View>
             </View>
           )}
@@ -182,8 +236,11 @@ const styles = StyleSheet.create({
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.brandPrimary, paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill },
   addBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12 },
   filterBar: { padding: spacing.md, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: colors.border },
-  searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F1F5F9', borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 6 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F1F5F9', borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 6 },
   searchInput: { flex: 1, fontSize: font.sm, color: '#0F172A' },
+  searchActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.brandPrimary, paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.md },
+  searchActionBtnTxt: { color: '#FFF', fontWeight: '800', fontSize: 12 },
   card: { backgroundColor: '#FFF', borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, ...shadow.card },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   profNo: { fontSize: 11, fontWeight: '800', color: '#D97706' },
@@ -197,9 +254,14 @@ const styles = StyleSheet.create({
   infoVal: { fontSize: 11, color: '#0F172A', fontWeight: '700' },
   grandTotalVal: { fontSize: font.base, color: '#059669', fontWeight: '900' },
   cardFooter: { marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
-  convertBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#D97706', paddingVertical: 8, borderRadius: radius.md },
+  actionBtnsRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#EEF2FF', paddingVertical: 7, borderRadius: radius.md, borderWidth: 1, borderColor: '#C7D2FE' },
+  editBtnText: { color: '#4338CA', fontWeight: '800', fontSize: 12 },
+  deleteBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FEF2F2', paddingVertical: 7, borderRadius: radius.md, borderWidth: 1, borderColor: '#FECACA' },
+  deleteBtnText: { color: '#DC2626', fontWeight: '800', fontSize: 12 },
+  convertBtn: { flex: 1.6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#D97706', paddingVertical: 7, borderRadius: radius.md },
   convertBtnText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
-  convertedTag: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 6 },
+  convertedTag: { flex: 1.6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 6 },
   convertedTagText: { color: '#059669', fontWeight: '800', fontSize: 12 },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   emptyTitle: { fontSize: font.lg, fontWeight: '800', color: '#0F172A', marginTop: 12 },

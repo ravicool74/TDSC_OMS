@@ -9,6 +9,7 @@ import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/AuthContext';
 import { Card, StatusBadge } from '@/src/ui';
+import { isMenuAllowed, canView, canWrite } from '@/src/rbac';
 
 const HERO = 'https://images.unsplash.com/photo-1715593949273-09009558300a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBpbmRpYW4lMjBvZmZpY2UlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4NzgwMjczMnww&ixlib=rb-4.1.0&q=85';
 const inr = (n: any) => `₹ ${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -81,6 +82,22 @@ export default function Dashboard() {
 
   const expiringCount = sysStats?.expiring_documents_30_days ?? 0;
 
+  if (!canView(user, 'dashboard')) {
+    return (
+      <SafeAreaView edges={['top']} style={styles.root} testID="dashboard-screen">
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: spacing.xl }}>
+          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.md }}>
+            <Ionicons name="lock-closed" size={36} color={colors.error} />
+          </View>
+          <Text style={[styles.sectionHeaderTitle, { fontSize: 20, textAlign: 'center' }]}>Dashboard Access Restricted</Text>
+          <Text style={[styles.mutedText, { textAlign: 'center', marginTop: spacing.sm, maxWidth: 320, lineHeight: 20 }]}>
+            Administrator ne aapke account ke liye Dashboard view karne ki permission disable ki hui hai. Kripya admin se sampark karein.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <View style={styles.root} testID="dashboard-screen">
       <ScrollView
@@ -118,7 +135,7 @@ export default function Dashboard() {
         </View>
 
         {/* Document Expiry Banner */}
-        {expiringCount > 0 && (
+        {expiringCount > 0 && canView(user, 'more', 'operations_services', 'expiry_alerts') && (
           <Pressable
             style={styles.alertBanner}
             onPress={() => router.push('/customers/expiry-alerts' as any)}
@@ -136,122 +153,163 @@ export default function Dashboard() {
         )}
 
         {/* Financial KPI Summary (Vyapar-Style) */}
-        <View style={styles.financialSection}>
-          <Text style={styles.sectionHeaderTitle}>Financial Overview</Text>
-          <View style={styles.financialRow}>
-            <View style={[styles.finCard, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
-              <Ionicons name="cash-outline" size={20} color="#059669" />
-              <Text style={styles.finLabel}>Today's Sales</Text>
-              <Text style={[styles.finValue, { color: '#059669' }]}>{inr(sysStats?.todays_sales ?? 0)}</Text>
-            </View>
-            <View style={[styles.finCard, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
-              <Ionicons name="arrow-down-circle-outline" size={20} color="#2563EB" />
-              <Text style={styles.finLabel}>To Receive</Text>
-              <Text style={[styles.finValue, { color: '#2563EB' }]}>{inr(sysStats?.receivable ?? 0)}</Text>
-            </View>
-            <View style={[styles.finCard, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
-              <Ionicons name="arrow-up-circle-outline" size={20} color="#DC2626" />
-              <Text style={styles.finLabel}>To Pay</Text>
-              <Text style={[styles.finValue, { color: '#DC2626' }]}>{inr(sysStats?.payable ?? 0)}</Text>
+        {canView(user, 'dashboard', 'financial_overview') && (
+          <View style={styles.financialSection}>
+            <Text style={styles.sectionHeaderTitle}>Financial Overview</Text>
+            <View style={styles.financialRow}>
+              <View style={[styles.finCard, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
+                <Ionicons name="cash-outline" size={20} color="#059669" />
+                <Text style={styles.finLabel}>Today's Sales</Text>
+                <Text style={[styles.finValue, { color: '#059669' }]}>{inr(sysStats?.todays_sales ?? 0)}</Text>
+              </View>
+              <View style={[styles.finCard, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
+                <Ionicons name="arrow-down-circle-outline" size={20} color="#2563EB" />
+                <Text style={styles.finLabel}>To Receive</Text>
+                <Text style={[styles.finValue, { color: '#2563EB' }]}>{inr(sysStats?.receivable ?? 0)}</Text>
+              </View>
+              <View style={[styles.finCard, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+                <Ionicons name="arrow-up-circle-outline" size={20} color="#DC2626" />
+                <Text style={styles.finLabel}>To Pay</Text>
+                <Text style={[styles.finValue, { color: '#DC2626' }]}>{inr(sysStats?.payable ?? 0)}</Text>
+              </View>
             </View>
           </View>
-        </View>
+        )}
 
         {/* Operational Metrics Grid */}
-        <View style={styles.section}>
-          <Text style={styles.sectionHeaderTitle}>Operations Metrics</Text>
+        {canView(user, 'dashboard', 'operations_metrics') && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeaderTitle}>Operations Metrics</Text>
           <View style={styles.grid}>
-            <Pressable style={styles.statCard} onPress={() => router.push('/(tabs)/tasks' as any)} testID="stat-tasks">
-              <View style={[styles.statIcon, { backgroundColor: '#DCFCE7' }]}>
-                <Ionicons name="checkmark-done" size={20} color="#059669" />
-              </View>
-              <Text style={styles.statValue}>{sysStats?.pending_tasks ?? data?.tasks_open ?? 0}</Text>
-              <Text style={styles.statLabel}>Pending Tasks</Text>
-            </Pressable>
+            {isMenuAllowed(user, 'tasks') && (
+              <Pressable style={styles.statCard} onPress={() => router.push('/(tabs)/tasks' as any)} testID="stat-tasks">
+                <View style={[styles.statIcon, { backgroundColor: '#DCFCE7' }]}>
+                  <Ionicons name="checkmark-done" size={20} color="#059669" />
+                </View>
+                <Text style={styles.statValue}>{sysStats?.pending_tasks ?? data?.tasks_open ?? 0}</Text>
+                <Text style={styles.statLabel}>Pending Tasks</Text>
+              </Pressable>
+            )}
 
-            <Pressable style={styles.statCard} onPress={() => router.push('/(tabs)/business' as any)} testID="stat-customers">
-              <View style={[styles.statIcon, { backgroundColor: '#DBEAFE' }]}>
-                <Ionicons name="people" size={20} color="#2563EB" />
-              </View>
-              <Text style={styles.statValue}>{sysStats?.customers ?? data?.customers ?? 0}</Text>
-              <Text style={styles.statLabel}>Total Clients</Text>
-            </Pressable>
+            {isMenuAllowed(user, 'customers') && (
+              <Pressable style={styles.statCard} onPress={() => router.push('/(tabs)/business' as any)} testID="stat-customers">
+                <View style={[styles.statIcon, { backgroundColor: '#DBEAFE' }]}>
+                  <Ionicons name="people" size={20} color="#2563EB" />
+                </View>
+                <Text style={styles.statValue}>{sysStats?.customers ?? data?.customers ?? 0}</Text>
+                <Text style={styles.statLabel}>Total Clients</Text>
+              </Pressable>
+            )}
 
-            <Pressable style={styles.statCard} onPress={() => router.push('/employees' as any)} testID="stat-employees">
-              <View style={[styles.statIcon, { backgroundColor: '#EDE9FE' }]}>
-                <Ionicons name="briefcase" size={20} color="#7C3AED" />
-              </View>
-              <Text style={styles.statValue}>{sysStats?.employees ?? data?.employees ?? 0}</Text>
-              <Text style={styles.statLabel}>Employees</Text>
-            </Pressable>
+            {isMenuAllowed(user, 'employees') && (
+              <Pressable style={styles.statCard} onPress={() => router.push('/employees' as any)} testID="stat-employees">
+                <View style={[styles.statIcon, { backgroundColor: '#EDE9FE' }]}>
+                  <Ionicons name="briefcase" size={20} color="#7C3AED" />
+                </View>
+                <Text style={styles.statValue}>{sysStats?.employees ?? data?.employees ?? 0}</Text>
+                <Text style={styles.statLabel}>Employees</Text>
+              </Pressable>
+            )}
 
-            <Pressable style={styles.statCard} onPress={() => router.push('/admin/branches' as any)} testID="stat-branches">
-              <View style={[styles.statIcon, { backgroundColor: '#FEE2E2' }]}>
-                <Ionicons name="business" size={20} color="#DC2626" />
-              </View>
-              <Text style={styles.statValue}>{sysStats?.branches ?? 1}</Text>
-              <Text style={styles.statLabel}>Branches</Text>
-            </Pressable>
+            {isMenuAllowed(user, 'branches') && (
+              <Pressable style={styles.statCard} onPress={() => router.push('/admin/branches' as any)} testID="stat-branches">
+                <View style={[styles.statIcon, { backgroundColor: '#FEE2E2' }]}>
+                  <Ionicons name="business" size={20} color="#DC2626" />
+                </View>
+                <Text style={styles.statValue}>{sysStats?.branches ?? 1}</Text>
+                <Text style={styles.statLabel}>Branches</Text>
+              </Pressable>
+            )}
 
-            <Pressable style={styles.statCard} onPress={() => router.push('/tenders' as any)} testID="stat-tenders">
-              <View style={[styles.statIcon, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="document-text" size={20} color="#D97706" />
-              </View>
-              <Text style={styles.statValue}>{data?.open_tenders ?? 0}</Text>
-              <Text style={styles.statLabel}>Open Tenders</Text>
-            </Pressable>
+            {isMenuAllowed(user, 'tenders') && (
+              <Pressable style={styles.statCard} onPress={() => router.push('/tenders' as any)} testID="stat-tenders">
+                <View style={[styles.statIcon, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="document-text" size={20} color="#D97706" />
+                </View>
+                <Text style={styles.statValue}>{data?.open_tenders ?? 0}</Text>
+                <Text style={styles.statLabel}>Open Tenders</Text>
+              </Pressable>
+            )}
 
-            <Pressable style={styles.statCard} onPress={() => router.push('/hr' as any)} testID="stat-leaves">
-              <View style={[styles.statIcon, { backgroundColor: '#CFFAFE' }]}>
-                <Ionicons name="calendar" size={20} color="#0891B2" />
-              </View>
-              <Text style={styles.statValue}>{data?.pending_leaves ?? 0}</Text>
-              <Text style={styles.statLabel}>Leave Req.</Text>
-            </Pressable>
+            {isMenuAllowed(user, 'attendance_leaves') && (
+              <Pressable style={styles.statCard} onPress={() => router.push('/hr' as any)} testID="stat-leaves">
+                <View style={[styles.statIcon, { backgroundColor: '#CFFAFE' }]}>
+                  <Ionicons name="calendar" size={20} color="#0891B2" />
+                </View>
+                <Text style={styles.statValue}>{data?.pending_leaves ?? 0}</Text>
+                <Text style={styles.statLabel}>Leave Req.</Text>
+              </Pressable>
+            )}
           </View>
         </View>
+        )}
 
         {/* Urgent Tenders */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionHeaderTitle}>Urgent Tenders</Text>
-            <Pressable onPress={() => router.push('/tenders')}><Text style={styles.link}>View all</Text></Pressable>
-          </View>
-          {(data?.urgent_tenders || []).length === 0 ? (
-            <Card><Text style={styles.mutedText}>No urgent tender deadlines right now.</Text></Card>
-          ) : (
-            (data!.urgent_tenders).map((t: any) => (
-              <Pressable key={t.id} onPress={() => router.push(`/tenders/${t.id}` as any)}>
-                <Card style={{ marginBottom: spacing.md }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <View style={{ flex: 1, paddingRight: spacing.md }}>
-                      <Text style={styles.tenderTitle} numberOfLines={2}>{t.title}</Text>
-                      <Text style={styles.mutedText}>Deadline: {t.submission_deadline || 'N/A'}</Text>
+        {canView(user, 'dashboard', 'urgent_tenders') && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionHeaderTitle}>Urgent Tenders</Text>
+              <Pressable onPress={() => router.push('/tenders')}><Text style={styles.link}>View all</Text></Pressable>
+            </View>
+            {(data?.urgent_tenders || []).length === 0 ? (
+              <Card><Text style={styles.mutedText}>No urgent tender deadlines right now.</Text></Card>
+            ) : (
+              (data!.urgent_tenders).map((t: any) => (
+                <Pressable key={t.id} onPress={() => router.push(`/tenders/${t.id}` as any)}>
+                  <Card style={{ marginBottom: spacing.md }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flex: 1, paddingRight: spacing.md }}>
+                        <Text style={styles.tenderTitle} numberOfLines={2}>{t.title}</Text>
+                        <Text style={styles.mutedText}>Deadline: {t.submission_deadline || 'N/A'}</Text>
+                      </View>
+                      <StatusBadge status={t.status} />
                     </View>
-                    <StatusBadge status={t.status} />
-                  </View>
-                </Card>
-              </Pressable>
-            ))
-          )}
-        </View>
+                  </Card>
+                </Pressable>
+              ))
+            )}
+          </View>
+        )}
 
         {/* Enterprise Quick Actions */}
-        <View style={styles.section}>
-          <Text style={styles.sectionHeaderTitle}>Quick Actions</Text>
-          <View style={styles.actionsRow}>
-            <QuickAction icon="person-add" label="Add Customer" onPress={() => router.push('/customers/new' as any)} testID="qa-customer" />
-            <QuickAction icon="add-circle" label="New Task" onPress={() => router.push('/tasks/new' as any)} testID="qa-task" />
-          </View>
-          <View style={styles.actionsRow}>
-            <QuickAction icon="receipt" label="Sale Invoice" onPress={() => router.push('/accounting/invoices/new' as any)} testID="qa-invoice" />
-            <QuickAction icon="navigate" label="Field GPS" onPress={() => router.push('/gps/tracking' as any)} testID="qa-gps" />
-          </View>
-          <View style={styles.actionsRow}>
-            <QuickAction icon="document" label="New Tender" onPress={() => router.push('/tenders/new' as any)} testID="qa-tender" />
-            <QuickAction icon="settings" label="Settings" onPress={() => router.push('/admin/settings' as any)} testID="qa-settings" />
-          </View>
-        </View>
+        {canView(user, 'dashboard', 'quick_actions') && (() => {
+          const allActions = [
+            canWrite(user, 'business', 'customers') && { icon: 'person-add', label: 'Add Customer', onPress: () => router.push('/customers/new' as any), testID: 'qa-customer' },
+            canView(user, 'business', 'customers') && { icon: 'search', label: 'Search Customer', onPress: () => router.push('/customers' as any), testID: 'qa-search-customer' },
+            canWrite(user, 'task', 'task_followup') && { icon: 'add-circle', label: 'New Task', onPress: () => router.push('/tasks/new' as any), testID: 'qa-task' },
+            (canWrite(user, 'business', 'accounts') || canWrite(user, 'more', 'operations_services', 'accounting')) && { icon: 'receipt', label: 'Sale Invoice', onPress: () => router.push('/accounting/invoices/new' as any), testID: 'qa-invoice' },
+            canView(user, 'more', 'operations_services', 'gps_tracking') && { icon: 'navigate', label: 'Field GPS', onPress: () => router.push('/gps/tracking' as any), testID: 'qa-gps' },
+            canWrite(user, 'more', 'operations_services', 'tenders') && { icon: 'document', label: 'New Tender', onPress: () => router.push('/tenders/new' as any), testID: 'qa-tender' },
+            canWrite(user, 'more', 'enterprise_administration', 'settings') && { icon: 'settings', label: 'Settings', onPress: () => router.push('/admin/settings' as any), testID: 'qa-settings' },
+          ].filter(Boolean) as any[];
+
+          if (allActions.length === 0) return null;
+
+          const rows: any[][] = [];
+          for (let i = 0; i < allActions.length; i += 2) {
+            rows.push(allActions.slice(i, i + 2));
+          }
+
+          return (
+            <View style={styles.section}>
+              <Text style={styles.sectionHeaderTitle}>Quick Actions</Text>
+              {rows.map((pair, idx) => (
+                <View key={idx} style={styles.actionsRow}>
+                  {pair.map(action => (
+                    <QuickAction
+                      key={action.label}
+                      icon={action.icon}
+                      label={action.label}
+                      onPress={action.onPress}
+                      testID={action.testID}
+                    />
+                  ))}
+                  {pair.length === 1 && <View style={{ flex: 1, margin: spacing.xs }} />}
+                </View>
+              ))}
+            </View>
+          );
+        })()}
       </ScrollView>
 
       {/* Global Search Modal */}

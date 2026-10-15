@@ -19,7 +19,7 @@ import { api } from '@/src/api';
 import { ScreenLoader, EmptyState } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
-import { notify } from '@/src/dialog';
+import { confirm, notify } from '@/src/dialog';
 
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -213,6 +213,25 @@ export default function IncomeList() {
       notify('Update Failed', e?.message || 'Failed to save changes');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Delete Voucher Handler
+  const handleDelete = async (item: any) => {
+    const vName = item.voucher_no || item.income_no || 'this voucher';
+    const ok = await confirm(
+      'Delete Payment-In Voucher?',
+      `Are you sure you want to delete ${vName}? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.del(`/income/${item.id}`);
+      notify('Deleted', `${vName} has been deleted.`);
+      await load();
+    } catch (e: any) {
+      notify('Delete Failed', e?.message || 'Failed to delete payment voucher');
     }
   };
 
@@ -417,6 +436,16 @@ export default function IncomeList() {
                   >
                     <Ionicons name="eye-outline" size={15} color="#475569" />
                     <Text style={styles.actionBtnViewTxt}>View</Text>
+                  </Pressable>
+
+                  {/* Delete Button */}
+                  <Pressable
+                    onPress={() => handleDelete(item)}
+                    style={styles.actionBtnDelete}
+                    testID={`del-payin-${item.id}`}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                    <Text style={styles.actionBtnDeleteTxt}>Delete</Text>
                   </Pressable>
                 </View>
               </View>
@@ -966,6 +995,23 @@ const styles = StyleSheet.create({
   actionBtnViewTxt: {
     color: '#475569',
     fontWeight: '700',
+    fontSize: font.sm,
+  },
+  actionBtnDelete: {
+    flex: 0.9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    paddingVertical: 7,
+    borderRadius: radius.md,
+  },
+  actionBtnDeleteTxt: {
+    color: '#DC2626',
+    fontWeight: '800',
     fontSize: font.sm,
   },
 

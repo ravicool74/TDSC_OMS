@@ -602,7 +602,7 @@ export default function TenderCallingView({
                       testID={`add-call-below-${item.id}`}
                       style={[styles.plusBelowBtn, isInsertingBelow && { opacity: 0.5 }]}
                       onPress={() => handleInsertRowBelow(item.id)}
-                      title="Click + to Add New row below"
+                      accessibilityLabel="Click + to Add New row below"
                     >
                       {isInsertingBelow ? (
                         <ActivityIndicator size="small" color="#fff" />
@@ -632,7 +632,7 @@ export default function TenderCallingView({
                           <Pressable
                             style={styles.quickContactBtn}
                             onPress={() => Linking.openURL(`tel:${item.mobile}`)}
-                            title="Direct Call"
+                            accessibilityLabel="Direct Call"
                           >
                             <Ionicons name="call" size={13} color="#2563eb" />
                             <Text style={styles.quickContactText}>Call</Text>
@@ -640,7 +640,7 @@ export default function TenderCallingView({
                           <Pressable
                             style={[styles.quickContactBtn, { backgroundColor: '#dcfce7' }]}
                             onPress={() => Linking.openURL(`https://wa.me/91${item.mobile.replace(/\D/g, '')}`)}
-                            title="WhatsApp"
+                            accessibilityLabel="WhatsApp"
                           >
                             <Ionicons name="logo-whatsapp" size={13} color="#16a34a" />
                             <Text style={[styles.quickContactText, { color: '#16a34a' }]}>WhatsApp</Text>
@@ -690,7 +690,7 @@ export default function TenderCallingView({
                       <Pressable
                         style={styles.recordingChip}
                         onPress={() => Linking.openURL(`http://localhost:8000${item.recording_file_url}`)}
-                        title="Play / Download Recording"
+                        accessibilityLabel="Play / Download Recording"
                       >
                         <Ionicons name="musical-notes" size={14} color={colors.brandPrimary} />
                         <Text style={styles.recordingChipText} numberOfLines={1}>
@@ -701,7 +701,7 @@ export default function TenderCallingView({
                       <Pressable
                         style={styles.delRecordingBtn}
                         onPress={() => handleDeleteRecording(item.id)}
-                        title="Delete Recording"
+                        accessibilityLabel="Delete Recording"
                       >
                         <Ionicons name="trash-outline" size={14} color={colors.error} />
                       </Pressable>
@@ -710,7 +710,7 @@ export default function TenderCallingView({
                     <Pressable
                       style={styles.uploadRecBtn}
                       onPress={() => handleUploadRecording(item.id)}
-                      title="Upload Audio File"
+                      accessibilityLabel="Upload Audio File"
                     >
                       <Ionicons name="cloud-upload-outline" size={13} color={colors.brandPrimary} />
                       <Text style={styles.uploadRecBtnText}>Upload Recording File</Text>
@@ -859,7 +859,7 @@ export default function TenderCallingView({
                       <Pressable
                         style={styles.updateRowBtn}
                         onPress={() => handleSaveEdit(item.id)}
-                        title="Update (Save Changes)"
+                        accessibilityLabel="Update (Save Changes)"
                       >
                         <Ionicons name="checkmark-circle" size={14} color="#fff" />
                         <Text style={styles.updateRowBtnText}>Update</Text>
@@ -868,7 +868,7 @@ export default function TenderCallingView({
                       <Pressable
                         style={styles.editRowBtn}
                         onPress={() => handleStartEdit(item)}
-                        title="Edit Calling Line"
+                        accessibilityLabel="Edit Calling Line"
                       >
                         <Ionicons name="pencil" size={14} color={colors.brandPrimary} />
                         <Text style={styles.editRowBtnText}>Edit</Text>
@@ -878,7 +878,7 @@ export default function TenderCallingView({
                     <Pressable
                       style={styles.deleteRowBtn}
                       onPress={() => handleDeleteCall(item)}
-                      title="Delete Calling Line"
+                      accessibilityLabel="Delete Calling Line"
                     >
                       <Ionicons name="trash-outline" size={14} color={colors.error} />
                       <Text style={styles.deleteRowBtnText}>Delete</Text>

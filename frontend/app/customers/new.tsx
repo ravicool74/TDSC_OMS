@@ -21,10 +21,12 @@ import { FormInput } from '@/src/forms';
 import { PrimaryButton } from '@/src/ui';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/AuthContext';
+import { formatDscDateTime, nowDscDateTime, addYearsDscDateTime } from '@/src/dateUtils';
 
 type F = Record<string, string>;
 const initial: F = {
-  name: '', address: '', mobile: '', whatsapp: '', alternate_mobile: '', email: '', pan: '', aadhar: '', departments: '',
+  name: '', address: '', mobile: '', whatsapp: '', alternate_mobile: '', email: '', pan: '', aadhar: '',
+  branch_id: '', branch_name: '', district: '', departments: '',
   eproc2_user_id: '', eproc2_password: '', eproc2_email: '',
   railway_user_id: '', railway_password: '', railway_email: '',
   cpp_user_id: '', cpp_password: '', cpp_email: '',
@@ -94,6 +96,14 @@ export default function NewCustomer() {
   const [addingField, setAddingField] = useState(false);
   const [fieldModalErr, setFieldModalErr] = useState<string | null>(null);
 
+  // TDSC Branch & District selection states
+  const [branchesList, setBranchesList] = useState<any[]>([]);
+  const [districtsList, setDistrictsList] = useState<any[]>([]);
+  const [showBranchModal, setShowBranchModal] = useState(false);
+  const [showDistrictModal, setShowDistrictModal] = useState(false);
+  const [branchSearch, setBranchSearch] = useState('');
+  const [districtSearch, setDistrictSearch] = useState('');
+
   const loadCustomFields = useCallback(async () => {
     try {
       const list: any = await api.get('/customers/custom-fields');
@@ -108,12 +118,29 @@ export default function NewCustomer() {
   }, [loadCustomFields]);
 
   useEffect(() => {
+    (async () => {
+      try {
+        const b: any = await api.getBranches();
+        setBranchesList(Array.isArray(b) ? b : []);
+      } catch {}
+      try {
+        const d: any = await api.getDistricts();
+        setDistrictsList(Array.isArray(d) ? d : []);
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
     if (!editId) return;
     (async () => {
       try {
         const c: any = await api.get(`/customers/${editId}`);
         const next: F = { ...initial };
         Object.keys(initial).forEach(k => { if (c[k] != null) next[k] = String(c[k]); });
+        if (c.dsc_issued_date) next.dsc_issued_date = formatDscDateTime(c.dsc_issued_date, c.dsc_issued_date);
+        if (c.dsc_expired_date) next.dsc_expired_date = formatDscDateTime(c.dsc_expired_date, c.dsc_expired_date);
+        if (c.encryption_issued_date) next.encryption_issued_date = formatDscDateTime(c.encryption_issued_date, c.encryption_issued_date);
+        if (c.encryption_expired_date) next.encryption_expired_date = formatDscDateTime(c.encryption_expired_date, c.encryption_expired_date);
         setF(next);
         if (c.custom_fields && typeof c.custom_fields === 'object') {
           setCustomValues(c.custom_fields);
@@ -193,6 +220,8 @@ export default function NewCustomer() {
     if (!f.whatsapp.trim()) missing.push('WhatsApp No.');
     if (!f.pan.trim()) missing.push('PAN No.');
     if (!f.aadhar.trim()) missing.push('Aadhar No.');
+    if (!f.branch_name.trim()) missing.push('TDSC Branch');
+    if (!f.district.trim()) missing.push('District');
 
     // Check required custom fields
     for (const cf of customFields) {
@@ -211,6 +240,13 @@ export default function NewCustomer() {
         ...f,
         name: f.name.trim(), mobile: f.mobile.trim(), whatsapp: f.whatsapp.trim(),
         pan: f.pan.trim().toUpperCase(), aadhar: f.aadhar.trim(),
+        branch_id: f.branch_id || undefined,
+        branch_name: f.branch_name.trim(),
+        district: f.district.trim(),
+        dsc_issued_date: f.dsc_issued_date ? formatDscDateTime(f.dsc_issued_date, f.dsc_issued_date) : '',
+        dsc_expired_date: f.dsc_expired_date ? formatDscDateTime(f.dsc_expired_date, f.dsc_expired_date) : '',
+        encryption_issued_date: f.encryption_issued_date ? formatDscDateTime(f.encryption_issued_date, f.encryption_issued_date) : '',
+        encryption_expired_date: f.encryption_expired_date ? formatDscDateTime(f.encryption_expired_date, f.encryption_expired_date) : '',
         custom_fields: customValues,
       };
       const saved: any = isEdit ? await api.put(`/customers/${editId}`, body) : await api.post('/customers', body);
@@ -244,6 +280,39 @@ export default function NewCustomer() {
           {/* 1. Basic Details */}
           <Section title="Basic Details (Mandatory & Contact)" icon="person" defaultOpen testID="sec-basic">
             <FormInput label="Contractor Name *" value={f.name} onChangeText={set('name')} placeholder="Full name / Firm name" testID="in-name" />
+            
+            {/* TDSC Branch Dropdown Field */}
+            <View style={{ gap: 4 }}>
+              <Text style={styles.fieldLabel}>TDSC Branch *</Text>
+              <Pressable
+                onPress={() => { setBranchSearch(''); setShowBranchModal(true); }}
+                style={styles.pickerSelector}
+                testID="picker-tdsc-branch"
+              >
+                <Ionicons name="business-outline" size={18} color={colors.brandPrimary} />
+                <Text style={[styles.pickerSelectorText, !f.branch_name && styles.pickerPlaceholder]}>
+                  {f.branch_name ? f.branch_name : 'Select TDSC Branch *'}
+                </Text>
+                <Ionicons name="chevron-down" size={18} color={colors.muted} />
+              </Pressable>
+            </View>
+
+            {/* District Dropdown Field */}
+            <View style={{ gap: 4 }}>
+              <Text style={styles.fieldLabel}>District *</Text>
+              <Pressable
+                onPress={() => { setDistrictSearch(''); setShowDistrictModal(true); }}
+                style={styles.pickerSelector}
+                testID="picker-district"
+              >
+                <Ionicons name="location-outline" size={18} color={colors.brandPrimary} />
+                <Text style={[styles.pickerSelectorText, !f.district && styles.pickerPlaceholder]}>
+                  {f.district ? f.district : 'Select District *'}
+                </Text>
+                <Ionicons name="chevron-down" size={18} color={colors.muted} />
+              </Pressable>
+            </View>
+
             <FormInput label="Full Address" value={f.address} onChangeText={set('address')} placeholder="Office/Residential address" multiline testID="in-address" />
             <FormInput label="Mobile No. *" value={f.mobile} onChangeText={set('mobile')} placeholder="+91 9xxxxxxxxx" keyboardType="phone-pad" testID="in-mobile" />
             <FormInput label="WhatsApp Mobile No. *" value={f.whatsapp} onChangeText={set('whatsapp')} placeholder="+91 9xxxxxxxxx" keyboardType="phone-pad" testID="in-whatsapp" />
@@ -322,16 +391,173 @@ export default function NewCustomer() {
 
           {/* 8. Digital Signature Certificate (DSC Signing) */}
           <Section title="Digital Signature (DSC Signing)" icon="ribbon" testID="sec-dsc">
-            <FormInput label="DSC Serial No." value={f.dsc_serial_no} onChangeText={set('dsc_serial_no')} testID="in-dsc-sn" />
-            <FormInput label="DSC Issued Date" value={f.dsc_issued_date} onChangeText={set('dsc_issued_date')} placeholder="YYYY-MM-DD" testID="in-dsc-issued" />
-            <FormInput label="DSC Expired Date" value={f.dsc_expired_date} onChangeText={set('dsc_expired_date')} placeholder="YYYY-MM-DD" testID="in-dsc-exp" />
+            <FormInput label="DSC Serial No." value={f.dsc_serial_no} onChangeText={set('dsc_serial_no')} placeholder="e.g. 410a0975b0091d98db655f111fc0cf93" testID="in-dsc-sn" />
+
+            <FormInput
+              label="DSC Issued Date"
+              value={f.dsc_issued_date}
+              onChangeText={set('dsc_issued_date')}
+              placeholder="e.g. Friday, 10 April, 2026 12:21:10 AM"
+              testID="in-dsc-issued"
+            />
+            <View style={styles.dateHelperRow}>
+              <Pressable
+                onPress={() => set('dsc_issued_date')(nowDscDateTime())}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="time-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>Current Date & Time</Text>
+              </Pressable>
+              {f.dsc_issued_date ? (
+                <Pressable
+                  onPress={() => set('dsc_issued_date')(formatDscDateTime(f.dsc_issued_date, f.dsc_issued_date))}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="sparkles-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Format</Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            <FormInput
+              label="DSC Expired Date"
+              value={f.dsc_expired_date}
+              onChangeText={set('dsc_expired_date')}
+              placeholder="e.g. Monday, 10 April, 2028 12:21:10 AM"
+              testID="in-dsc-exp"
+            />
+            <View style={styles.dateHelperRow}>
+              <Pressable
+                onPress={() => set('dsc_expired_date')(addYearsDscDateTime(f.dsc_issued_date, 1))}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="calendar-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>+1 Year</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => set('dsc_expired_date')(addYearsDscDateTime(f.dsc_issued_date, 2))}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="calendar-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>+2 Years (Standard)</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => set('dsc_expired_date')(addYearsDscDateTime(f.dsc_issued_date, 3))}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="calendar-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>+3 Years</Text>
+              </Pressable>
+              {f.dsc_expired_date ? (
+                <Pressable
+                  onPress={() => set('dsc_expired_date')(formatDscDateTime(f.dsc_expired_date, f.dsc_expired_date))}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="sparkles-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Format</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </Section>
 
           {/* 9. Digital Signature Certificate (DSC Encryption) */}
           <Section title="Digital Signature (DSC Encryption)" icon="key" testID="sec-encryption">
-            <FormInput label="Encryption Serial No." value={f.encryption_serial_no} onChangeText={set('encryption_serial_no')} testID="in-enc-sn" />
-            <FormInput label="Encryption Issued Date" value={f.encryption_issued_date} onChangeText={set('encryption_issued_date')} placeholder="YYYY-MM-DD" testID="in-enc-issued" />
-            <FormInput label="Encryption Expired Date" value={f.encryption_expired_date} onChangeText={set('encryption_expired_date')} placeholder="YYYY-MM-DD" testID="in-enc-exp" />
+            <FormInput label="Encryption Serial No." value={f.encryption_serial_no} onChangeText={set('encryption_serial_no')} placeholder="e.g. 4cc7590ec82b086620c38da3f165044f" testID="in-enc-sn" />
+            {f.dsc_serial_no && !f.encryption_serial_no ? (
+              <View style={styles.dateHelperRow}>
+                <Pressable
+                  onPress={() => set('encryption_serial_no')(f.dsc_serial_no)}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="copy-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Copy Serial from Signing</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            <FormInput
+              label="Encryption Issued Date"
+              value={f.encryption_issued_date}
+              onChangeText={set('encryption_issued_date')}
+              placeholder="e.g. Friday, 10 April, 2026 12:20:28 AM"
+              testID="in-enc-issued"
+            />
+            <View style={styles.dateHelperRow}>
+              <Pressable
+                onPress={() => set('encryption_issued_date')(nowDscDateTime())}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="time-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>Current Date & Time</Text>
+              </Pressable>
+              {f.dsc_issued_date ? (
+                <Pressable
+                  onPress={() => set('encryption_issued_date')(f.dsc_issued_date)}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="copy-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Same as DSC Signing</Text>
+                </Pressable>
+              ) : null}
+              {f.encryption_issued_date ? (
+                <Pressable
+                  onPress={() => set('encryption_issued_date')(formatDscDateTime(f.encryption_issued_date, f.encryption_issued_date))}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="sparkles-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Format</Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            <FormInput
+              label="Encryption Expired Date"
+              value={f.encryption_expired_date}
+              onChangeText={set('encryption_expired_date')}
+              placeholder="e.g. Monday, 10 April, 2028 12:20:28 AM"
+              testID="in-enc-exp"
+            />
+            <View style={styles.dateHelperRow}>
+              <Pressable
+                onPress={() => set('encryption_expired_date')(addYearsDscDateTime(f.encryption_issued_date || f.dsc_issued_date, 1))}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="calendar-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>+1 Year</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => set('encryption_expired_date')(addYearsDscDateTime(f.encryption_issued_date || f.dsc_issued_date, 2))}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="calendar-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>+2 Years (Standard)</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => set('encryption_expired_date')(addYearsDscDateTime(f.encryption_issued_date || f.dsc_issued_date, 3))}
+                style={styles.dateHelperBtn}
+              >
+                <Ionicons name="calendar-outline" size={12} color={colors.brandPrimary} />
+                <Text style={styles.dateHelperBtnText}>+3 Years</Text>
+              </Pressable>
+              {f.dsc_expired_date ? (
+                <Pressable
+                  onPress={() => set('encryption_expired_date')(f.dsc_expired_date)}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="copy-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Same as DSC Expiry</Text>
+                </Pressable>
+              ) : null}
+              {f.encryption_expired_date ? (
+                <Pressable
+                  onPress={() => set('encryption_expired_date')(formatDscDateTime(f.encryption_expired_date, f.encryption_expired_date))}
+                  style={styles.dateHelperBtn}
+                >
+                  <Ionicons name="sparkles-outline" size={12} color={colors.brandPrimary} />
+                  <Text style={styles.dateHelperBtnText}>Format</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </Section>
 
           {/* 10. GeM Portal */}
@@ -610,6 +836,136 @@ export default function NewCustomer() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Branch Selection Modal */}
+      <Modal visible={showBranchModal} transparent animationType="fade" onRequestClose={() => setShowBranchModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxHeight: '80%' }]} testID="branch-select-modal">
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={styles.modalHeaderIcon}><Ionicons name="business" size={18} color="#FFF" /></View>
+                <View>
+                  <Text style={styles.modalTitle}>Select TDSC Branch</Text>
+                  <Text style={styles.modalSub}>Select operating branch office</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setShowBranchModal(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <View style={{ padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
+              <TextInput
+                value={branchSearch}
+                onChangeText={setBranchSearch}
+                placeholder="Search branch name, code, city..."
+                placeholderTextColor={colors.muted}
+                style={styles.modalInput}
+                autoFocus
+              />
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.md, gap: 6 }}>
+              {branchesList
+                .filter(b => {
+                  const q = branchSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    (b.name && b.name.toLowerCase().includes(q)) ||
+                    (b.branch_name && b.branch_name.toLowerCase().includes(q)) ||
+                    (b.code && b.code.toLowerCase().includes(q)) ||
+                    (b.city && b.city.toLowerCase().includes(q))
+                  );
+                })
+                .map(b => {
+                  const bName = b.name || b.branch_name;
+                  const isSel = f.branch_name === bName;
+                  return (
+                    <Pressable
+                      key={b.id || b.branch_id || bName}
+                      onPress={() => {
+                        setF(p => ({ ...p, branch_id: b.id || b.branch_id || '', branch_name: bName }));
+                        setShowBranchModal(false);
+                      }}
+                      style={[styles.pickerItem, isSel && styles.pickerItemActive]}
+                    >
+                      <Ionicons name="business" size={16} color={isSel ? colors.brandPrimary : colors.muted} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.pickerItemTitle, isSel && styles.pickerItemTitleActive]}>{bName}</Text>
+                        {(b.code || b.city) ? (
+                          <Text style={styles.pickerItemSub}>Code: {b.code || '—'} • {b.city || ''}</Text>
+                        ) : null}
+                      </View>
+                      {isSel ? <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} /> : null}
+                    </Pressable>
+                  );
+                })}
+              {branchesList.length === 0 ? (
+                <Text style={{ textAlign: 'center', color: colors.muted, padding: 20 }}>No branches found</Text>
+              ) : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* District Selection Modal */}
+      <Modal visible={showDistrictModal} transparent animationType="fade" onRequestClose={() => setShowDistrictModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxHeight: '80%' }]} testID="district-select-modal">
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={styles.modalHeaderIcon}><Ionicons name="location" size={18} color="#FFF" /></View>
+                <View>
+                  <Text style={styles.modalTitle}>Select District</Text>
+                  <Text style={styles.modalSub}>Select contractor's district</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setShowDistrictModal(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <View style={{ padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
+              <TextInput
+                value={districtSearch}
+                onChangeText={setDistrictSearch}
+                placeholder="Search district name..."
+                placeholderTextColor={colors.muted}
+                style={styles.modalInput}
+                autoFocus
+              />
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.md, gap: 6 }}>
+              {districtsList
+                .filter(d => {
+                  const q = districtSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return d.name && d.name.toLowerCase().includes(q);
+                })
+                .map(d => {
+                  const isSel = f.district === d.name;
+                  return (
+                    <Pressable
+                      key={d.id || d.name}
+                      onPress={() => {
+                        setF(p => ({ ...p, district: d.name }));
+                        setShowDistrictModal(false);
+                      }}
+                      style={[styles.pickerItem, isSel && styles.pickerItemActive]}
+                    >
+                      <Ionicons name="location-outline" size={16} color={isSel ? colors.brandPrimary : colors.muted} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.pickerItemTitle, isSel && styles.pickerItemTitleActive]}>{d.name}</Text>
+                        {d.state ? <Text style={styles.pickerItemSub}>{d.state}</Text> : null}
+                      </View>
+                      {isSel ? <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} /> : null}
+                    </Pressable>
+                  );
+                })}
+              {districtsList.length === 0 ? (
+                <Text style={{ textAlign: 'center', color: colors.muted, padding: 20 }}>No districts found</Text>
+              ) : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -630,6 +986,56 @@ const styles = StyleSheet.create({
   chipTextActive: { color: '#FFF' },
   err: { color: colors.error, textAlign: 'center', fontSize: font.base, fontWeight: '600' },
   ok: { color: colors.success, textAlign: 'center', fontWeight: '800', fontSize: font.base },
+
+  // Picker Styles
+  pickerSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  pickerSelectorText: {
+    flex: 1,
+    fontSize: font.base,
+    color: colors.onSurface,
+    fontWeight: '600',
+  },
+  pickerPlaceholder: {
+    color: colors.muted,
+    fontWeight: '400',
+  },
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  pickerItemActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: colors.brandPrimary,
+  },
+  pickerItemTitle: {
+    fontSize: font.sm,
+    fontWeight: '700',
+    color: colors.onSurface,
+  },
+  pickerItemTitleActive: {
+    color: colors.brandPrimary,
+  },
+  pickerItemSub: {
+    fontSize: 10,
+    color: colors.muted,
+    marginTop: 2,
+  },
 
   // Custom Field Admin Elements
   adminActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F8FAFC', padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 4 },
@@ -670,4 +1076,7 @@ const styles = StyleSheet.create({
   cancelBtnText: { color: colors.onSurface, fontWeight: '700', fontSize: font.base },
   submitBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: colors.brandPrimary, paddingVertical: 12, borderRadius: radius.md },
   submitBtnText: { color: '#FFF', fontWeight: '800', fontSize: font.base },
+  dateHelperRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: -4, marginBottom: 8 },
+  dateHelperBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
+  dateHelperBtnText: { fontSize: 10, fontWeight: '700', color: colors.brandPrimary },
 });

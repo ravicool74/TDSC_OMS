@@ -124,6 +124,12 @@ def make_service_router(db, get_current_user, require_admin, log_audit):
         docs = await db.services.find(query, {"_id": 0}).sort("created_at", 1).to_list(200)
         return [Service(**d) for d in docs]
 
+    @router.get("/catalogue")
+    async def get_service_catalogue(current: any = Depends(get_current_user)):
+        cursor = db.service_catalogue.find({"status": "active"}, {"_id": 0}).sort("display_order", 1)
+        items = await cursor.to_list(100)
+        return items
+
     @router.get("/{sid}", response_model=Service)
     async def get_service(sid: str, current: any = Depends(get_current_user)):
         d = await db.services.find_one({"$or": [{"id": sid}, {"service_id": sid}]}, {"_id": 0})

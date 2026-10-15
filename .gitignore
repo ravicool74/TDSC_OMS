@@ -21,6 +21,8 @@ __pycache__/
 *.pem
 *.key
 *.cert
+credentials.md
+*credentials*
 
 # Expo & Metro
 frontend/.expo/

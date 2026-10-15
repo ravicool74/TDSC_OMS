@@ -78,6 +78,28 @@ export default function ExpensesList() {
     customer_gst: '',
   });
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const canDelete = isAdmin || isManager || user?.role === 'accountant';
+
+  const handleDeleteExpense = async (item: any) => {
+    const ok = await confirm(
+      'Delete Expense?',
+      `Are you sure you want to delete Expense "${item.expense_no || 'EXP'}" (${item.category} - ${inr(item.amount)})? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    setDeletingId(item.id);
+    try {
+      await api.deleteExpense(item.id);
+      notify('Deleted', `Expense ${item.expense_no || ''} deleted successfully.`);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Delete Failed', e?.message || 'Could not delete expense');
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -424,6 +446,25 @@ export default function ExpensesList() {
                   <Ionicons name="eye-outline" size={15} color="#475569" />
                   <Text style={styles.actionBtnViewTxt}>View</Text>
                 </Pressable>
+
+                {/* Delete Button */}
+                {canDelete ? (
+                  <Pressable
+                    onPress={() => handleDeleteExpense(item)}
+                    style={styles.actionBtnDelete}
+                    testID={`delete-exp-${item.id}`}
+                    disabled={deletingId === item.id}
+                  >
+                    {deletingId === item.id ? (
+                      <ActivityIndicator size="small" color="#DC2626" />
+                    ) : (
+                      <>
+                        <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                        <Text style={styles.actionBtnDeleteTxt}>Delete</Text>
+                      </>
+                    )}
+                  </Pressable>
+                ) : null}
               </View>
 
               {/* Pending / Verification Workflow Actions for Admin & Manager */}
@@ -987,6 +1028,23 @@ const styles = StyleSheet.create({
   actionBtnViewTxt: {
     color: '#475569',
     fontWeight: '700',
+    fontSize: font.sm,
+  },
+  actionBtnDelete: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    paddingVertical: 7,
+    borderRadius: radius.md,
+  },
+  actionBtnDeleteTxt: {
+    color: '#DC2626',
+    fontWeight: '800',
     fontSize: font.sm,
   },
 

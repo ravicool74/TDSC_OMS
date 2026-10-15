@@ -1,4 +1,5 @@
 export const colors = {
+  background: '#F8FAFC',
   surface: '#FFFFFF',
   onSurface: '#09090B',
   surfaceSecondary: '#F4F4F5',
@@ -36,9 +37,10 @@ export const spacing = {
   xxxl: 48,
 };
 
-export const radius = { sm: 6, md: 12, lg: 20, pill: 999 };
+export const radius = { sm: 6, md: 12, lg: 20, xl: 24, pill: 999, full: 9999 };
 
 export const font = {
+  xs: 11,
   sm: 12,
   base: 14,
   lg: 16,

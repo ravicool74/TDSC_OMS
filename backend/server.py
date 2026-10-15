@@ -12,11 +12,11 @@ import certifi
 import httpx
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query, Request
 from fastapi.responses import Response, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from invoice_pdf import build_invoice_pdf
-from customer_pdf import build_customer_pdf
+from customer_pdf import build_customer_pdf, generate_contractors_directory_pdf
 from payment_in_pdf import build_payment_in_pdf
 from expense_pdf import build_expense_pdf
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -26,7 +26,7 @@ from starlette.middleware.cors import CORSMiddleware
 from security_vault import log_audit_entry, encrypt_credential, decrypt_credential, mask_credential
 from branch_routes import make_branch_router
 from post_routes import make_post_router
-from role_routes import make_role_router
+from role_routes import make_role_router, ALL_MENU_IDS, get_all_perms, build_role_menu_matrix
 from user_routes import make_user_router
 from service_routes import make_service_router
 from audit_routes import make_audit_router
@@ -46,6 +46,10 @@ from accounting_reports_routes import make_accounting_reports_router
 from cash_bank_routes import make_cash_bank_router
 from task_chat_routes import make_task_chat_router
 from service_workflow_routes import make_service_workflow_router
+from service_request_routes import make_service_request_router, ensure_customer_account
+from customer_portal_core import init_customer_portal_indexes
+from district_routes import make_district_router
+from expense_approval_routes import make_expense_approval_router
 
 
 ROOT_DIR = Path(__file__).parent
@@ -111,14 +115,25 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 def get_object(path: str):
     if not STORAGE_URL:
-        target_path = (LOCAL_STORAGE_DIR / path).resolve()
-        if not str(target_path).startswith(str(LOCAL_STORAGE_DIR.resolve())):
-            raise HTTPException(status_code=400, detail="Invalid storage path")
+        clean_path = path.replace("\\", "/")
+        if clean_path.startswith("uploads/"):
+            clean_path = clean_path[len("uploads/"):]
+        target_path = (LOCAL_STORAGE_DIR / clean_path).resolve()
         if not target_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+            # Check with path as is
+            target_path = (LOCAL_STORAGE_DIR / path).resolve()
+        if not target_path.exists():
+            # Check relative to ROOT_DIR
+            alt = (ROOT_DIR / path).resolve()
+            if alt.exists():
+                target_path = alt
+            else:
+                raise HTTPException(status_code=404, detail="File not found")
         with open(target_path, "rb") as f:
             content = f.read()
-        return content, "image/jpeg"
+        import mimetypes
+        guess_ct = mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"
+        return content, guess_ct
     global _storage_key
     key = init_storage()
     resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
@@ -171,9 +186,9 @@ def new_id(prefix: str) -> str:
 # ============ Models ============
 class User(BaseModel):
     user_id: str
-    email: EmailStr
+    email: str
     name: str
-    role: str = "employee"  # super_admin, admin, manager, employee
+    role: str = "employee"  # super_admin, admin, manager, employee, customer
     role_id: Optional[str] = None
     role_name: Optional[str] = None
     status: Optional[str] = "active"
@@ -181,6 +196,16 @@ class User(BaseModel):
     phone: Optional[str] = None
     department: Optional[str] = None
     designation: Optional[str] = None
+    permissions: Dict[str, List[str]] = Field(default_factory=dict)
+    allowed_menus: List[str] = Field(default_factory=list)
+    app_menu_matrix: Dict[str, Any] = Field(default_factory=dict)
+    customer_id: Optional[str] = None
+    customer_code: Optional[str] = None
+    customer_user_id: Optional[str] = None
+    numeric_user_id: Optional[str] = None
+    agency_name: Optional[str] = None
+    company_name: Optional[str] = None
+    must_change_password: Optional[bool] = False
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -192,8 +217,13 @@ class SignupInput(BaseModel):
 
 
 class LoginInput(BaseModel):
-    email: EmailStr
+    email: str  # Supports Email, Username, or User ID (e.g. TDSC-USR-000001)
     password: str
+
+
+class ChangePasswordInput(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class SessionExchangeInput(BaseModel):
@@ -209,7 +239,7 @@ class Customer(BaseModel):
     id: str = Field(default_factory=lambda: new_id("cus"))
     customer_code: Optional[str] = None  # auto TDSC-CUST-ID-00000001
 
-    # Basic (mandatory: name, mobile, whatsapp, pan, aadhar)
+    # Basic (mandatory: name, mobile, whatsapp, pan, aadhar, TDSC Branch, District)
     name: str  # Contractor name
     address: Optional[str] = None
     mobile: str
@@ -217,6 +247,9 @@ class Customer(BaseModel):
     email: Optional[str] = None
     pan: str
     aadhar: str
+    branch_id: Optional[str] = None
+    branch_name: Optional[str] = None
+    district: Optional[str] = None
 
     # eproc2
     eproc2_user_id: Optional[str] = None
@@ -284,6 +317,7 @@ class Customer(BaseModel):
     notes: Optional[str] = None
     custom_fields: Dict[str, Any] = Field(default_factory=dict)
     attachments: List[dict] = Field(default_factory=list)  # [{path,name,size,content_type,uploaded_at}]
+    documents: List[dict] = Field(default_factory=list)  # customer vault documents (validity & general)
     created_by: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -297,6 +331,9 @@ class CustomerInput(BaseModel):
     email: Optional[str] = None
     pan: str
     aadhar: str
+    branch_id: Optional[str] = None
+    branch_name: Optional[str] = None
+    district: Optional[str] = None
     departments: Optional[str] = None
     eproc2_user_id: Optional[str] = None
     eproc2_password: Optional[str] = None
@@ -468,6 +505,10 @@ class Task(BaseModel):
     stage_history: List[dict] = Field(default_factory=list)
 
     sub_tasks: List[dict] = Field(default_factory=list)
+
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
+    request_no: Optional[str] = None
 
     voucher_no: Optional[str] = None
     voucher_date: Optional[str] = None
@@ -786,6 +827,7 @@ class ExpenseInput(BaseModel):
     sale_item_name: Optional[str] = None
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
+    status: Optional[str] = "pending"
 
 
 class ExpenseUpdateInput(BaseModel):
@@ -1134,6 +1176,33 @@ async def create_session(user_id: str) -> str:
     return token
 
 
+async def enrich_user_permissions(user_doc: dict) -> dict:
+    role_key = user_doc.get("role_id") or user_doc.get("role") or "employee"
+    role_doc = await db.roles.find_one({"$or": [{"role_id": role_key}, {"id": role_key}]}, {"_id": 0})
+    if role_doc:
+        if not user_doc.get("role_name"):
+            user_doc["role_name"] = role_doc.get("name")
+        if not user_doc.get("permissions"):
+            user_doc["permissions"] = role_doc.get("permissions", {})
+        if not user_doc.get("allowed_menus"):
+            user_doc["allowed_menus"] = role_doc.get("allowed_menus", [])
+        if not user_doc.get("app_menu_matrix"):
+            user_doc["app_menu_matrix"] = role_doc.get("app_menu_matrix", build_role_menu_matrix(role_key))
+
+    # If user is super_admin, grant full permissions and all menus
+    if user_doc.get("role") == "super_admin" or user_doc.get("role_id") == "super_admin":
+        user_doc["permissions"] = get_all_perms()
+        user_doc["allowed_menus"] = list(ALL_MENU_IDS)
+        user_doc["app_menu_matrix"] = build_role_menu_matrix("super_admin")
+    elif not user_doc.get("allowed_menus") and user_doc.get("role") == "admin":
+        user_doc["allowed_menus"] = list(ALL_MENU_IDS)
+        if not user_doc.get("app_menu_matrix"):
+            user_doc["app_menu_matrix"] = build_role_menu_matrix("admin")
+    elif not user_doc.get("app_menu_matrix"):
+        user_doc["app_menu_matrix"] = build_role_menu_matrix(role_key)
+    return user_doc
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
@@ -1149,6 +1218,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0, "password_hash": 0})
     if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
+    user_doc = await enrich_user_permissions(user_doc)
     return User(**user_doc)
 
 
@@ -1183,15 +1253,47 @@ async def signup():
 
 @api_router.post("/auth/login", response_model=AuthResponse)
 async def login(payload: LoginInput):
-    doc = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
+    ident = payload.email.strip()
+    ident_lower = ident.lower()
+    doc = await db.users.find_one({
+        "$or": [
+            {"email": ident_lower},
+            {"username": ident_lower},
+            {"user_id": ident},
+            {"user_id": ident.upper()},
+            {"numeric_user_id": ident},
+            {"customer_code": ident.upper()},
+            {"mobile": ident}
+        ]
+    }, {"_id": 0})
     if not doc or not doc.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not verify_password(payload.password, doc["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     doc.pop("password_hash", None)
+    doc = await enrich_user_permissions(doc)
     user = User(**doc)
     token = await create_session(user.user_id)
     return AuthResponse(session_token=token, user=user)
+
+
+@api_router.post("/auth/change-password")
+async def change_password(payload: ChangePasswordInput, current: User = Depends(get_current_user)):
+    user_doc = await db.users.find_one({"user_id": current.user_id})
+    if not user_doc or not user_doc.get("password_hash"):
+        raise HTTPException(status_code=400, detail="User account does not have a local password set")
+    if not verify_password(payload.current_password, user_doc["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(payload.new_password.strip()) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+
+    new_hash = hash_password(payload.new_password.strip())
+    await db.users.update_one(
+        {"user_id": current.user_id},
+        {"$set": {"password_hash": new_hash, "updated_at": now_utc()}}
+    )
+    await log_audit_entry(db, current, "users", "change_password", current.user_id, None, {"action": "Password changed successfully"})
+    return {"ok": True, "message": "Password updated successfully"}
 
 
 @api_router.post("/auth/session", response_model=AuthResponse)
@@ -1221,6 +1323,7 @@ async def exchange_session(payload: SessionExchangeInput):
 
     user_id = existing["user_id"]
     existing.pop("password_hash", None)
+    existing = await enrich_user_permissions(existing)
     user = User(**{**existing, "name": name, "picture": picture})
     await db.users.update_one({"user_id": user_id}, {"$set": {"name": name, "picture": picture}})
 
@@ -1296,16 +1399,34 @@ api_router.include_router(make_custom_field_router(db, get_current_user, require
 
 @api_router.post("/customers", response_model=Customer)
 async def create_customer(payload: CustomerInput, current: User = Depends(get_current_user)):
-    # Validate mandatory fields (Pydantic already enforces presence; also block empty strings)
+    # Validate mandatory fields (name, mobile, whatsapp, pan, aadhar, TDSC Branch, District)
     missing = []
     for k in ("name", "mobile", "whatsapp", "pan", "aadhar"):
         if not (getattr(payload, k) or "").strip():
             missing.append(k)
+    branch_val = (payload.branch_name or payload.branch_id or "").strip()
+    if not branch_val:
+        missing.append("TDSC Branch")
+    if not (payload.district or "").strip():
+        missing.append("District")
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing mandatory: {', '.join(missing)}")
 
+    # Resolve branch_id and branch_name
+    body = payload.dict()
+    b_id = body.get("branch_id")
+    b_name = body.get("branch_name")
+    if b_id and not b_name:
+        b_doc = await db.branches.find_one({"$or": [{"id": b_id}, {"branch_id": b_id}]}, {"_id": 0})
+        if b_doc:
+            body["branch_name"] = b_doc.get("name")
+    elif b_name and not b_id:
+        b_doc = await db.branches.find_one({"name": b_name}, {"_id": 0})
+        if b_doc:
+            body["branch_id"] = b_doc.get("id") or b_doc.get("branch_id")
+
     # Duplicate check across mobile/PAN/Aadhar/GST/email/whatsapp/reg_no
-    dup = await _find_customer_duplicate(payload.dict())
+    dup = await _find_customer_duplicate(body)
     if dup:
         matched_on = []
         for f in ("mobile", "whatsapp", "pan", "aadhar", "gst_no", "contractor_reg_no", "email"):
@@ -1332,9 +1453,14 @@ async def create_customer(payload: CustomerInput, current: User = Depends(get_cu
     )
     seq = (counter or {}).get("seq") or 1
     code = f"TDSC-CUST-ID-{seq:08d}"
-
-    c = Customer(**payload.dict(), customer_code=code, created_by=current.user_id)
-    await db.customers.insert_one(c.dict())
+    c = Customer(**body, customer_code=code, created_by=current.user_id)
+    c_dict = c.dict()
+    await db.customers.insert_one(c_dict)
+    # Ensure linked customer login account
+    try:
+        await ensure_customer_account(db, c_dict, log_audit_entry, current)
+    except Exception as e:
+        logger.warning("Failed to auto-create customer login account: %s", e)
     return c
 
 
@@ -1379,7 +1505,12 @@ async def quick_add_party(payload: QuickPartyInput, current: User = Depends(get_
         pan=body["pan"], aadhar=body["aadhar"], email=body.get("email"), gst_no=body.get("gst_no"),
         address=body.get("address"), customer_code=code, created_by=current.user_id,
     )
-    await db.customers.insert_one(c.dict())
+    c_dict = c.dict()
+    await db.customers.insert_one(c_dict)
+    try:
+        await ensure_customer_account(db, c_dict, log_audit_entry, current)
+    except Exception as e:
+        logger.warning("Failed to auto-create customer login account in quick add: %s", e)
     return c
 
 
@@ -1409,8 +1540,17 @@ async def search_customers(q: str = "", limit: int = 25, current: User = Depends
 
 
 @api_router.get("/customers", response_model=List[Customer])
-async def list_customers(current: User = Depends(get_current_user)):
-    docs = await db.customers.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def list_customers(
+    branch: Optional[str] = Query(None),
+    district: Optional[str] = Query(None),
+    current: User = Depends(get_current_user)
+):
+    query: dict = {}
+    if branch and branch != "All":
+        query["$or"] = [{"branch_name": branch}, {"branch_id": branch}]
+    if district and district != "All":
+        query["district"] = district
+    docs = await db.customers.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return [Customer(**d) for d in docs]
 
 
@@ -1423,7 +1563,7 @@ async def get_customer_document_expiry_alerts_route(current: User = Depends(get_
 
 @api_router.get("/customers/{cid}", response_model=Customer)
 async def get_customer(cid: str, current: User = Depends(get_current_user)):
-    d = await db.customers.find_one({"id": cid}, {"_id": 0})
+    d = await db.customers.find_one({"$or": [{"id": cid}, {"customer_code": cid}]}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
     return Customer(**d)
@@ -1441,6 +1581,24 @@ async def update_customer(cid: str, payload: CustomerInput, current: User = Depe
     d = await db.customers.find_one({"id": cid}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
+    try:
+        # Sync user profile or ensure customer account
+        linked_u = await db.users.find_one({"customer_id": cid})
+        if linked_u:
+            await db.users.update_one(
+                {"customer_id": cid},
+                {"$set": {
+                    "name": d.get("name"),
+                    "mobile": d.get("mobile"),
+                    "agency_name": d.get("agency_name") or d.get("name"),
+                    "company_name": d.get("company_name") or d.get("name"),
+                    "updated_at": now_utc(),
+                }}
+            )
+        else:
+            await ensure_customer_account(db, d, log_audit_entry, current)
+    except Exception as e:
+        logger.warning("Failed to sync customer account in update: %s", e)
     return Customer(**d)
 
 
@@ -1473,6 +1631,45 @@ async def bulk_customer_action(payload: BulkCustomerActionInput, current: User =
         return {"ok": True, "count": res.modified_count, "department": dept}
     else:
         raise HTTPException(status_code=400, detail="Invalid bulk action")
+
+
+class ExportContractorsPdfPayload(BaseModel):
+    customer_ids: Optional[List[str]] = None
+
+
+@api_router.post("/customers/export-pdf")
+async def export_contractors_directory_pdf_endpoint(
+    payload: ExportContractorsPdfPayload,
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    tk = None
+    if authorization and authorization.startswith("Bearer "):
+        tk = authorization[7:]
+    elif token:
+        tk = token
+    if not tk:
+        raise HTTPException(status_code=401, detail="Auth required")
+    session = await db.user_sessions.find_one({"session_token": tk}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    ids = [i for i in (payload.customer_ids or []) if i]
+    if ids:
+        contractors = await db.customers.find({"id": {"$in": ids}}, {"_id": 0}).to_list(1000)
+    else:
+        contractors = await db.customers.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+    if not contractors:
+        raise HTTPException(status_code=404, detail="No contractors found to export")
+
+    pdf_bytes = await run_in_threadpool(generate_contractors_directory_pdf, contractors)
+    fname = f"contractors_directory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'}
+    )
 
 
 @api_router.get("/customers/{cid}/pdf")
@@ -1587,8 +1784,28 @@ async def create_employee(payload: EmployeeInput, current: User = Depends(requir
 
 
 @api_router.get("/employees", response_model=List[Employee])
-async def list_employees(current: User = Depends(get_current_user)):
-    docs = await db.employees.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def list_employees(q: Optional[str] = Query(None), current: User = Depends(get_current_user)):
+    query = {}
+    if q and q.strip():
+        term = q.strip()
+        regex = {"$regex": term, "$options": "i"}
+        clean_num = re.sub(r"\D", "", term)
+        or_clauses = [
+            {"name": regex},
+            {"pan": regex},
+            {"aadhar": regex},
+            {"mobile": regex},
+            {"employee_code": regex},
+            {"id": regex},
+            {"email": regex},
+            {"designation": regex},
+            {"posting_branch": regex},
+        ]
+        if clean_num and len(clean_num) >= 3:
+            or_clauses.append({"mobile": {"$regex": clean_num}})
+            or_clauses.append({"aadhar": {"$regex": clean_num}})
+        query["$or"] = or_clauses
+    docs = await db.employees.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [Employee(**d) for d in docs]
 
 
@@ -2291,10 +2508,19 @@ async def get_next_invoice_no(
         next_no = await _peek_next_sale_invoice_no(date)
         fy = get_indian_financial_year(date)
         return {"next_no": next_no, "invoice_type": "sale", "financial_year": fy}
+    elif invoice_type == "sale_return":
+        counter = await db.counters.find_one({"_id": "sale_return_no"})
+        seq = ((counter or {}).get("seq") or 0) + 1
+        return {"next_no": f"CN-{seq:04d}", "invoice_type": "sale_return"}
+    elif invoice_type == "purchase_return":
+        counter = await db.counters.find_one({"_id": "purchase_return_no"})
+        seq = ((counter or {}).get("seq") or 0) + 1
+        return {"next_no": f"DN-{seq:04d}", "invoice_type": "purchase_return"}
     else:
         counter = await db.counters.find_one({"_id": "purchase_bill_no"})
         seq = ((counter or {}).get("seq") or 0) + 1
         return {"next_no": f"PB-{seq:04d}", "invoice_type": "purchase"}
+
 
 
 @api_router.get("/income/next-no")
@@ -2951,9 +3177,29 @@ async def decide_expense(eid: str, payload: ExpenseDecision, current: User = Dep
 
 
 @api_router.delete("/expenses/{eid}")
-async def delete_expense(eid: str, current: User = Depends(require_admin)):
+async def delete_expense(eid: str, current: User = Depends(require_admin_or_manager)):
+    e = await db.expenses.find_one({"id": eid}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    
+    # Financial data safety: Prevent direct deletion of approved or verified expenses
+    st = (e.get("status") or "").lower()
+    if st in ("approved", "posted", "verified"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot directly delete an approved or verified expense. Please reject or void the voucher first to protect accounting records."
+        )
+    
+    # Check if linked to settled payment or voucher
+    if e.get("payment_status") == "settled" or e.get("is_settled"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a settled expense. Financial transaction has already posted."
+        )
+
     res = await db.expenses.delete_one({"id": eid})
-    return {"deleted": res.deleted_count}
+    await log_audit_entry(db, current, "expenses", "delete", eid, e, None)
+    return {"deleted": res.deleted_count, "id": eid}
 
 
 # ============ Items (catalog) ============
@@ -3209,6 +3455,22 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
                 await db.counters.update_one({"_id": f"sale_invoice_{fy}"}, {"$max": {"seq": int(m.group(1))}}, upsert=True)
         else:
             no = await _next_sale_invoice_no(payload.date)
+    elif payload.invoice_type == "sale_return":
+        prefix = "CN"
+        counter_key = "sale_return_no"
+        custom_no = (payload.invoice_no or "").strip()
+        if custom_no and not "preview" in custom_no.lower() and not custom_no.upper() in ["AUTO", "NEW"]:
+            no = custom_no
+        else:
+            no = await _next_no(counter_key, prefix)
+    elif payload.invoice_type == "purchase_return":
+        prefix = "DN"
+        counter_key = "purchase_return_no"
+        custom_no = (payload.invoice_no or "").strip()
+        if custom_no and not "preview" in custom_no.lower() and not custom_no.upper() in ["AUTO", "NEW"]:
+            no = custom_no
+        else:
+            no = await _next_no(counter_key, prefix)
     else:
         prefix = "PB"
         counter_key = "purchase_bill_no"
@@ -4262,9 +4524,12 @@ async def app_health():
 
 
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
-async def app_root():
-    """Root handler for Kubernetes/LB probes that hit '/' on the backend port.
-    Returns 200 so the load balancer keeps the container marked healthy."""
+async def app_root(request: Request):
+    """Serve frontend index.html if available, otherwise return health probe."""
+    public_index = ROOT_DIR / "public" / "index.html"
+    accept = request.headers.get("accept", "")
+    if public_index.exists() and "application/json" not in accept:
+        return FileResponse(str(public_index))
     return {"service": "Triveni Business Manager API", "status": "ok"}
 
 
@@ -4315,9 +4580,9 @@ async def startup():
         except Exception as _e:
             logger.exception("Customer code migration failed: %s", _e)
 
-        # Seed administrative accounts (Super Admin & Admin)
+        # Seed administrative accounts (Super Admin & Admin) if explicitly provided in environment
         super_email = os.environ.get("SEED_SUPERADMIN_EMAIL", "superadmin@triveni.com")
-        super_pass = os.environ.get("SEED_SUPERADMIN_PASSWORD", "superadmin123")
+        super_pass = os.environ.get("SEED_SUPERADMIN_PASSWORD")
         existing_super = await db.users.find_one({"$or": [{"email": super_email}, {"role": "super_admin"}]})
         if not existing_super and super_pass:
             s_admin = User(user_id=new_id("usr"), email=super_email, name="Super Admin", role="super_admin")
@@ -4332,7 +4597,7 @@ async def startup():
             await db.users.update_one({"_id": existing_super["_id"]}, {"$set": {"role": "super_admin", "role_id": "super_admin"}})
 
         admin_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@triveni.com")
-        admin_pass = os.environ.get("SEED_ADMIN_PASSWORD", "admin123")
+        admin_pass = os.environ.get("SEED_ADMIN_PASSWORD")
         existing_admin = await db.users.find_one({"email": admin_email})
         if not existing_admin and admin_pass:
             admin = User(user_id=new_id("usr"), email=admin_email, name="Triveni Admin", role="admin")
@@ -4372,6 +4637,7 @@ async def startup():
             await db.estimates.create_index("id", unique=True)
             await db.proforma_invoices.create_index("id", unique=True)
             await db.delivery_challans.create_index("id", unique=True)
+            await init_customer_portal_indexes(db)
         except Exception as _ie:
             logger.warning(f"Indexes init: {_ie}")
     except Exception as e:
@@ -4402,10 +4668,13 @@ api_router.include_router(make_tender_management_router(db, get_current_user, re
 api_router.include_router(make_document_library_router(db, get_current_user, require_admin, require_admin_or_manager, put_object, log_audit_entry))
 api_router.include_router(make_tender_calling_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry))
 api_router.include_router(make_accounting_reports_router(db, get_current_user, require_admin, require_admin_or_manager))
-api_router.include_router(make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager))
+api_router.include_router(make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry, prefix="/accounting/cash-bank"))
+api_router.include_router(make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry, prefix="/cash-bank"))
 api_router.include_router(make_task_chat_router(db, get_current_user, require_admin))
 api_router.include_router(make_service_workflow_router(db, get_current_user, require_admin))
-
+api_router.include_router(make_district_router(db, get_current_user, require_admin, log_audit_entry))
+api_router.include_router(make_expense_approval_router(db, get_current_user, require_admin, log_audit_entry))
+app.include_router(make_service_request_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit_entry, LOCAL_STORAGE_DIR))
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -4436,6 +4705,6 @@ if public_dir.exists():
             return FileResponse(str(target))
         index_file = public_dir / "index.html"
         if index_file.exists():
-            return FileResponse(str(index_file))
+            return FileResponse(str(index_file), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
         raise HTTPException(status_code=404, detail="SPA not found")
 

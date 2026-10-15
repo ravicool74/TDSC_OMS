@@ -48,8 +48,11 @@ export default function NewInvoice() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ type?: string; edit_id?: string }>();
-  const isPurchase = params?.type === 'purchase';
+  const initialType = params?.type || 'sale';
   const editId = params?.edit_id || null;
+
+  const [actualInvoiceType, setActualInvoiceType] = useState<string>(initialType);
+  const isPurchase = actualInvoiceType === 'purchase';
 
   const [paymentType, setPaymentType] = useState<'credit' | 'cash'>('credit');
   const [paymentMode, setPaymentMode] = useState<string>('cash');
@@ -87,6 +90,7 @@ export default function NewInvoice() {
         try {
           const ex = await api.get<any>(`/invoices/${editId}`);
           setInvoiceNo(ex.invoice_no || 'EDIT');
+          if (ex.invoice_type) setActualInvoiceType(ex.invoice_type);
           setPaymentType(ex.payment_type || 'credit');
           setPaymentMode(ex.payment_mode || 'cash');
           setPaidAmountInput(String(ex.paid_amount || ''));
@@ -109,17 +113,27 @@ export default function NewInvoice() {
         return;
       }
       try {
-        const next = await api.get<any>(`/invoices/next-no?invoice_type=${isPurchase ? 'purchase' : 'sale'}&date=${date}`);
+        const next = await api.get<any>(`/invoices/next-no?invoice_type=${actualInvoiceType}&date=${date}`);
         if (next?.next_no) {
           setInvoiceNo(`${next.next_no} (preview)`);
         } else {
-          setInvoiceNo(isPurchase ? 'PB-0001 (preview)' : 'TDSC/2026-27/000002 (preview)');
+          setInvoiceNo(
+            actualInvoiceType === 'purchase' ? 'PB-0001 (preview)' :
+            actualInvoiceType === 'sale_return' ? 'CN-0001 (preview)' :
+            actualInvoiceType === 'purchase_return' ? 'DN-0001 (preview)' :
+            'TDSC/2026-27/000002 (preview)'
+          );
         }
       } catch {
-        setInvoiceNo(isPurchase ? 'PB-0001 (preview)' : 'TDSC/2026-27/000002 (preview)');
+        setInvoiceNo(
+          actualInvoiceType === 'purchase' ? 'PB-0001 (preview)' :
+          actualInvoiceType === 'sale_return' ? 'CN-0001 (preview)' :
+          actualInvoiceType === 'purchase_return' ? 'DN-0001 (preview)' :
+          'TDSC/2026-27/000002 (preview)'
+        );
       }
     })();
-  }, [isPurchase, editId, date]);
+  }, [actualInvoiceType, editId, date]);
 
   const addItem = (i: PickedItem) => {
     setItems(p => [...p, {
@@ -180,7 +194,7 @@ export default function NewInvoice() {
     setBusy(true);
     try {
       const body = {
-        invoice_type: isPurchase ? 'purchase' : 'sale',
+        invoice_type: actualInvoiceType,
         invoice_no: invoiceNo && !invoiceNo.includes('preview') && invoiceNo !== 'AUTO' ? invoiceNo.trim() : undefined,
         payment_type: paymentType,
         payment_mode: paymentMode,
@@ -211,8 +225,8 @@ export default function NewInvoice() {
           } catch { attachErrors++; }
         }
       }
-      // Also create an Income record so it flows into dashboard/reports when it's a Sale
-      if (!editId && !isPurchase && totals.total > 0) {
+      // Also create an Income record so it flows into dashboard/reports when it's a regular Sale
+      if (!editId && actualInvoiceType === 'sale' && totals.total > 0) {
         try {
           await api.post('/income', {
             date, client_id: party.id, client_name: party.name, client_mobile: party.mobile || null,
@@ -225,7 +239,7 @@ export default function NewInvoice() {
       const suffix = attachErrors ? ` (${attachErrors} attachment upload failed)` : '';
       // Check if auto-tasks are enabled to show hint
       let autoHint = '';
-      if (!isPurchase) {
+      if (actualInvoiceType === 'sale') {
         try {
           const t = await api.get<{ enabled: boolean }>('/settings/auto-task-toggle');
           if (t?.enabled) autoHint = '\n\n✅ 2 tasks auto-created (Service + Follow-up). Check Tasks tab.';
@@ -244,6 +258,12 @@ export default function NewInvoice() {
     } finally { setBusy(false); }
   };
 
+  const headerTitle =
+    actualInvoiceType === 'purchase' ? 'Purchase Bill' :
+    actualInvoiceType === 'sale_return' ? 'Sale Return / Credit Note' :
+    actualInvoiceType === 'purchase_return' ? 'Purchase Return / Debit Note' :
+    'Sale Invoice';
+
   return (
     <View style={styles.root} testID="new-invoice">
       <SafeAreaView edges={['top']} style={{ backgroundColor: '#FFF' }}>
@@ -252,7 +272,7 @@ export default function NewInvoice() {
             <Ionicons name="arrow-back" size={20} color="#0F172A" />
           </Pressable>
           <View style={{ flex: 1, marginLeft: 6 }}>
-            <Text style={styles.headerTitle}>{isPurchase ? 'Purchase Bill' : 'Sale Invoice'}</Text>
+            <Text style={styles.headerTitle}>{headerTitle}</Text>
             <Text style={styles.headerSub}>{invoiceNo}</Text>
           </View>
           <View style={styles.segWrap}>

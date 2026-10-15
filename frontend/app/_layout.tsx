@@ -20,9 +20,24 @@ function AuthGate() {
   useEffect(() => {
     if (loading) return;
     const inAuth = segments[0] === 'login';
-    if (!user && !inAuth) router.replace('/login');
-    else if (user && inAuth) router.replace('/(tabs)/dashboard');
-    else if (user && segments.length === 0) router.replace('/(tabs)/dashboard');
+    const isCustomer = user?.role === 'customer';
+    if (!user && !inAuth) {
+      router.replace('/login');
+    } else if (user && inAuth) {
+      if (isCustomer) {
+        router.replace('/customer/dashboard' as any);
+      } else {
+        router.replace('/(tabs)/dashboard');
+      }
+    } else if (user && segments.length === 0) {
+      if (isCustomer) {
+        router.replace('/customer/dashboard' as any);
+      } else {
+        router.replace('/(tabs)/dashboard');
+      }
+    } else if (user && isCustomer && segments[0] === '(tabs)') {
+      router.replace('/customer/dashboard' as any);
+    }
   }, [user, loading, segments, router]);
 
   return (
@@ -30,6 +45,7 @@ function AuthGate() {
       <Stack.Screen name="index" />
       <Stack.Screen name="login" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="customer" />
     </Stack>
   );
 }

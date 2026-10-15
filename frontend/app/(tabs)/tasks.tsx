@@ -8,6 +8,7 @@ import { api } from '@/src/api';
 import { Card, Chip, EmptyState, ScreenLoader, StatusBadge, PrimaryButton, SecondaryButton } from '@/src/ui';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { canView, canWrite } from '@/src/rbac';
 
 const TASK_STATUSES = ['all', 'todo', 'doing', 'done'];
 const PAYMENT_STATUSES = ['all', 'pending_dues', 'cleared'];
@@ -22,10 +23,27 @@ export default function TasksScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
-  const canEdit = isAdmin || user?.role === 'manager';
+
+  const canViewPaymentFollowup = canView(user, 'task', 'payment_followup');
+  const canViewTaskFollowup = canView(user, 'task', 'task_followup');
+  const canWritePaymentFollowup = canWrite(user, 'task', 'payment_followup');
+  const canWriteTaskFollowup = canWrite(user, 'task', 'task_followup');
 
   // Two Main Parts: (i) Payment Follow-up & (ii) Task Follow-up
-  const [activeTab, setActiveTab] = useState<'payment_followup' | 'task_followup'>('payment_followup');
+  const defaultTab = canViewPaymentFollowup ? 'payment_followup' : (canViewTaskFollowup ? 'task_followup' : 'payment_followup');
+  const [activeTab, setActiveTab] = useState<'payment_followup' | 'task_followup'>(defaultTab);
+
+  React.useEffect(() => {
+    if (!canViewPaymentFollowup && canViewTaskFollowup && activeTab === 'payment_followup') {
+      setActiveTab('task_followup');
+    } else if (canViewPaymentFollowup && !canViewTaskFollowup && activeTab === 'task_followup') {
+      setActiveTab('payment_followup');
+    }
+  }, [canViewPaymentFollowup, canViewTaskFollowup]);
+
+  const canWriteCurrent = activeTab === 'payment_followup' ? canWritePaymentFollowup : canWriteTaskFollowup;
+  const canEdit = canWriteCurrent;
+
   const [tasks, setTasks] = useState<any[] | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [refreshing, setRefreshing] = useState(false);
@@ -102,7 +120,7 @@ export default function TasksScreen() {
 
   const toggleSelect = (id: string) => setSelected(p => ({ ...p, [id]: !p[id] }));
   const enterSelectMode = (initialId?: string) => {
-    if (!isAdmin) return;
+    if (!canWriteCurrent) return;
     setSelectMode(true);
     if (initialId) setSelected({ [initialId]: true });
   };
@@ -116,6 +134,10 @@ export default function TasksScreen() {
   };
 
   const bulkDelete = async () => {
+    if (!canWriteCurrent) {
+      notify('Permission Denied', 'Aapke pass bulk delete karne ka right nahi hai.');
+      return;
+    }
     const ids = Object.keys(selected).filter(k => selected[k]);
     if (ids.length === 0) return;
     const ok = await confirm('Delete Selected Tasks?', `${ids.length} task${ids.length > 1 ? 's' : ''} permanently delete kar diye jayenge. Kya aap sure hain?`, { confirmText: 'Delete All', destructive: true });
@@ -131,6 +153,10 @@ export default function TasksScreen() {
   };
 
   const handleBulkAction = async (action: 'move_stage' | 'assign' | 'set_priority', extra: any) => {
+    if (!canWriteCurrent) {
+      notify('Permission Denied', 'Aapke pass bulk action lene ka right nahi hai.');
+      return;
+    }
     const ids = Object.keys(selected).filter(k => selected[k]);
     if (ids.length === 0) return;
     setBusyBulk(true);
@@ -157,6 +183,10 @@ export default function TasksScreen() {
   };
 
   const deleteOne = async (id: string, taskNo: string) => {
+    if (!canWriteCurrent) {
+      notify('Permission Denied', 'Aapke pass task delete karne ka right nahi hai.');
+      return;
+    }
     const ok = await confirm('Delete Task?', `${taskNo} delete kar diya jayega. Yeh action undo nahi ho sakta.`, { confirmText: 'Delete', destructive: true });
     if (!ok) return;
     try { await api.del(`/tasks/${id}`); await load(); }
@@ -164,6 +194,10 @@ export default function TasksScreen() {
   };
 
   const openWorkflowConfig = async () => {
+    if (!canWriteTaskFollowup) {
+      notify('Permission Denied', 'Aapke pass service workflows configure karne ka right nahi hai.');
+      return;
+    }
     setWorkflowModal(true);
     setLoadingWorkflows(true);
     try {
@@ -222,6 +256,22 @@ export default function TasksScreen() {
     }
   };
 
+  if (!canViewPaymentFollowup && !canViewTaskFollowup) {
+    return (
+      <SafeAreaView edges={['top']} style={styles.root} testID="tasks-screen">
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: spacing.xl }}>
+          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.md }}>
+            <Ionicons name="lock-closed" size={36} color={colors.error} />
+          </View>
+          <Text style={[styles.h1, { fontSize: 20, textAlign: 'center' }]}>Tasks Access Restricted</Text>
+          <Text style={{ color: colors.muted, textAlign: 'center', marginTop: spacing.sm, maxWidth: 320, lineHeight: 20 }}>
+            Administrator ne aapke account ke liye Task module (Payment Follow-up aur Task Follow-up) view karne ki permission disable ki hui hai.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView edges={['top']} style={styles.root} testID="tasks-screen">
       {/* Top Header */}
@@ -244,31 +294,41 @@ export default function TasksScreen() {
               <Text style={styles.subTitle}>Follow-ups, Online Chat & Service Engine</Text>
             </View>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-              {isAdmin && activeTab === 'task_followup' ? (
+              <Pressable
+                testID="btn-customer-service-requests"
+                style={styles.customerQueueBtn}
+                onPress={() => router.push('/tasks/service-requests' as any)}
+              >
+                <Ionicons name="clipboard-outline" size={17} color="#FFF" />
+                <Text style={styles.customerQueueBtnText}>Customer Requests</Text>
+              </Pressable>
+              {canWriteTaskFollowup && activeTab === 'task_followup' ? (
                 <Pressable testID="btn-service-workflows" style={styles.workflowConfigBtn} onPress={openWorkflowConfig}>
                   <Ionicons name="git-network-outline" size={18} color="#FFF" />
                   <Text style={styles.workflowConfigBtnText}>Workflows</Text>
                 </Pressable>
               ) : null}
-              {isAdmin ? (
+              {canWriteCurrent ? (
                 <Pressable testID="enter-select" style={styles.iconBtn} onPress={() => enterSelectMode()} hitSlop={8}>
                   <Ionicons name="checkbox-outline" size={22} color={colors.brandPrimary} />
                 </Pressable>
               ) : null}
-              <Pressable
-                testID="add-task"
-                style={styles.addBtn}
-                onPress={() => router.push({ pathname: '/tasks/new', params: { category: activeTab } } as any)}
-              >
-                <Ionicons name="add" size={24} color={colors.onBrandPrimary} />
-              </Pressable>
+              {canWriteCurrent ? (
+                <Pressable
+                  testID="add-task"
+                  style={styles.addBtn}
+                  onPress={() => router.push({ pathname: '/tasks/new', params: { category: activeTab } } as any)}
+                >
+                  <Ionicons name="add" size={24} color={colors.onBrandPrimary} />
+                </Pressable>
+              ) : null}
             </View>
           </>
         )}
       </View>
 
       {/* Two-Part Menu Division Segment Control */}
-      {!selectMode && (
+      {!selectMode && canViewPaymentFollowup && canViewTaskFollowup && (
         <View style={styles.segmentedContainer}>
           <Pressable
             testID="tab-payment-followup"
@@ -345,8 +405,16 @@ export default function TasksScreen() {
               ? 'Invoices with pending balance and payment follow-ups will appear here.'
               : 'Create service operational workflow tasks or configure service stages.'
           }
-          actionLabel={activeTab === 'payment_followup' ? 'New Payment Follow-up' : 'Create Task'}
-          onAction={() => router.push({ pathname: '/tasks/new', params: { category: activeTab } } as any)}
+          actionLabel={
+            activeTab === 'payment_followup'
+              ? (canWritePaymentFollowup ? 'New Payment Follow-up' : undefined)
+              : (canWriteTaskFollowup ? 'Create Task' : undefined)
+          }
+          onAction={
+            activeTab === 'payment_followup'
+              ? (canWritePaymentFollowup ? () => router.push({ pathname: '/tasks/new', params: { category: activeTab } } as any) : undefined)
+              : (canWriteTaskFollowup ? () => router.push({ pathname: '/tasks/new', params: { category: activeTab } } as any) : undefined)
+          }
         />
       ) : (
         <FlatList
@@ -508,7 +576,7 @@ export default function TasksScreen() {
                           </Pressable>
                         ) : null}
 
-                        {isAdmin ? (
+                        {canWriteCurrent ? (
                           <Pressable
                             testID={`del-${item.id}`}
                             onPress={(e) => { e?.stopPropagation?.(); deleteOne(item.id, item.task_no || item.task_id); }}
@@ -772,6 +840,8 @@ const styles = StyleSheet.create({
   iconBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' },
   workflowConfigBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#1E293B', paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.pill },
   workflowConfigBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12 },
+  customerQueueBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#059669', paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.pill },
+  customerQueueBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12 },
   selBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: '#EFF6FF' },
   selBtnTxt: { color: colors.brandPrimary, fontWeight: '800', fontSize: 12 },
 

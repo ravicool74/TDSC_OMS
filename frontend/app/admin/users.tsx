@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, Modal, KeyboardAvoidingView, Platform, ScrollView, Alert, TextInput } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
@@ -11,6 +11,7 @@ import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput } from '@/src/forms';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { EmployeeSearchModal, PickedEmployee } from '@/src/EmployeeSearchModal';
 
 type UserForm = {
   user_id?: string;
@@ -24,6 +25,11 @@ type UserForm = {
   branch_id: string;
   post_id: string;
   role_id: string;
+  employee_id?: string;
+  employee_code?: string;
+  pan?: string;
+  aadhar?: string;
+  date_of_joining?: string;
 };
 
 const emptyUser: UserForm = {
@@ -37,9 +43,15 @@ const emptyUser: UserForm = {
   branch_id: '',
   post_id: '',
   role_id: 'employee',
+  employee_id: '',
+  employee_code: '',
+  pan: '',
+  aadhar: '',
+  date_of_joining: '',
 };
 
 export default function UserManagementScreen() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'super_admin';
@@ -54,6 +66,8 @@ export default function UserManagementScreen() {
   const [showForm, setShowForm] = useState(false);
   const [selectedUserForDocs, setSelectedUserForDocs] = useState<any | null>(null);
   const [form, setForm] = useState<UserForm>(emptyUser);
+  const [showEmployeeSearch, setShowEmployeeSearch] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<PickedEmployee | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -88,8 +102,60 @@ export default function UserManagementScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  const handlePickEmployee = (emp: PickedEmployee) => {
+    setSelectedEmployee(emp);
+
+    // Auto match branch
+    let matchedBranchId = form.branch_id;
+    if (emp.posting_branch || emp.office_id) {
+      const bFound = branches.find(b =>
+        (emp.office_id && (b.branch_id === emp.office_id || b.id === emp.office_id)) ||
+        (emp.posting_branch && b.name && b.name.toLowerCase().includes(emp.posting_branch.toLowerCase())) ||
+        (emp.posting_branch && b.name && emp.posting_branch.toLowerCase().includes(b.name.toLowerCase()))
+      );
+      if (bFound) matchedBranchId = bFound.branch_id;
+    }
+
+    // Auto match post designation
+    let matchedPostId = form.post_id;
+    if (emp.designation) {
+      const pFound = posts.find(p =>
+        (p.title && p.title.toLowerCase().includes(emp.designation!.toLowerCase())) ||
+        (p.title && emp.designation!.toLowerCase().includes(p.title.toLowerCase()))
+      );
+      if (pFound) matchedPostId = pFound.post_id;
+    }
+
+    // Auto generate suggested username from employee code or email prefix
+    let suggestedUsername = form.username;
+    if (!suggestedUsername) {
+      if (emp.employee_code) {
+        suggestedUsername = emp.employee_code.toLowerCase().replace(/[^a-z0-9]/g, '');
+      } else if (emp.email) {
+        suggestedUsername = emp.email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '');
+      }
+    }
+
+    setForm(p => ({
+      ...p,
+      name: emp.name || p.name,
+      email: emp.email || p.email,
+      mobile: emp.mobile || p.mobile,
+      address: emp.address || p.address,
+      pan: emp.pan || p.pan || '',
+      aadhar: emp.aadhar || p.aadhar || '',
+      date_of_joining: emp.date_of_joining || p.date_of_joining || '',
+      employee_id: emp.id,
+      employee_code: emp.employee_code || emp.id,
+      branch_id: matchedBranchId,
+      post_id: matchedPostId,
+      username: suggestedUsername,
+    }));
+  };
+
   const openNew = () => {
     setForm(emptyUser);
+    setSelectedEmployee(null);
     setErr(null);
     setShowForm(true);
   };
@@ -100,6 +166,16 @@ export default function UserManagementScreen() {
       Alert.alert('Access Denied', 'Administrators cannot modify a Super Admin profile.');
       return;
     }
+    setSelectedEmployee(u.employee_id ? {
+      id: u.employee_id,
+      employee_code: u.employee_code,
+      name: u.name,
+      email: u.email,
+      mobile: u.mobile,
+      pan: u.pan,
+      aadhar: u.aadhar,
+      date_of_joining: u.date_of_joining,
+    } : null);
     setForm({
       user_id: u.user_id,
       name: u.name,
@@ -112,6 +188,11 @@ export default function UserManagementScreen() {
       branch_id: u.branch_id || '',
       post_id: u.post_id || '',
       role_id: u.role_id || u.role || 'employee',
+      employee_id: u.employee_id || '',
+      employee_code: u.employee_code || '',
+      pan: u.pan || '',
+      aadhar: u.aadhar || '',
+      date_of_joining: u.date_of_joining || '',
     });
     setErr(null);
     setShowForm(true);
@@ -235,6 +316,11 @@ export default function UserManagementScreen() {
         branch_id: form.branch_id || undefined,
         post_id: form.post_id || undefined,
         role_id: form.role_id || 'employee',
+        employee_id: form.employee_id || undefined,
+        employee_code: form.employee_code || undefined,
+        pan: form.pan?.trim().toUpperCase() || undefined,
+        aadhar: form.aadhar?.trim() || undefined,
+        date_of_joining: form.date_of_joining?.trim() || undefined,
       };
       if (form.password) payload.password = form.password;
 
@@ -446,9 +532,20 @@ export default function UserManagementScreen() {
                     {item.role_name || item.role}
                   </Text>
                 </View>
+                {item.employee_code ? (
+                  <View style={[styles.mapPill, { backgroundColor: '#EEF2FF', borderWidth: 1, borderColor: '#C7D2FE' }]}>
+                    <Ionicons name="id-card-outline" size={12} color="#4338CA" />
+                    <Text style={[styles.mapPillText, { color: '#4338CA', fontWeight: '800' }]}>{item.employee_code}</Text>
+                  </View>
+                ) : null}
+                {item.pan ? (
+                  <View style={[styles.mapPill, { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0' }]}>
+                    <Text style={[styles.mapPillText, { color: '#15803D', fontWeight: '800' }]}>PAN: {item.pan}</Text>
+                  </View>
+                ) : null}
               </View>
 
-              {/* Documents Button */}
+              {/* Documents & Rights Buttons */}
               <View style={styles.cardFooter}>
                 <Pressable onPress={() => setSelectedUserForDocs(item)} style={styles.docButton}>
                   <Ionicons name="document-attach" size={16} color={colors.brandPrimary} />
@@ -456,6 +553,18 @@ export default function UserManagementScreen() {
                     Documents ({(item.documents || []).length})
                   </Text>
                 </Pressable>
+
+                <Pressable
+                  onPress={() => router.push({ pathname: '/admin/roles', params: { view: 'users', user_id: item.user_id } } as any)}
+                  style={[styles.docButton, { borderColor: colors.brandPrimary + '40', backgroundColor: colors.brandPrimary + '10' }]}
+                  testID={`btn-user-rights-${item.user_id}`}
+                >
+                  <Ionicons name="shield-checkmark-outline" size={15} color={colors.brandPrimary} />
+                  <Text style={[styles.docButtonText, { color: colors.brandPrimary, fontWeight: '700' }]}>
+                    Rights & Menus
+                  </Text>
+                </Pressable>
+
                 {item.mobile ? (
                   <Text style={styles.mobileText}><Ionicons name="call-outline" size={13} color={colors.muted} /> {item.mobile}</Text>
                 ) : null}
@@ -618,12 +727,121 @@ export default function UserManagementScreen() {
             <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: Math.max(insets.bottom, spacing.xl) }}>
               {err ? <Text style={styles.errorText}>{err}</Text> : null}
 
+              {/* Select Employee from Staff Directory Banner */}
+              {!form.user_id && (
+                <Pressable
+                  testID="btn-open-employee-search"
+                  onPress={() => setShowEmployeeSearch(true)}
+                  style={styles.selectEmployeeBanner}
+                >
+                  <View style={styles.selectEmployeeIconWrap}>
+                    <Ionicons name="person-search" size={20} color="#FFF" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.selectEmployeeBannerTitle}>
+                      {selectedEmployee ? 'Employee Profile Linked' : 'Select Employee from Staff Directory'}
+                    </Text>
+                    <Text style={styles.selectEmployeeBannerSub}>
+                      {selectedEmployee
+                        ? `${selectedEmployee.name} (${selectedEmployee.employee_code || selectedEmployee.id}) • Tap to Change`
+                        : 'Search by PAN, Aadhar, Mobile No., or Name to auto-fill details'}
+                    </Text>
+                  </View>
+                  <View style={styles.selectEmployeeArrowBtn}>
+                    <Ionicons
+                      name={selectedEmployee ? "checkmark-circle" : "search"}
+                      size={20}
+                      color={selectedEmployee ? colors.success : colors.brandPrimary}
+                    />
+                  </View>
+                </Pressable>
+              )}
+
+              {/* Mapped Employee Info Card */}
+              {selectedEmployee ? (
+                <View style={styles.selectedEmpCard}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="shield-checkmark" size={16} color={colors.brandPrimary} />
+                      <Text style={styles.selectedEmpHeading}>Staff Record: {selectedEmployee.name}</Text>
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        setSelectedEmployee(null);
+                        setForm(p => ({
+                          ...p,
+                          employee_id: undefined,
+                          employee_code: undefined,
+                          pan: '',
+                          aadhar: '',
+                          date_of_joining: '',
+                        }));
+                      }}
+                      hitSlop={8}
+                    >
+                      <Text style={styles.clearEmpBtnText}>Unlink / Clear</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.empInfoGrid}>
+                    <View style={styles.empInfoItem}>
+                      <Text style={styles.empInfoLabel}>Employee ID / Code</Text>
+                      <Text style={styles.empInfoVal}>{selectedEmployee.employee_code || selectedEmployee.id}</Text>
+                    </View>
+                    {selectedEmployee.pan ? (
+                      <View style={styles.empInfoItem}>
+                        <Text style={styles.empInfoLabel}>PAN No.</Text>
+                        <Text style={[styles.empInfoVal, { color: '#4338CA' }]}>{selectedEmployee.pan}</Text>
+                      </View>
+                    ) : null}
+                    {selectedEmployee.aadhar ? (
+                      <View style={styles.empInfoItem}>
+                        <Text style={styles.empInfoLabel}>Aadhar No.</Text>
+                        <Text style={[styles.empInfoVal, { color: '#BE185D' }]}>{selectedEmployee.aadhar}</Text>
+                      </View>
+                    ) : null}
+                    {selectedEmployee.date_of_joining ? (
+                      <View style={styles.empInfoItem}>
+                        <Text style={styles.empInfoLabel}>Date of Joining</Text>
+                        <Text style={[styles.empInfoVal, { color: '#15803D' }]}>{selectedEmployee.date_of_joining}</Text>
+                      </View>
+                    ) : null}
+                    {selectedEmployee.posting_branch ? (
+                      <View style={styles.empInfoItem}>
+                        <Text style={styles.empInfoLabel}>Posting Branch</Text>
+                        <Text style={styles.empInfoVal}>{selectedEmployee.posting_branch}</Text>
+                      </View>
+                    ) : null}
+                    {selectedEmployee.designation ? (
+                      <View style={styles.empInfoItem}>
+                        <Text style={styles.empInfoLabel}>Designation</Text>
+                        <Text style={styles.empInfoVal}>{selectedEmployee.designation}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.empNoteText}>
+                    ✓ Staff details loaded. Please assign Username/User ID, Password, and Role below.
+                  </Text>
+                </View>
+              ) : null}
+
               <FormInput label="Full Name *" value={form.name} onChangeText={t => setForm(p => ({ ...p, name: t }))} placeholder="Employee / User Full Name" />
               <FormInput label="Email ID *" value={form.email} onChangeText={t => setForm(p => ({ ...p, email: t }))} keyboardType="email-address" placeholder="user@triveni.com" />
-              <FormInput label="Username" value={form.username} onChangeText={t => setForm(p => ({ ...p, username: t }))} placeholder="Unique username" />
+              <FormInput label="Username / User ID" value={form.username} onChangeText={t => setForm(p => ({ ...p, username: t }))} placeholder="Unique username or user ID (optional)" />
               <FormInput label={form.user_id ? "Change Password (optional)" : "Password *"} value={form.password} onChangeText={t => setForm(p => ({ ...p, password: t }))} secureTextEntry placeholder="••••••••" />
               <FormInput label="Mobile Number" value={form.mobile} onChangeText={t => setForm(p => ({ ...p, mobile: t }))} keyboardType="phone-pad" placeholder="10-digit mobile" />
               <FormInput label="Address" value={form.address} onChangeText={t => setForm(p => ({ ...p, address: t }))} placeholder="Residential address" />
+
+              {/* Extra Employee Attributes */}
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <FormInput label="PAN Card No." value={form.pan || ''} onChangeText={t => setForm(p => ({ ...p, pan: t.toUpperCase() }))} placeholder="AAAAA0000A" autoCapitalize="characters" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <FormInput label="Aadhar No." value={form.aadhar || ''} onChangeText={t => setForm(p => ({ ...p, aadhar: t }))} placeholder="XXXX XXXX XXXX" keyboardType="number-pad" />
+                </View>
+              </View>
+              <FormInput label="Date of Joining" value={form.date_of_joining || ''} onChangeText={t => setForm(p => ({ ...p, date_of_joining: t }))} placeholder="DD-MM-YYYY or YYYY-MM-DD" />
 
               {/* User Mapping Selectors */}
               <View style={styles.mappingSection}>
@@ -678,6 +896,28 @@ export default function UserManagementScreen() {
                     </Pressable>
                   ))}
                 </ScrollView>
+
+                {/* Role Info Preview */}
+                {(() => {
+                  const currentSelectedRole = roles.find(r => r.role_id === form.role_id);
+                  if (!currentSelectedRole) return null;
+                  const menuCount = (currentSelectedRole.allowed_menus || []).length;
+                  return (
+                    <View style={{ marginTop: 8, padding: 10, backgroundColor: '#F8FAFC', borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', gap: 4 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.onSurface }}>
+                          {currentSelectedRole.name} Authority
+                        </Text>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.brandPrimary }}>
+                          {currentSelectedRole.role_id === 'super_admin' ? 'All Menus Visible' : `${menuCount} Menus Allowed`}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 11, color: colors.muted }}>
+                        {currentSelectedRole.description || 'Organizational role with configured access'}
+                      </Text>
+                    </View>
+                  );
+                })()}
               </View>
 
               <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg }}>
@@ -739,6 +979,14 @@ export default function UserManagementScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Employee Search & Selection Modal */}
+      <EmployeeSearchModal
+        visible={showEmployeeSearch}
+        onClose={() => setShowEmployeeSearch(false)}
+        onPick={handlePickEmployee}
+        title="Select Employee"
+      />
     </View>
   );
 }
@@ -803,4 +1051,89 @@ const styles = StyleSheet.create({
   modalOptionCardActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandPrimary + '10' },
   modalOptionText: { fontSize: font.base, fontWeight: '700', color: colors.onSurface },
   modalOptionTextActive: { color: colors.brandPrimary },
+
+  // Select Employee Banner & Card
+  selectEmployeeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderColor: '#93C5FD',
+    borderRadius: radius.md,
+    padding: 12,
+    marginBottom: spacing.xs,
+  },
+  selectEmployeeIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.brandPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectEmployeeBannerTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#1E3A8A',
+  },
+  selectEmployeeBannerSub: {
+    fontSize: 11,
+    color: '#2563EB',
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  selectEmployeeArrowBtn: {
+    padding: 4,
+  },
+  selectedEmpCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    padding: 12,
+    gap: 10,
+    marginBottom: spacing.xs,
+  },
+  selectedEmpHeading: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  clearEmpBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.error,
+  },
+  empInfoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  empInfoItem: {
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  empInfoLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: colors.muted,
+    textTransform: 'uppercase',
+  },
+  empInfoVal: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.onSurface,
+    marginTop: 1,
+  },
+  empNoteText: {
+    fontSize: 11,
+    color: '#16A34A',
+    fontWeight: '600',
+    lineHeight: 15,
+  },
 });

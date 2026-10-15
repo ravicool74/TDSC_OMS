@@ -146,7 +146,7 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         if status: query["status"] = status
         if q:
             regex = {"$regex": q.strip(), "$options": "i"}
-            query["$or"] = [{"estimate_no": regex}, {"customer_name": regex}, {"customer_code": regex}]
+            query["$or"] = [{"estimate_no": regex}, {"customer_name": regex}, {"customer_code": regex}, {"customer_mobile": regex}]
         docs = await db.estimates.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
         return [Estimate(**d) for d in docs]
 
@@ -250,6 +250,51 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         await log_audit_entry(db, current, "estimates", "convert_to_invoice", est.get("estimate_no"), est, inv_doc)
         return {"ok": True, "invoice_id": inv_doc["id"], "invoice_number": inv_no}
 
+    @router.get("/estimates/{eid}", response_model=Estimate)
+    async def get_estimate(eid: str, current: any = Depends(get_current_user)):
+        est = await db.estimates.find_one({"$or": [{"id": eid}, {"estimate_no": eid}]}, {"_id": 0})
+        if not est:
+            raise HTTPException(status_code=404, detail="Estimate not found")
+        return Estimate(**est)
+
+    @router.put("/estimates/{eid}", response_model=Estimate)
+    @router.patch("/estimates/{eid}", response_model=Estimate)
+    async def update_estimate(eid: str, payload: EstimateInput, current: any = Depends(require_admin_or_manager)):
+        est = await db.estimates.find_one({"$or": [{"id": eid}, {"estimate_no": eid}]})
+        if not est:
+            raise HTTPException(status_code=404, detail="Estimate not found")
+        cust = await db.customers.find_one({"$or": [{"id": payload.customer_id}, {"customer_code": payload.customer_id}]})
+        items, subtotal, discount, tax, grand = compute_totals(payload.items)
+        now = now_utc()
+        upd = {
+            "date": payload.date,
+            "customer_id": cust.get("id") if cust else payload.customer_id,
+            "customer_code": cust.get("customer_code") if cust else est.get("customer_code"),
+            "customer_name": cust.get("name") if cust else est.get("customer_name"),
+            "customer_mobile": cust.get("mobile") if cust else est.get("customer_mobile"),
+            "customer_address": cust.get("address") if cust else est.get("customer_address"),
+            "items": items,
+            "subtotal": subtotal,
+            "total_discount": discount,
+            "total_tax": tax,
+            "grand_total": grand,
+            "status": payload.status or est.get("status", "draft"),
+            "notes": payload.notes,
+            "updated_at": now,
+        }
+        await db.estimates.update_one({"id": est["id"]}, {"$set": upd})
+        doc = await db.estimates.find_one({"id": est["id"]}, {"_id": 0})
+        await log_audit_entry(db, current, "estimates", "update", est.get("estimate_no"), est, doc)
+        return Estimate(**doc)
+
+    @router.delete("/estimates/{eid}")
+    async def delete_estimate(eid: str, current: any = Depends(require_admin_or_manager)):
+        res = await db.estimates.delete_one({"$or": [{"id": eid}, {"estimate_no": eid}]})
+        if res.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Estimate not found")
+        await log_audit_entry(db, current, "estimates", "delete", eid, None, {"deleted": True})
+        return {"ok": True, "deleted": res.deleted_count}
+
     # ====== PROFORMA INVOICES ======
     @router.get("/proforma", response_model=List[ProformaInvoice])
     async def list_proforma(
@@ -259,7 +304,7 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         query = {}
         if q:
             regex = {"$regex": q.strip(), "$options": "i"}
-            query["$or"] = [{"proforma_no": regex}, {"customer_name": regex}]
+            query["$or"] = [{"proforma_no": regex}, {"customer_name": regex}, {"customer_code": regex}, {"customer_mobile": regex}]
         docs = await db.proforma_invoices.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
         return [ProformaInvoice(**d) for d in docs]
 
@@ -363,12 +408,68 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         await log_audit_entry(db, current, "proforma", "convert_to_invoice", pi.get("proforma_no"), pi, inv_doc)
         return {"ok": True, "invoice_id": inv_doc["id"], "invoice_number": inv_no}
 
+    @router.get("/proforma/{pid}", response_model=ProformaInvoice)
+    async def get_proforma(pid: str, current: any = Depends(get_current_user)):
+        pi = await db.proforma_invoices.find_one({"$or": [{"id": pid}, {"proforma_no": pid}]}, {"_id": 0})
+        if not pi:
+            raise HTTPException(status_code=404, detail="Proforma not found")
+        return ProformaInvoice(**pi)
+
+    @router.put("/proforma/{pid}", response_model=ProformaInvoice)
+    @router.patch("/proforma/{pid}", response_model=ProformaInvoice)
+    async def update_proforma(pid: str, payload: ProformaInput, current: any = Depends(require_admin_or_manager)):
+        pi = await db.proforma_invoices.find_one({"$or": [{"id": pid}, {"proforma_no": pid}]})
+        if not pi:
+            raise HTTPException(status_code=404, detail="Proforma not found")
+        cust = await db.customers.find_one({"$or": [{"id": payload.customer_id}, {"customer_code": payload.customer_id}]})
+        items, subtotal, discount, tax, grand = compute_totals(payload.items)
+        now = now_utc()
+        upd = {
+            "date": payload.date,
+            "customer_id": cust.get("id") if cust else payload.customer_id,
+            "customer_code": cust.get("customer_code") if cust else pi.get("customer_code"),
+            "customer_name": cust.get("name") if cust else pi.get("customer_name"),
+            "customer_mobile": cust.get("mobile") if cust else pi.get("customer_mobile"),
+            "customer_address": cust.get("address") if cust else pi.get("customer_address"),
+            "items": items,
+            "subtotal": subtotal,
+            "total_discount": discount,
+            "total_tax": tax,
+            "grand_total": grand,
+            "notes": payload.notes,
+            "updated_at": now,
+        }
+        await db.proforma_invoices.update_one({"id": pi["id"]}, {"$set": upd})
+        doc = await db.proforma_invoices.find_one({"id": pi["id"]}, {"_id": 0})
+        await log_audit_entry(db, current, "proforma", "update", pi.get("proforma_no"), pi, doc)
+        return ProformaInvoice(**doc)
+
+    @router.delete("/proforma/{pid}")
+    async def delete_proforma(pid: str, current: any = Depends(require_admin_or_manager)):
+        res = await db.proforma_invoices.delete_one({"$or": [{"id": pid}, {"proforma_no": pid}]})
+        if res.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Proforma not found")
+        await log_audit_entry(db, current, "proforma", "delete", pid, None, {"deleted": True})
+        return {"ok": True, "deleted": res.deleted_count}
+
     # ====== DELIVERY CHALLANS ======
+    @router.get("/delivery-challans", response_model=List[DeliveryChallan])
     @router.get("/challans", response_model=List[DeliveryChallan])
-    async def list_challans(current: any = Depends(get_current_user)):
-        docs = await db.delivery_challans.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    async def list_challans(q: Optional[str] = Query(None), current: any = Depends(get_current_user)):
+        query = {}
+        if q:
+            regex = {"$regex": q.strip(), "$options": "i"}
+            query["$or"] = [
+                {"challan_no": regex},
+                {"customer_name": regex},
+                {"vehicle_no": regex},
+                {"dispatch_through": regex},
+                {"notes": regex}
+            ]
+        docs = await db.delivery_challans.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
         return [DeliveryChallan(**d) for d in docs]
 
+    @router.post("/delivery-challans", response_model=DeliveryChallan)
     @router.post("/challans", response_model=DeliveryChallan)
     async def create_challan(payload: DeliveryChallanInput, current: any = Depends(get_current_user)):
         cust = await db.customers.find_one({"$or": [{"id": payload.customer_id}, {"customer_code": payload.customer_id}]})
@@ -400,5 +501,49 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         await db.delivery_challans.insert_one(doc)
         await log_audit_entry(db, current, "challans", "create", dc_no, None, doc)
         return DeliveryChallan(**doc)
+
+    @router.get("/delivery-challans/{cid}", response_model=DeliveryChallan)
+    @router.get("/challans/{cid}", response_model=DeliveryChallan)
+    async def get_challan(cid: str, current: any = Depends(get_current_user)):
+        c = await db.delivery_challans.find_one({"$or": [{"id": cid}, {"challan_no": cid}]}, {"_id": 0})
+        if not c:
+            raise HTTPException(status_code=404, detail="Delivery Challan not found")
+        return DeliveryChallan(**c)
+
+    @router.put("/delivery-challans/{cid}", response_model=DeliveryChallan)
+    @router.patch("/delivery-challans/{cid}", response_model=DeliveryChallan)
+    @router.put("/challans/{cid}", response_model=DeliveryChallan)
+    @router.patch("/challans/{cid}", response_model=DeliveryChallan)
+    async def update_challan(cid: str, payload: DeliveryChallanInput, current: any = Depends(require_admin_or_manager)):
+        c = await db.delivery_challans.find_one({"$or": [{"id": cid}, {"challan_no": cid}]})
+        if not c:
+            raise HTTPException(status_code=404, detail="Delivery Challan not found")
+        cust = await db.customers.find_one({"$or": [{"id": payload.customer_id}, {"customer_code": payload.customer_id}]})
+        items, _, _, _, _ = compute_totals(payload.items)
+        now = now_utc()
+        upd = {
+            "date": payload.date,
+            "customer_id": cust.get("id") if cust else payload.customer_id,
+            "customer_name": cust.get("name") if cust else c.get("customer_name"),
+            "invoice_id": payload.invoice_id or c.get("invoice_id"),
+            "vehicle_no": payload.vehicle_no,
+            "dispatch_through": payload.dispatch_through,
+            "items": items,
+            "notes": payload.notes,
+            "updated_at": now,
+        }
+        await db.delivery_challans.update_one({"id": c["id"]}, {"$set": upd})
+        doc = await db.delivery_challans.find_one({"id": c["id"]}, {"_id": 0})
+        await log_audit_entry(db, current, "challans", "update", c.get("challan_no"), c, doc)
+        return DeliveryChallan(**doc)
+
+    @router.delete("/delivery-challans/{cid}")
+    @router.delete("/challans/{cid}")
+    async def delete_challan(cid: str, current: any = Depends(require_admin_or_manager)):
+        res = await db.delivery_challans.delete_one({"$or": [{"id": cid}, {"challan_no": cid}]})
+        if res.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Delivery Challan not found")
+        await log_audit_entry(db, current, "challans", "delete", cid, None, {"deleted": True})
+        return {"ok": True, "deleted": res.deleted_count}
 
     return router

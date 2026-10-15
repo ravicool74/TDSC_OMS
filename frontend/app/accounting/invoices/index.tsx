@@ -15,9 +15,16 @@ export default function InvoicesList() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const params = useLocalSearchParams<{ type?: string }>();
-  const kind = params?.type === 'purchase' ? 'purchase' : 'sale';
+  const kind = params?.type || 'sale';
   const [list, setList] = useState<any[] | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  const screenTitle = useMemo(() => {
+    if (kind === 'purchase') return 'Purchase Bills';
+    if (kind === 'sale_return') return 'All Sale Return / Credit Notes';
+    if (kind === 'purchase_return') return 'Purchase Returns / Debit Notes';
+    return 'Sale Invoices';
+  }, [kind]);
 
   const load = useCallback(async () => {
     try { setList(await api.get<any[]>(`/invoices?invoice_type=${kind}`)); } catch { setList([]); }
@@ -32,10 +39,10 @@ export default function InvoicesList() {
     } catch (e: any) { notify('Failed', e?.message || 'Unable to open PDF'); }
   };
   const edit = (inv: any) => {
-    router.push({ pathname: '/accounting/invoices/new', params: { edit_id: inv.id, type: inv.invoice_type } } as any);
+    router.push({ pathname: '/accounting/invoices/new', params: { edit_id: inv.id, type: inv.invoice_type || kind } } as any);
   };
   const remove = async (inv: any) => {
-    const ok = await confirm('Delete Invoice?', `Delete ${inv.invoice_no}? This cannot be undone.`, { confirmText: 'Delete', destructive: true });
+    const ok = await confirm('Delete Voucher?', `Delete ${inv.invoice_no}? This cannot be undone.`, { confirmText: 'Delete', destructive: true });
     if (!ok) return;
     try { await api.del(`/invoices/${inv.id}`); await load(); }
     catch (e: any) { notify('Failed', e?.message || 'Try again'); }
@@ -75,10 +82,10 @@ export default function InvoicesList() {
   return (
     <View style={{ flex: 1, backgroundColor: '#F4F6FB' }}>
       <ScreenHeader
-        title={kind === 'purchase' ? 'Purchase Bills' : 'Sale Invoices'}
+        title={screenTitle}
         right={(
           <Pressable
-            onPress={() => router.push({ pathname: '/accounting/invoices/new', params: kind === 'purchase' ? { type: 'purchase' } : undefined } as any)}
+            onPress={() => router.push({ pathname: '/accounting/invoices/new', params: { type: kind } } as any)}
             testID="new-invoice-btn"
             style={styles.newBtn}
           >
@@ -137,8 +144,10 @@ export default function InvoicesList() {
       ) : list.length === 0 ? (
         <View style={{ padding: 32, alignItems: 'center' }}>
           <Ionicons name="receipt-outline" size={48} color={colors.muted} />
-          <Text style={{ color: colors.muted, marginTop: 8 }}>No {kind === 'purchase' ? 'bills' : 'invoices'} yet</Text>
-          <Pressable onPress={() => router.push('/accounting/invoices/new' as any)} style={[styles.newBtn, { marginTop: 12, paddingHorizontal: 20, borderRadius: radius.md, width: undefined, height: undefined }]}>
+          <Text style={{ color: colors.muted, marginTop: 8 }}>
+            No {kind === 'purchase' ? 'bills' : kind === 'sale_return' ? 'credit notes' : kind === 'purchase_return' ? 'debit notes' : 'invoices'} yet
+          </Text>
+          <Pressable onPress={() => router.push({ pathname: '/accounting/invoices/new', params: { type: kind } } as any)} style={[styles.newBtn, { marginTop: 12, paddingHorizontal: 20, borderRadius: radius.md, width: undefined, height: undefined }]}>
             <Text style={{ color: '#FFF', fontWeight: '800', padding: 10 }}>+ Create First</Text>
           </Pressable>
         </View>
@@ -217,18 +226,14 @@ export default function InvoicesList() {
                   <Ionicons name="print" size={16} color={colors.brandPrimary} />
                   <Text style={[styles.actTxt, { color: colors.brandPrimary }]}>Print</Text>
                 </Pressable>
-                {isAdmin ? (
-                  <>
-                    <Pressable onPress={() => edit(item)} testID={`edit-${item.id}`} style={[styles.actBtn, { backgroundColor: '#FEF3C7' }]}>
-                      <Ionicons name="create-outline" size={16} color="#B45309" />
-                      <Text style={[styles.actTxt, { color: '#B45309' }]}>Edit</Text>
-                    </Pressable>
-                    <Pressable onPress={() => remove(item)} testID={`del-${item.id}`} style={[styles.actBtn, { backgroundColor: '#FEE2E2' }]}>
-                      <Ionicons name="trash-outline" size={16} color="#DC2626" />
-                      <Text style={[styles.actTxt, { color: '#DC2626' }]}>Delete</Text>
-                    </Pressable>
-                  </>
-                ) : null}
+                <Pressable onPress={() => edit(item)} testID={`edit-${item.id}`} style={[styles.actBtn, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="create-outline" size={16} color="#B45309" />
+                  <Text style={[styles.actTxt, { color: '#B45309' }]}>Edit</Text>
+                </Pressable>
+                <Pressable onPress={() => remove(item)} testID={`del-${item.id}`} style={[styles.actBtn, { backgroundColor: '#FEE2E2' }]}>
+                  <Ionicons name="trash-outline" size={16} color="#DC2626" />
+                  <Text style={[styles.actTxt, { color: '#DC2626' }]}>Delete</Text>
+                </Pressable>
               </View>
             </View>
           )}

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
@@ -24,13 +24,57 @@ interface ItemRow {
 
 export default function NewEstimate() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ edit_id?: string }>();
+  const editId = params?.edit_id || null;
+
   const [date, setDate] = useState(today());
   const [party, setParty] = useState<PickedParty | null>(null);
   const [showPartyPick, setShowPartyPick] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [showItemPick, setShowItemPick] = useState(false);
   const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState('draft');
   const [saving, setSaving] = useState(false);
+  const [loadingExisting, setLoadingExisting] = useState(false);
+  const [estimateNo, setEstimateNo] = useState('');
+
+  useEffect(() => {
+    if (!editId) return;
+    (async () => {
+      setLoadingExisting(true);
+      try {
+        const ex = await api.get<any>(`/accounting/estimates/${editId}`);
+        if (ex) {
+          setEstimateNo(ex.estimate_no || '');
+          setDate(ex.date || today());
+          setParty({
+            id: ex.customer_id,
+            name: ex.customer_name,
+            mobile: ex.customer_mobile || '',
+            pan: '',
+            aadhar: '',
+            gst_no: null,
+            customer_code: ex.customer_code || null,
+          } as any);
+          setItems((ex.items || []).map((it: any, idx: number) => ({
+            key: `${it.item_id || idx}_${idx}`,
+            item_id: it.item_id,
+            name: it.name || '',
+            qty: String(it.qty ?? 1),
+            rate: String(it.rate ?? 0),
+            discount: String(it.discount ?? 0),
+            tax_rate: String(it.tax_rate ?? 18),
+          })));
+          setNotes(ex.notes || '');
+          setStatus(ex.status || 'draft');
+        }
+      } catch (e: any) {
+        Alert.alert('Load Error', e?.message || 'Unable to load estimate');
+      } finally {
+        setLoadingExisting(false);
+      }
+    })();
+  }, [editId]);
 
   const addItemFromCatalog = (item: PickedItem) => {
     setItems(prev => [
@@ -117,11 +161,16 @@ export default function NewEstimate() {
           tax_rate: Number(it.tax_rate || 18),
         })),
         notes: notes.trim() || undefined,
-        status: 'draft',
+        status: status || 'draft',
       };
 
-      const res: any = await api.post('/accounting/estimates', payload);
-      Alert.alert('Estimate Created', `Quotation ${res.estimate_no} saved successfully.`);
+      if (editId) {
+        const res: any = await api.patch(`/accounting/estimates/${editId}`, payload);
+        Alert.alert('Estimate Updated', `Quotation ${res.estimate_no || estimateNo} updated successfully.`);
+      } else {
+        const res: any = await api.post('/accounting/estimates', payload);
+        Alert.alert('Estimate Created', `Quotation ${res.estimate_no} saved successfully.`);
+      }
       router.replace('/accounting/estimates' as any);
     } catch (e: any) {
       Alert.alert('Failed', e?.message || 'Unable to save estimate');
@@ -132,8 +181,14 @@ export default function NewEstimate() {
 
   return (
     <View style={styles.root}>
-      <ScreenHeader title="New Estimate / Quotation" />
+      <ScreenHeader title={editId ? `Edit Estimate (${estimateNo || 'Quotation'})` : "New Estimate / Quotation"} />
 
+      {loadingExisting ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+          <Text style={{ color: colors.muted, marginTop: 8 }}>Loading estimate details...</Text>
+        </View>
+      ) : (
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}>
         {/* Basic Meta */}
         <View style={styles.card}>
@@ -288,8 +343,9 @@ export default function NewEstimate() {
           />
         </View>
 
-        <PrimaryButton label="Save Estimate / Quotation" onPress={save} loading={saving} />
+        <PrimaryButton label={editId ? "Update Estimate / Quotation" : "Save Estimate / Quotation"} onPress={save} loading={saving} />
       </ScrollView>
+      )}
 
       <CustomerSearchModal
         visible={showPartyPick}

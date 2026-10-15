@@ -68,8 +68,8 @@ class LoanAccountCreate(BaseModel):
     duration_months: int = Field(default=36, gt=0)
     processing_fee: float = Field(default=0.0, ge=0)
 
-def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager):
-    router = APIRouter(prefix="/accounting/cash-bank", tags=["cash-bank"])
+def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit=None, prefix="/accounting/cash-bank"):
+    router = APIRouter(prefix=prefix, tags=["cash-bank"])
 
     async def _ensure_seed_records():
         """Ensure initial bank accounts, cash transactions, demo cheques, and loan records."""
@@ -527,6 +527,42 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
         updated = await db.cheques.find_one({"id": chq_id}, {"_id": 0})
         return clean_doc(updated)
 
+    @router.patch("/cheques/{chq_id}")
+    async def update_cheque(chq_id: str, payload: dict, current: Any = Depends(require_admin_or_manager)):
+        doc = await db.cheques.find_one({"id": chq_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Cheque not found")
+        if doc.get("status") == "closed" and "amount" in payload and float(payload["amount"]) != float(doc.get("amount", 0)):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot modify amount of an already deposited cheque as bank balances have been posted."
+            )
+        allowed = {"cheque_no", "cheque_date", "customer_name", "bank_name", "amount", "reference_no", "description", "status"}
+        upd = {k: v for k, v in payload.items() if k in allowed}
+        if "amount" in upd:
+            upd["amount"] = float(upd["amount"])
+        upd["updated_at"] = now_utc().isoformat()
+        await db.cheques.update_one({"id": chq_id}, {"$set": upd})
+        updated = await db.cheques.find_one({"id": chq_id}, {"_id": 0})
+        if log_audit:
+            await log_audit(db, current, "cheques", "update", chq_id, doc, updated)
+        return clean_doc(updated)
+
+    @router.delete("/cheques/{chq_id}")
+    async def delete_cheque(chq_id: str, current: Any = Depends(require_admin_or_manager)):
+        doc = await db.cheques.find_one({"id": chq_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Cheque not found")
+        if doc.get("status") == "closed":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete a deposited/closed cheque as it has already affected account balances. Please reverse the deposit first."
+            )
+        res = await db.cheques.delete_one({"id": chq_id})
+        if log_audit:
+            await log_audit(db, current, "cheques", "delete", chq_id, doc, None)
+        return {"deleted": res.deleted_count}
+
     # =========================================================================
     # 6. Loan Accounts Master (10 Fields)
     # =========================================================================
@@ -585,11 +621,147 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
             "created_by": current.user_id,
         }
         await db.loan_accounts.insert_one(doc)
+        if log_audit:
+            await log_audit(db, current, "loans", "create", loan_id, None, doc)
+        return clean_doc(doc)
+
+    @router.patch("/loans/{loan_id}")
+    async def update_loan_account(loan_id: str, payload: dict, current: Any = Depends(require_admin_or_manager)):
+        cur = await db.loan_accounts.find_one({"id": loan_id}, {"_id": 0})
+        if not cur:
+            raise HTTPException(status_code=404, detail="Loan not found")
+        allowed = {"account_name", "account_number", "lender_bank", "description", "opening_balance", "current_balance", "interest_rate", "duration_months", "processing_fee"}
+        upd = {k: v for k, v in payload.items() if k in allowed}
+        if "opening_balance" in upd:
+            upd["opening_balance"] = float(upd["opening_balance"])
+        if "current_balance" in upd:
+            upd["current_balance"] = float(upd["current_balance"])
+        if "interest_rate" in upd or "duration_months" in upd or "opening_balance" in upd:
+            P = float(upd.get("opening_balance", cur.get("opening_balance", 0)))
+            rate = float(upd.get("interest_rate", cur.get("interest_rate", 0)))
+            dur = int(upd.get("duration_months", cur.get("duration_months", 1)))
+            r = (rate / 100) / 12 if rate > 0 else 0
+            if r > 0 and dur > 0:
+                upd["emi_amount"] = round((P * r * ((1 + r) ** dur)) / (((1 + r) ** dur) - 1), 2)
+            else:
+                upd["emi_amount"] = round(P / dur if dur > 0 else 0, 2)
+        upd["updated_at"] = now_utc()
+        await db.loan_accounts.update_one({"id": loan_id}, {"$set": upd})
+        doc = await db.loan_accounts.find_one({"id": loan_id}, {"_id": 0})
+        if log_audit:
+            await log_audit(db, current, "loans", "update", loan_id, cur, doc)
         return clean_doc(doc)
 
     @router.delete("/loans/{loan_id}")
     async def delete_loan_account(loan_id: str, current: Any = Depends(require_admin_or_manager)):
+        doc = await db.loan_accounts.find_one({"id": loan_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Loan not found")
+        # Check if loan has any dependent financial records
+        has_tx = await db.bank_transactions.find_one({
+            "$or": [
+                {"account_id": loan_id},
+                {"loan_id": loan_id},
+                {"description": {"$regex": doc.get("account_number", "___NONE___"), "$options": "i"}}
+            ]
+        })
+        if has_tx:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete loan account with existing linked financial transactions or repayments."
+            )
         res = await db.loan_accounts.delete_one({"id": loan_id})
+        if log_audit:
+            await log_audit(db, current, "loans", "delete", loan_id, doc, None)
+        return {"deleted": res.deleted_count}
+
+    # Contra / Cash adjustment edit and delete
+    @router.patch("/contra/{tx_id}")
+    @router.patch("/cash-adjustments/{tx_id}")
+    async def update_contra_transaction(tx_id: str, payload: dict, current: Any = Depends(require_admin_or_manager)):
+        cur = await db.bank_transactions.find_one({"id": tx_id}, {"_id": 0})
+        if not cur:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        upd = {}
+        if "particulars" in payload and payload["particulars"]:
+            upd["description"] = payload["particulars"].strip()
+        elif "description" in payload and payload["description"]:
+            upd["description"] = payload["description"].strip()
+            
+        if "date" in payload and payload["date"]:
+            upd["transfer_date"] = payload["date"]
+        elif "transfer_date" in payload and payload["transfer_date"]:
+            upd["transfer_date"] = payload["transfer_date"]
+            
+        if "amount" in payload:
+            new_amt = float(payload["amount"])
+            old_amt = float(cur.get("amount") or 0)
+            diff = new_amt - old_amt
+            upd["amount"] = new_amt
+            
+            # Rebalance affected bank account if amount was modified
+            if diff != 0:
+                ttype = cur.get("transfer_type")
+                direction = cur.get("direction", "deposit")
+                if ttype == "bank_to_cash":
+                    bank_id = cur.get("withdraw_from") if direction == "deposit" else cur.get("deposit_to")
+                    if bank_id and bank_id != "Cash in Hand":
+                        mult = -1 if direction == "deposit" else 1
+                        await db.bank_accounts.update_one({"id": bank_id}, {"$inc": {"opening_balance": mult * diff}})
+                elif ttype == "cash_to_bank":
+                    bank_id = cur.get("deposit_to") if direction == "deposit" else cur.get("withdraw_from")
+                    if bank_id and bank_id != "Cash in Hand":
+                        mult = 1 if direction == "deposit" else -1
+                        await db.bank_accounts.update_one({"id": bank_id}, {"$inc": {"opening_balance": mult * diff}})
+                elif ttype == "bank_to_bank":
+                    from_id = cur.get("withdraw_from")
+                    to_id = cur.get("deposit_to")
+                    if from_id:
+                        await db.bank_accounts.update_one({"id": from_id}, {"$inc": {"opening_balance": -diff}})
+                    if to_id:
+                        await db.bank_accounts.update_one({"id": to_id}, {"$inc": {"opening_balance": diff}})
+        
+        upd["updated_at"] = now_utc()
+        await db.bank_transactions.update_one({"id": tx_id}, {"$set": upd})
+        doc = await db.bank_transactions.find_one({"id": tx_id}, {"_id": 0})
+        if log_audit:
+            await log_audit(db, current, "cash_bank_contra", "update", tx_id, cur, doc)
+        return clean_doc(doc) if doc else {"ok": True}
+
+    @router.delete("/contra/{tx_id}")
+    @router.delete("/cash-adjustments/{tx_id}")
+    async def delete_contra_transaction(tx_id: str, current: Any = Depends(require_admin_or_manager)):
+        cur = await db.bank_transactions.find_one({"id": tx_id}, {"_id": 0})
+        if not cur:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        amt = float(cur.get("amount") or 0)
+        ttype = cur.get("transfer_type")
+        direction = cur.get("direction", "deposit")
+        
+        # Reverse the balance change on affected bank accounts
+        if ttype == "bank_to_cash":
+            bank_id = cur.get("withdraw_from") if direction == "deposit" else cur.get("deposit_to")
+            if bank_id and bank_id != "Cash in Hand":
+                mult = 1 if direction == "deposit" else -1
+                await db.bank_accounts.update_one({"id": bank_id}, {"$inc": {"opening_balance": mult * amt}})
+        elif ttype == "cash_to_bank":
+            bank_id = cur.get("deposit_to") if direction == "deposit" else cur.get("withdraw_from")
+            if bank_id and bank_id != "Cash in Hand":
+                mult = -1 if direction == "deposit" else 1
+                await db.bank_accounts.update_one({"id": bank_id}, {"$inc": {"opening_balance": mult * amt}})
+        elif ttype == "bank_to_bank":
+            from_id = cur.get("withdraw_from")
+            to_id = cur.get("deposit_to")
+            if from_id:
+                await db.bank_accounts.update_one({"id": from_id}, {"$inc": {"opening_balance": amt}})
+            if to_id:
+                await db.bank_accounts.update_one({"id": to_id}, {"$inc": {"opening_balance": -amt}})
+                
+        res = await db.bank_transactions.delete_one({"id": tx_id})
+        if log_audit:
+            await log_audit(db, current, "cash_bank_contra", "delete", tx_id, cur, None)
         return {"deleted": res.deleted_count}
 
     return router

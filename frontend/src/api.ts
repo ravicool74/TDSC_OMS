@@ -91,8 +91,72 @@ export const api = {
     const token = await tokenStore.get();
     return `${getBaseUrl()}/api/expenses/${eid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
+  exportContractorsPdf: async (customerIds: string[]) => {
+    const token = await tokenStore.get();
+    const res = await fetch(`${getBaseUrl()}/api/customers/export-pdf`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token || ''}`,
+      },
+      body: JSON.stringify({ customer_ids: customerIds }),
+    });
+    if (!res.ok) {
+      let errMsg = 'Failed to generate PDF';
+      try {
+        const j = await res.json();
+        errMsg = j.detail || errMsg;
+      } catch {
+        errMsg = await res.text() || errMsg;
+      }
+      throw new Error(errMsg);
+    }
+    return await res.blob();
+  },
+  expenseApprovalPdfUrl: async (vid: string) => {
+    const token = await tokenStore.get();
+    return `${getBaseUrl()}/api/expense-approvals/${vid}/pdf?token=${encodeURIComponent(token || '')}`;
+  },
+  getExpenseApprovals: (params?: { status?: string; customer_id?: string; q?: string }) => {
+    const qry = new URLSearchParams();
+    if (params?.status) qry.set('status', params.status);
+    if (params?.customer_id) qry.set('customer_id', params.customer_id);
+    if (params?.q) qry.set('q', params.q);
+    const qs = qry.toString();
+    return request<any[]>(`/expense-approvals${qs ? `?${qs}` : ''}`);
+  },
+  getExpenseApproval: (id: string) => request<any>(`/expense-approvals/${id}`),
+  getExpenseApprovalConfig: () => request<any>('/expense-approvals/config'),
+  updateExpenseApprovalConfig: (payload: any) =>
+    request<any>('/expense-approvals/config', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  getCustomerSaleVouchers: (customerId: string) =>
+    request<any[]>(`/expense-approvals/sale-vouchers?customer_id=${encodeURIComponent(customerId)}`),
+  createExpenseApproval: (payload: any) =>
+    request<any>('/expense-approvals', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateExpenseApproval: (id: string, payload: any) =>
+    request<any>(`/expense-approvals/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  expenseApprovalAction: (id: string, action: string, remarks?: string) =>
+    request<any>(`/expense-approvals/${id}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ action, remarks }),
+    }),
   put: <T>(p: string, body: any) => request<T>(p, { method: 'PUT', body: JSON.stringify(body) }),
   del: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
+  delete: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ ok: boolean; message: string }>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    }),
   get base() {
     return getBaseUrl();
   },
@@ -316,7 +380,17 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ field }) }
     );
   },
-  uploadCustomerDoc: async (cid: string, file: { uri: string; name: string; type: string }, category: string, docDate?: string, expDate?: string, remarks?: string) => {
+  uploadCustomerDoc: async (
+    cid: string,
+    file: { uri: string; name: string; type: string },
+    category: string,
+    docDate?: string,
+    expDate?: string,
+    remarks?: string,
+    docType?: 'validity' | 'general',
+    docNo?: string,
+    description?: string
+  ) => {
     const token = await tokenStore.get();
     const form = new FormData();
     if (Platform.OS === 'web') {
@@ -325,10 +399,16 @@ export const api = {
     } else {
       form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
     }
-    form.append('category', category);
-    if (docDate) form.append('document_date', docDate);
+    form.append('category', category || 'Other');
+    form.append('doc_type', docType || 'validity');
+    if (docNo) form.append('document_no', docNo);
+    if (docDate) {
+      form.append('document_date', docDate);
+      form.append('issue_date', docDate);
+    }
     if (expDate) form.append('expiry_date', expDate);
     if (remarks) form.append('remarks', remarks);
+    if (description) form.append('description', description);
     const res = await fetch(`${getBaseUrl()}/api/customers/${cid}/documents`, {
       method: 'POST',
       body: form as any,
@@ -338,6 +418,52 @@ export const api = {
     const data = text ? JSON.parse(text) : null;
     if (!res.ok) throw new Error((data && data.detail) || `Upload failed (${res.status})`);
     return data;
+  },
+  updateCustomerDoc: async (
+    cid: string,
+    docId: string,
+    file?: { uri: string; name: string; type: string } | null,
+    category?: string,
+    docDate?: string,
+    expDate?: string,
+    remarks?: string,
+    docType?: 'validity' | 'general',
+    docNo?: string,
+    description?: string
+  ) => {
+    const token = await tokenStore.get();
+    const form = new FormData();
+    if (file) {
+      if (Platform.OS === 'web') {
+        const blob = await (await fetch(file.uri)).blob();
+        form.append('file', blob, file.name);
+      } else {
+        form.append('file', { uri: file.uri, name: file.name, type: file.type } as any);
+      }
+    }
+    if (category !== undefined) form.append('category', category);
+    if (docType !== undefined) form.append('doc_type', docType);
+    if (docNo !== undefined) form.append('document_no', docNo);
+    if (docDate !== undefined) {
+      form.append('document_date', docDate);
+      form.append('issue_date', docDate);
+    }
+    if (expDate !== undefined) form.append('expiry_date', expDate);
+    if (remarks !== undefined) form.append('remarks', remarks);
+    if (description !== undefined) form.append('description', description);
+    const res = await fetch(`${getBaseUrl()}/api/customers/${cid}/documents/${docId}`, {
+      method: 'PATCH',
+      body: form as any,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error((data && data.detail) || `Update failed (${res.status})`);
+    return data;
+  },
+  customerDocDownloadUrl: async (cid: string, docId: string) => {
+    const token = await tokenStore.get();
+    return `${getBaseUrl()}/api/customers/${cid}/documents/${docId}/download?token=${encodeURIComponent(token || '')}`;
   },
   uploadUserDoc: async (uid: string, file: { uri: string; name: string; type: string }, docType: string, remarks?: string) => {
     const token = await tokenStore.get();
@@ -599,6 +725,15 @@ export const api = {
   depositCheque: (chqId: string, data: any) => request<any>(`/accounting/cash-bank/cheques/${chqId}/deposit`, { method: 'POST', body: JSON.stringify(data) }),
   getLoanAccounts: () => request<any>('/accounting/cash-bank/loans'),
   createLoanAccount: (data: any) => request<any>('/accounting/cash-bank/loans', { method: 'POST', body: JSON.stringify(data) }),
+  updateCheque: (chqId: string, data: any) => request<any>(`/accounting/cash-bank/cheques/${chqId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCheque: (chqId: string) => request<any>(`/accounting/cash-bank/cheques/${chqId}`, { method: 'DELETE' }),
+  updateLoanAccount: (loanId: string, data: any) => request<any>(`/accounting/cash-bank/loans/${loanId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteLoanAccount: (loanId: string) => request<any>(`/accounting/cash-bank/loans/${loanId}`, { method: 'DELETE' }),
+  updateContraTransaction: (txId: string, data: any) => request<any>(`/accounting/cash-bank/contra/${txId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteContraTransaction: (txId: string) => request<any>(`/accounting/cash-bank/contra/${txId}`, { method: 'DELETE' }),
+  deleteExpense: (id: string) => request<any>(`/expenses/${id}`, { method: 'DELETE' }),
+  getBranches: () => request<any[]>('/branches'),
+  getDistricts: () => request<any[]>('/districts'),
   uploadCashBankAttachment: async (file: { uri: string; name: string; type?: string }) => {
     const token = await tokenStore.get();
     const form = new FormData();
@@ -615,6 +750,121 @@ export const api = {
     });
     if (!res.ok) throw new Error(`Upload failed (${res.status})`);
     return res.json();
+  },
+  getUserPermissions: async (userId: string) => {
+    return request<any>(`/manage-users/${userId}/permissions`);
+  },
+  saveUserPermissions: async (userId: string, matrix: Record<string, any>) => {
+    return request<any>(`/manage-users/${userId}/permissions`, {
+      method: 'PUT',
+      body: JSON.stringify({ app_menu_matrix: matrix }),
+    });
+  },
+  resetUserPermissions: async (userId: string) => {
+    return request<any>(`/manage-users/${userId}/reset-permissions`, {
+      method: 'POST',
+    });
+  },
+  // Customer Portal & Service Requests
+  getServiceCatalogue: async () => {
+    return request<any[]>('/services/catalogue');
+  },
+  getAdminServices: async () => {
+    return request<any[]>('/admin/services');
+  },
+  createAdminService: async (data: any) => {
+    return request<any>('/admin/services', { method: 'POST', body: JSON.stringify(data) });
+  },
+  updateAdminService: async (id: string, data: any) => {
+    return request<any>(`/admin/services/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  },
+  getCustomerProfile: async () => {
+    return request<any>('/customer-portal/profile');
+  },
+  updateCustomerProfile: async (data: any) => {
+    return request<any>('/customer-portal/profile', { method: 'PUT', body: JSON.stringify(data) });
+  },
+  changeCustomerPassword: async (current_password: string, new_password: string) => {
+    return request<any>('/customer-portal/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    });
+  },
+  getCustomerStats: async () => {
+    return request<any>('/customer-portal/stats');
+  },
+  getCustomerServiceRequests: async (params?: { status?: string; search?: string; page?: number; limit?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.status) sp.append('status', params.status);
+    if (params?.search) sp.append('search', params.search);
+    if (params?.page) sp.append('page', String(params.page));
+    if (params?.limit) sp.append('limit', String(params.limit));
+    const qs = sp.toString() ? `?${sp.toString()}` : '';
+    return request<any>(`/customer-portal/service-requests${qs}`);
+  },
+  getCustomerServiceRequestDetail: async (id: string) => {
+    return request<any>(`/customer-portal/service-requests/${id}`);
+  },
+  createServiceRequest: async (data: { service_id: string; remarks?: string; custom_form_data?: any; priority?: string }) => {
+    return request<any>('/service-requests', { method: 'POST', body: JSON.stringify(data) });
+  },
+  uploadServiceRequestDoc: async (requestId: string, docType: string, file: { uri: string; name: string; type?: string }, remarks?: string) => {
+    const token = await tokenStore.get();
+    const form = new FormData();
+    if (Platform.OS === 'web') {
+      const blob = await (await fetch(file.uri)).blob();
+      form.append('file', blob, file.name);
+    } else {
+      form.append('file', { uri: file.uri, name: file.name, type: file.type || 'application/pdf' } as any);
+    }
+    form.append('doc_type', docType);
+    if (remarks) form.append('remarks', remarks);
+    const res = await fetch(`${getBaseUrl()}/api/service-requests/${requestId}/documents`, {
+      method: 'POST',
+      body: form as any,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error((data && data.detail) || `Upload failed (${res.status})`);
+    return data;
+  },
+  serviceRequestDocDownloadUrl: async (requestId: string, docId: string) => {
+    const token = await tokenStore.get();
+    return `${getBaseUrl()}/api/service-requests/${requestId}/documents/${docId}?token=${encodeURIComponent(token || '')}`;
+  },
+  getCustomerTenders: async (params?: { category?: string; search?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.category) sp.append('category', params.category);
+    if (params?.search) sp.append('search', params.search);
+    const qs = sp.toString() ? `?${sp.toString()}` : '';
+    return request<any>(`/customer-portal/tenders${qs}`);
+  },
+  requestTenderFilling: async (tenderId: string, notes?: string) => {
+    return request<any>(`/customer-portal/tenders/${tenderId}/request`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    });
+  },
+  getServiceRequestQueue: async (params?: { status?: string; search?: string; assigned_to?: string; service_id?: string; page?: number; limit?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.status) sp.append('status', params.status);
+    if (params?.search) sp.append('search', params.search);
+    if (params?.assigned_to) sp.append('assigned_to', params.assigned_to);
+    if (params?.service_id) sp.append('service_id', params.service_id);
+    if (params?.page) sp.append('page', String(params.page));
+    if (params?.limit) sp.append('limit', String(params.limit));
+    const qs = sp.toString() ? `?${sp.toString()}` : '';
+    return request<any>(`/service-requests/queue${qs}`);
+  },
+  assignServiceRequestToMe: async (requestId: string) => {
+    return request<any>(`/service-requests/${requestId}/assign-self`, { method: 'POST', body: JSON.stringify({}) });
+  },
+  transitionServiceRequest: async (requestId: string, data: { status: string; remarks?: string; internal_notes?: string }) => {
+    return request<any>(`/service-requests/${requestId}/transition`, { method: 'POST', body: JSON.stringify(data) });
+  },
+  reassignServiceRequest: async (requestId: string, data: { new_employee_id: string; reason: string }) => {
+    return request<any>(`/service-requests/${requestId}/reassign`, { method: 'POST', body: JSON.stringify(data) });
   },
 };
 
@@ -657,14 +907,29 @@ export const getCurrentLocation = async (): Promise<{ lat: number; lng: number; 
   return { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy || undefined };
 };
 
-export type UserRole = 'admin' | 'manager' | 'employee';
+export type UserRole = 'super_admin' | 'admin' | 'manager' | 'branch_manager' | 'accountant' | 'employee' | 'customer' | string;
 export interface AppUser {
   user_id: string;
   email: string;
   name: string;
   role: UserRole;
+  role_id?: string;
+  role_name?: string;
   picture?: string | null;
   phone?: string | null;
+  mobile?: string | null;
   department?: string | null;
   designation?: string | null;
+  branch_id?: string | null;
+  branch_name?: string | null;
+  post_id?: string | null;
+  post_title?: string | null;
+  permissions?: Record<string, string[]>;
+  allowed_menus?: string[];
+  app_menu_matrix?: Record<string, any>;
+  agency_name?: string | null;
+  company_name?: string | null;
+  numeric_user_id?: string | null;
+  customer_id?: string | null;
+  must_change_password?: boolean;
 }
