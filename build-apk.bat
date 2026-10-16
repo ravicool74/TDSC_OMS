@@ -1,7 +1,8 @@
 @echo off
 echo Building Android Release APK locally...
-set "JAVA_HOME=C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot"
-set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
+set "JAVA_HOME=C:\Android\jdk-17"
+if exist "C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot" set "JAVA_HOME=C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot"
+set "ANDROID_HOME=C:\Android\Sdk"
 cd /d "%~dp0frontend\android"
 call gradlew.bat assembleRelease
 if %ERRORLEVEL% equ 0 (
