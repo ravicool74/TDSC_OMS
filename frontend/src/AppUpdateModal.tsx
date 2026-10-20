@@ -14,8 +14,8 @@ export interface AppVersionInfo {
   mandatory?: boolean;
 }
 
-export const LOCAL_APP_VERSION = Constants.expoConfig?.version || '1.3.0';
-export const LOCAL_APP_VERSION_CODE = Number(Constants.expoConfig?.android?.versionCode || 5);
+export const LOCAL_APP_VERSION = Constants.expoConfig?.version || '1.3.1';
+export const LOCAL_APP_VERSION_CODE = Number(Constants.expoConfig?.android?.versionCode || 6);
 
 const DISMISSED_KEY = 'tdsc_update_dismissed_timestamp';
 const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://tdscoms.onrender.com';
@@ -55,6 +55,14 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
   };
 
   const checkForUpdates = useCallback(async (silent = false) => {
+    // Web application updates automatically on page reload; do not prompt web users to download an Android APK
+    if (Platform.OS === 'web') {
+      if (!silent) {
+        showAlert('TDSC Web App', `You are running the Web App (v${LOCAL_APP_VERSION}). The web application automatically loads the latest version on refresh.`);
+      }
+      return;
+    }
+
     setIsChecking(true);
     try {
       const remote = await fetchVersionInfo();
