@@ -124,9 +124,16 @@ async def ensure_customer_account(db, customer_doc: dict, log_audit=None, actor=
     temp_pw = generate_customer_temp_password(customer_doc)
     pw_hash = hash_password(temp_pw)
 
-    email = (customer_doc.get("email") or "").strip().lower()
-    if not email or "@" not in email:
+    raw_email = (customer_doc.get("email") or "").strip().lower()
+    clean_email = re.sub(r'[,\\.\s]+$', '', raw_email)
+    if not clean_email or "@" not in clean_email:
         email = f"cust.{numeric_id}@triveni.in"
+    else:
+        existing_email_user = await db.users.find_one({"email": clean_email})
+        if existing_email_user:
+            email = f"cust.{numeric_id}@triveni.in"
+        else:
+            email = clean_email
 
     user_payload = {
         "user_id": numeric_id,

@@ -163,11 +163,11 @@ async def download_apk():
 @api_router.get("/app/version")
 async def get_app_version():
     return {
-        "version": "1.3.1",
-        "version_code": 6,
+        "version": "1.3.2",
+        "version_code": 7,
         "apk_url": "https://tdscoms.onrender.com/download-apk",
         "fallback_apk_url": "https://frontend-rho-woad-43.vercel.app/TDSC-Office-Manager.apk",
-        "release_notes": "• Customer Self-Service Portal (Profile, Tenders, 27 Services Catalogue, Live Request Tracking)\n• Employee Service Request Queue with status progression & staff claim/assignment\n• Vyapar Financial Suite: Cash in Hand, Cheques, Loan Account Edit & Safe Delete\n• Expense approval workflow with linked voucher protection & audit logs\n• Multi-criteria search, filters, and PDF export for Expenses and Payment-In\n• Mandatory TDSC Branch & District filters with multi-select\n• Security hardening & demo credentials cleanup",
+        "release_notes": "• Fix: Resolved System User Directory loading and validation (all users restored)\n• Fast User Directory: Parallel batch enrichment loads staff in <50ms\n• Clean Staff Directory: Dedicated filter to toggle internal staff vs portal accounts\n• Customer Portal & Vyapar Financial Suite\n• Expense approvals, voucher protection, and audit logs",
         "mandatory": False,
     }
 

@@ -78,12 +78,16 @@ export default function UserManagementScreen() {
   const [busyBulk, setBusyBulk] = useState(false);
   const [bulkModalType, setBulkModalType] = useState<'status' | 'branch' | 'post' | null>(null);
   const [bulkSelectedOption, setBulkSelectedOption] = useState<string>('');
+  const [includeCustomers, setIncludeCustomers] = useState<boolean>(false);
 
   const load = useCallback(async () => {
     setLoadError(null);
     try {
       let url = '/manage-users';
-      if (search.trim()) url += `?q=${encodeURIComponent(search.trim())}`;
+      const params: string[] = [];
+      if (search.trim()) params.push(`q=${encodeURIComponent(search.trim())}`);
+      if (includeCustomers) params.push('include_customers=true');
+      if (params.length > 0) url += `?${params.join('&')}`;
       const [uData, bData, pData, rData] = await Promise.all([
         api.get<any[]>(url),
         api.get<any[]>('/branches').catch(() => []),
@@ -98,7 +102,7 @@ export default function UserManagementScreen() {
       setLoadError(e?.message || 'Failed to load user directory');
       setUsers([]);
     }
-  }, [search]);
+  }, [search, includeCustomers]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -414,6 +418,26 @@ export default function UserManagementScreen() {
             onSubmitEditing={load}
             style={styles.searchInput}
           />
+        </View>
+        <View style={styles.tabFilterRow}>
+          <Pressable
+            style={[styles.tabFilterPill, !includeCustomers && styles.tabFilterPillActive]}
+            onPress={() => setIncludeCustomers(false)}
+          >
+            <Ionicons name="people" size={14} color={!includeCustomers ? '#FFFFFF' : colors.muted} />
+            <Text style={[styles.tabFilterPillText, !includeCustomers && styles.tabFilterPillTextActive]}>
+              Staff Directory
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.tabFilterPill, includeCustomers && styles.tabFilterPillActive]}
+            onPress={() => setIncludeCustomers(true)}
+          >
+            <Ionicons name="globe-outline" size={14} color={includeCustomers ? '#FFFFFF' : colors.muted} />
+            <Text style={[styles.tabFilterPillText, includeCustomers && styles.tabFilterPillTextActive]}>
+              All Users (Inc. Portal)
+            </Text>
+          </Pressable>
         </View>
       </View>
 
@@ -1129,6 +1153,34 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.onSurface,
     marginTop: 1,
+  },
+  tabFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  tabFilterPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  tabFilterPillActive: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandPrimary,
+  },
+  tabFilterPillText: {
+    fontSize: font.xs,
+    fontWeight: '700',
+    color: colors.muted,
+  },
+  tabFilterPillTextActive: {
+    color: '#FFFFFF',
   },
   empNoteText: {
     fontSize: 11,
