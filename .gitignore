@@ -63,3 +63,5 @@ yarn-error.log*
 backend/uploads/
 
 .vercel
+
+backend/backups/

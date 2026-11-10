@@ -72,118 +72,8 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
     router = APIRouter(prefix=prefix, tags=["cash-bank"])
 
     async def _ensure_seed_records():
-        """Ensure initial bank accounts, cash transactions, demo cheques, and loan records."""
-        try:
-            # 1. Banks
-            bank_count = await db.bank_accounts.count_documents({})
-            if bank_count < 2:
-                sample_banks = [
-                    {"id": "bnk_sbi_01", "name": "SBI Current A/c", "bank_name": "State Bank of India", "account_no": "39485720192", "ifsc": "SBIN0001234", "opening_balance": 485000.0, "is_active": True, "created_at": now_utc()},
-                    {"id": "bnk_hdfc_02", "name": "HDFC Business A/c", "bank_name": "HDFC Bank", "account_no": "50200039281726", "ifsc": "HDFC0000456", "opening_balance": 215000.0, "is_active": True, "created_at": now_utc()},
-                ]
-                for sb in sample_banks:
-                    await db.bank_accounts.update_one({"id": sb["id"]}, {"$setOnInsert": sb}, upsert=True)
-
-            # 2. Cheques
-            open_count = await db.cheques.count_documents({"status": "open"})
-            if open_count == 0:
-                sample_cheques = [
-                    {
-                        "id": "chq_001",
-                        "cheque_no": "CHQ-849201",
-                        "cheque_date": date.today().isoformat(),
-                        "customer_id": "cust_patna_infra",
-                        "customer_name": "Patna Highway Builders Pvt Ltd",
-                        "bank_name": "Punjab National Bank",
-                        "amount": 25000.0,
-                        "reference_no": "REF-PNB-8492",
-                        "status": "open",  # "open" or "closed"
-                        "deposit_date": None,
-                        "deposit_to": None,
-                        "deposit_to_name": None,
-                        "description": "Advance token payment for CPWD road tender bid",
-                        "created_at": now_utc()
-                    },
-                    {
-                        "id": "chq_002",
-                        "cheque_no": "CHQ-109283",
-                        "cheque_date": (date.today() - timedelta(days=2)).isoformat(),
-                        "customer_id": "cust_singh_cons",
-                        "customer_name": "Singh & Sons Construction",
-                        "bank_name": "Bank of Baroda",
-                        "amount": 18500.0,
-                        "reference_no": "REF-BOB-1092",
-                        "status": "open",
-                        "deposit_date": None,
-                        "deposit_to": None,
-                        "deposit_to_name": None,
-                        "description": "Class-3 DSC tokens and encryption keys fee",
-                        "created_at": now_utc()
-                    },
-                    {
-                        "id": "chq_003",
-                        "cheque_no": "CHQ-654321",
-                        "cheque_date": (date.today() - timedelta(days=7)).isoformat(),
-                        "customer_id": "cust_bihar_infra",
-                        "customer_name": "Bihar Urban Infra Engineering",
-                        "bank_name": "State Bank of India",
-                        "amount": 42000.0,
-                        "reference_no": "REF-SBI-6543",
-                        "status": "closed",
-                        "deposit_date": (date.today() - timedelta(days=5)).isoformat(),
-                        "deposit_to": "bnk_sbi_01",
-                        "deposit_to_name": "SBI Current A/c (****0192)",
-                        "description": "ISO 9001 certification audit advance cleared",
-                        "created_at": now_utc()
-                    }
-                ]
-                for sc in sample_cheques:
-                    await db.cheques.update_one({"id": sc["id"]}, {"$setOnInsert": sc}, upsert=True)
-
-            # 3. Loan Accounts
-            loan_count = await db.loan_accounts.count_documents({})
-            if loan_count == 0:
-                sample_loans = [
-                    {
-                        "id": "loan_001",
-                        "account_name": "SBI MSME Business Expansion Loan",
-                        "account_number": "LOAN-SBI-2024-9981",
-                        "lender_bank": "State Bank of India (Patna Main)",
-                        "description": "Term loan for digital tender bidding computer lab & servers",
-                        "opening_balance": 500000.0,
-                        "current_balance": 385000.0,
-                        "balance_as_of": "2026-04-01",
-                        "loan_received_in": "bnk_sbi_01",
-                        "loan_received_in_name": "SBI Current A/c",
-                        "interest_rate": 8.75,
-                        "duration_months": 36,
-                        "processing_fee": 5000.0,
-                        "emi_amount": 15840.0,
-                        "created_at": now_utc()
-                    },
-                    {
-                        "id": "loan_002",
-                        "account_name": "HDFC Working Capital Overdraft",
-                        "account_number": "OD-HDFC-88214",
-                        "lender_bank": "HDFC Bank Ltd",
-                        "description": "Cash credit line against contractor receivables",
-                        "opening_balance": 300000.0,
-                        "current_balance": 120000.0,
-                        "balance_as_of": "2026-06-15",
-                        "loan_received_in": "bnk_hdfc_02",
-                        "loan_received_in_name": "HDFC Business A/c",
-                        "interest_rate": 9.20,
-                        "duration_months": 24,
-                        "processing_fee": 3000.0,
-                        "emi_amount": 0.0,
-                        "created_at": now_utc()
-                    }
-                ]
-                for sl in sample_loans:
-                    await db.loan_accounts.update_one({"id": sl["id"]}, {"$setOnInsert": sl}, upsert=True)
-
-        except Exception as e:
-            print(f"Error seeding cash and bank records: {e}")
+        """Disabled in real production mode."""
+        return
 
     # =========================================================================
     # 1. Attachment Upload Endpoint (for all transfer/cheque/loan vouchers)
@@ -437,7 +327,9 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
         cash_added_from_bank = sum(float(t.get("amount") or 0) for t in contra_txs if t.get("deposit_to") == "Cash in Hand")
         cash_deposited_to_bank = sum(float(t.get("amount") or 0) for t in contra_txs if t.get("withdraw_from") == "Cash in Hand")
 
-        base_opening = 25000.0
+        # Check if there is an explicit cash opening balance configured in db.settings (defaults to 0.0 in real mode)
+        setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+        base_opening = float(setting.get("value", 0.0)) if setting else 0.0
         total_inflow = base_opening + tot_sales_cash + tot_income_cash + cash_added_from_bank
         total_outflow = tot_exp_cash + cash_deposited_to_bank
         net_cash_in_hand = round(total_inflow - total_outflow, 2)
@@ -548,16 +440,52 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
             await log_audit(db, current, "cheques", "update", chq_id, doc, updated)
         return clean_doc(updated)
 
+    @router.post("/cheques")
+    async def create_cheque(payload: dict, current: Any = Depends(require_admin_or_manager)):
+        cheque_no = (payload.get("cheque_no") or "").strip()
+        customer_name = (payload.get("customer_name") or "").strip()
+        bank_name = (payload.get("bank_name") or "").strip()
+        amount = float(payload.get("amount") or 0)
+        cheque_date = payload.get("cheque_date") or date.today().isoformat()
+        
+        if not cheque_no or not customer_name or not bank_name or amount <= 0:
+            raise HTTPException(status_code=400, detail="Cheque No, Customer Name, Bank Name, and valid Amount are required.")
+            
+        import uuid
+        chq_id = f"chq_{uuid.uuid4().hex[:10]}"
+        new_chq = {
+            "id": chq_id,
+            "cheque_no": cheque_no,
+            "cheque_date": cheque_date,
+            "customer_id": payload.get("customer_id") or None,
+            "customer_name": customer_name,
+            "bank_name": bank_name,
+            "amount": amount,
+            "reference_no": payload.get("reference_no") or f"REF-{cheque_no[-4:]}",
+            "status": payload.get("status") or "open",
+            "deposit_date": None,
+            "deposit_to": None,
+            "deposit_to_name": None,
+            "description": payload.get("description") or None,
+            "created_at": now_utc(),
+            "created_by": current.user_id,
+        }
+        await db.cheques.insert_one(new_chq)
+        if log_audit:
+            await log_audit(db, current, "cheques", "create", chq_id, None, new_chq)
+        return clean_doc(new_chq)
+
     @router.delete("/cheques/{chq_id}")
     async def delete_cheque(chq_id: str, current: Any = Depends(require_admin_or_manager)):
         doc = await db.cheques.find_one({"id": chq_id}, {"_id": 0})
         if not doc:
             raise HTTPException(status_code=404, detail="Cheque not found")
+        # If cheque was deposited and closed, reverse the bank balance if target was bank
         if doc.get("status") == "closed":
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete a deposited/closed cheque as it has already affected account balances. Please reverse the deposit first."
-            )
+            dep_to = doc.get("deposit_to")
+            amt = float(doc.get("amount") or 0)
+            if dep_to and dep_to != "cash" and amt > 0:
+                await db.bank_accounts.update_one({"id": dep_to}, {"$inc": {"opening_balance": -amt}})
         res = await db.cheques.delete_one({"id": chq_id})
         if log_audit:
             await log_audit(db, current, "cheques", "delete", chq_id, doc, None)
@@ -657,19 +585,6 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
         doc = await db.loan_accounts.find_one({"id": loan_id}, {"_id": 0})
         if not doc:
             raise HTTPException(status_code=404, detail="Loan not found")
-        # Check if loan has any dependent financial records
-        has_tx = await db.bank_transactions.find_one({
-            "$or": [
-                {"account_id": loan_id},
-                {"loan_id": loan_id},
-                {"description": {"$regex": doc.get("account_number", "___NONE___"), "$options": "i"}}
-            ]
-        })
-        if has_tx:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete loan account with existing linked financial transactions or repayments."
-            )
         res = await db.loan_accounts.delete_one({"id": loan_id})
         if log_audit:
             await log_audit(db, current, "loans", "delete", loan_id, doc, None)

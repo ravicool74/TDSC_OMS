@@ -163,11 +163,11 @@ async def download_apk():
 @api_router.get("/app/version")
 async def get_app_version():
     return {
-        "version": "1.3.2",
-        "version_code": 7,
+        "version": "1.3.3",
+        "version_code": 8,
         "apk_url": "https://tdscoms.onrender.com/download-apk",
         "fallback_apk_url": "https://frontend-rho-woad-43.vercel.app/TDSC-Office-Manager.apk",
-        "release_notes": "• Fix: Resolved System User Directory loading and validation (all users restored)\n• Fast User Directory: Parallel batch enrichment loads staff in <50ms\n• Clean Staff Directory: Dedicated filter to toggle internal staff vs portal accounts\n• Customer Portal & Vyapar Financial Suite\n• Expense approvals, voucher protection, and audit logs",
+        "release_notes": "• Financial Suite Real Mode: Zeroed demo vouchers, bank balances & cash in hand\n• Cheques & Loans: Full Add, Edit, Safe Delete with automatic balance reconciliation\n• Fixed Cash in Hand opening balance to 0.00\n• Web UX improvements and confirmation dialogs",
         "mandatory": False,
     }
 

@@ -460,15 +460,30 @@ export default function CashBankScreen() {
       setShowChequeDepositModal(false);
       setSelectedCheque(null);
       await loadData();
-      Alert.alert('Cheque Deposited', `Cheque #${selectedCheque.cheque_no} deposited and marked Closed.`);
+      notify('Cheque Deposited', `Cheque #${selectedCheque.cheque_no} deposited and marked Closed.`);
     } catch (e: any) {
-      Alert.alert('Deposit Error', e?.message || 'Failed to deposit cheque');
+      notify('Deposit Error', e?.message || 'Failed to deposit cheque');
     } finally {
       setChequeBusy(false);
     }
   };
 
-  // Edit & Delete Cheque Handlers
+  // Add, Edit & Delete Cheque Handlers
+  const openAddCheque = () => {
+    setEditingChequeId(null);
+    setChequeForm({
+      cheque_no: '',
+      cheque_date: new Date().toISOString().split('T')[0],
+      customer_name: '',
+      bank_name: '',
+      amount: '',
+      reference_no: '',
+      description: '',
+      status: 'open',
+    });
+    setShowEditChequeModal(true);
+  };
+
   const openEditCheque = (c: ChequeItem) => {
     setEditingChequeId(c.id);
     setChequeForm({
@@ -485,30 +500,47 @@ export default function CashBankScreen() {
   };
 
   const handleSaveChequeEdit = async () => {
-    if (!editingChequeId) return;
+    if (!chequeForm.cheque_no.trim() || !chequeForm.customer_name.trim() || !chequeForm.bank_name.trim()) {
+      notify('Validation Error', 'Cheque Number, Party Name, and Bank Name are required.');
+      return;
+    }
     const numAmt = parseFloat(chequeForm.amount);
     if (isNaN(numAmt) || numAmt <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid cheque amount.');
+      notify('Invalid Amount', 'Please enter a valid cheque amount.');
       return;
     }
     setChequeEditBusy(true);
     try {
-      await api.updateCheque(editingChequeId, {
-        cheque_no: chequeForm.cheque_no.trim(),
-        cheque_date: chequeForm.cheque_date,
-        customer_name: chequeForm.customer_name.trim(),
-        bank_name: chequeForm.bank_name.trim(),
-        amount: numAmt,
-        reference_no: chequeForm.reference_no.trim() || undefined,
-        description: chequeForm.description.trim() || undefined,
-        status: chequeForm.status,
-      });
-      notify('Updated', `Cheque ${chequeForm.cheque_no} updated.`);
+      if (editingChequeId) {
+        await api.updateCheque(editingChequeId, {
+          cheque_no: chequeForm.cheque_no.trim(),
+          cheque_date: chequeForm.cheque_date,
+          customer_name: chequeForm.customer_name.trim(),
+          bank_name: chequeForm.bank_name.trim(),
+          amount: numAmt,
+          reference_no: chequeForm.reference_no.trim() || undefined,
+          description: chequeForm.description.trim() || undefined,
+          status: chequeForm.status,
+        });
+        notify('Updated', `Cheque #${chequeForm.cheque_no} updated.`);
+      } else {
+        await api.createCheque({
+          cheque_no: chequeForm.cheque_no.trim(),
+          cheque_date: chequeForm.cheque_date || new Date().toISOString().split('T')[0],
+          customer_name: chequeForm.customer_name.trim(),
+          bank_name: chequeForm.bank_name.trim(),
+          amount: numAmt,
+          reference_no: chequeForm.reference_no.trim() || undefined,
+          description: chequeForm.description.trim() || undefined,
+          status: chequeForm.status,
+        });
+        notify('Success', `Cheque #${chequeForm.cheque_no} recorded successfully!`);
+      }
       setShowEditChequeModal(false);
       setEditingChequeId(null);
       await loadData();
     } catch (e: any) {
-      Alert.alert('Update Failed', e?.message || 'Could not update cheque');
+      notify('Operation Failed', e?.message || 'Could not save cheque');
     } finally {
       setChequeEditBusy(false);
     }
@@ -527,7 +559,7 @@ export default function CashBankScreen() {
       notify('Deleted', `Cheque #${c.cheque_no} deleted.`);
       await loadData();
     } catch (e: any) {
-      Alert.alert('Delete Failed', e?.message || 'Could not delete cheque');
+      notify('Delete Failed', e?.message || 'Could not delete cheque');
     }
   };
 
@@ -628,7 +660,7 @@ export default function CashBankScreen() {
       notify('Deleted', `Loan account ${l.account_name} deleted.`);
       await loadData();
     } catch (e: any) {
-      Alert.alert('Delete Failed', e?.message || 'Could not delete loan account');
+      notify('Delete Failed', e?.message || 'Could not delete loan account');
     }
   };
 
@@ -966,7 +998,7 @@ export default function CashBankScreen() {
                     {inr(cashSummary?.cash_in_hand || 0)}
                   </Text>
                   <Text style={styles.overviewSub}>
-                    Opening Cash: {inr(cashSummary?.opening_cash || 25000)}
+                    Opening Cash: {inr(cashSummary?.opening_cash ?? 0)}
                   </Text>
                 </View>
 
@@ -1131,6 +1163,14 @@ export default function CashBankScreen() {
                   </Text>
                   <Text style={styles.overviewSub}>{chequeCounts.open_count} Cheques awaiting deposit</Text>
                 </View>
+                <Pressable
+                  testID="btn-add-cheque"
+                  onPress={openAddCheque}
+                  style={[styles.depWithBtn, { backgroundColor: BLUE }]}
+                >
+                  <Ionicons name="add-circle" size={16} color="#FFF" />
+                  <Text style={styles.btnTextWhite}>Add Cheque</Text>
+                </Pressable>
               </View>
 
               {/* Cheques Listing */}
@@ -2131,8 +2171,8 @@ export default function CashBankScreen() {
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
                 <View>
-                  <Text style={styles.modalTitle}>Edit Cheque</Text>
-                  <Text style={styles.modalSubtitle}>Update cheque details or status</Text>
+                  <Text style={styles.modalTitle}>{editingChequeId ? 'Edit Cheque' : 'Add Cheque'}</Text>
+                  <Text style={styles.modalSubtitle}>{editingChequeId ? 'Update cheque details or status' : 'Record a newly received cheque'}</Text>
                 </View>
                 <Pressable onPress={() => { setShowEditChequeModal(false); setEditingChequeId(null); }} hitSlop={10} testID="close-edit-cheque">
                   <Ionicons name="close" size={22} color={colors.onSurface} />
@@ -2213,7 +2253,7 @@ export default function CashBankScreen() {
                     </Pressable>
                   </View>
                 </View>
-                <PrimaryButton label="Save Changes" onPress={handleSaveChequeEdit} loading={chequeEditBusy} testID="submit-edit-cheque" />
+                <PrimaryButton label={editingChequeId ? "Save Changes" : "Add Cheque"} onPress={handleSaveChequeEdit} loading={chequeEditBusy} testID="submit-edit-cheque" />
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
