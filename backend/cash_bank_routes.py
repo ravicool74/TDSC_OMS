@@ -327,10 +327,14 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
         cash_added_from_bank = sum(float(t.get("amount") or 0) for t in contra_txs if t.get("deposit_to") == "Cash in Hand")
         cash_deposited_to_bank = sum(float(t.get("amount") or 0) for t in contra_txs if t.get("withdraw_from") == "Cash in Hand")
 
+        # Cheques deposited into Cash in Hand
+        chq_cash = await db.cheques.find({"status": "closed", "deposit_to": "cash"}, {"_id": 0}).to_list(1000)
+        cash_from_cheques = sum(float(c.get("amount") or 0) for c in chq_cash)
+
         # Check if there is an explicit cash opening balance configured in db.settings (defaults to 0.0 in real mode)
         setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
         base_opening = float(setting.get("value", 0.0)) if setting else 0.0
-        total_inflow = base_opening + tot_sales_cash + tot_income_cash + cash_added_from_bank
+        total_inflow = base_opening + tot_sales_cash + tot_income_cash + cash_added_from_bank + cash_from_cheques
         total_outflow = tot_exp_cash + cash_deposited_to_bank
         net_cash_in_hand = round(total_inflow - total_outflow, 2)
 
@@ -348,6 +352,17 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
                 "mode": "Contra / Bank Transfer"
             })
 
+        for c in chq_cash[-10:]:
+            recent.append({
+                "id": c.get("id"),
+                "date": c.get("deposit_date") or c.get("cheque_date"),
+                "type": "Cheque Deposited",
+                "particulars": f"Cheque #{c.get('cheque_no')} from {c.get('customer_name')}",
+                "inflow": inr(c.get("amount")),
+                "outflow": "—",
+                "mode": f"Cheque ({c.get('bank_name')})"
+            })
+
         return {
             "cash_in_hand": net_cash_in_hand,
             "opening_cash": base_opening,
@@ -355,6 +370,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
             "total_cash_expenses": tot_exp_cash,
             "cash_from_banks": cash_added_from_bank,
             "cash_to_banks": cash_deposited_to_bank,
+            "cash_from_cheques": cash_from_cheques,
             "recent_entries": recent
         }
 
@@ -396,7 +412,6 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
 
         if deposit_target == "cash":
             target_name = "Cash in Hand"
-            # Cash in hand increases
         else:
             bank = await db.bank_accounts.find_one({"id": deposit_target}, {"_id": 0})
             if not bank:
@@ -404,6 +419,21 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
             target_name = f"{bank['name']} ({bank['bank_name']})" if bank else "Bank Account"
             if bank:
                 await db.bank_accounts.update_one({"id": bank["id"]}, {"$inc": {"opening_balance": amount}})
+                # Insert bank transaction record for bank statement ledger
+                tx_record = {
+                    "id": f"tx_chq_{uuid.uuid4().hex[:8]}",
+                    "cheque_id": chq_id,
+                    "transfer_type": "cheque_deposit",
+                    "transfer_date": payload.transfer_date,
+                    "account_id": bank["id"],
+                    "deposit_to": bank["id"],
+                    "deposit_to_name": target_name,
+                    "amount": amount,
+                    "description": payload.description or f"Cheque #{cheque.get('cheque_no')} deposited from {cheque.get('customer_name')}",
+                    "created_at": now_utc(),
+                    "created_by": current.user_id,
+                }
+                await db.bank_transactions.insert_one(tx_record)
 
         # Update cheque status
         update_data = {
@@ -486,6 +516,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
             amt = float(doc.get("amount") or 0)
             if dep_to and dep_to != "cash" and amt > 0:
                 await db.bank_accounts.update_one({"id": dep_to}, {"$inc": {"opening_balance": -amt}})
+            await db.bank_transactions.delete_many({"cheque_id": chq_id})
         res = await db.cheques.delete_one({"id": chq_id})
         if log_audit:
             await log_audit(db, current, "cheques", "delete", chq_id, doc, None)
