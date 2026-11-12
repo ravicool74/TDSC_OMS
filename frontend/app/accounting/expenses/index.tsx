@@ -78,6 +78,7 @@ export default function ExpensesList() {
     customer_gst: '',
   });
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const canDelete = isAdmin || isManager || user?.role === 'accountant';
 
@@ -95,7 +96,7 @@ export default function ExpensesList() {
       notify('Deleted', `Expense ${item.expense_no || ''} deleted successfully.`);
       await load();
     } catch (e: any) {
-      Alert.alert('Delete Failed', e?.message || 'Could not delete expense');
+      notify('Delete Failed', e?.message || 'Could not delete expense');
     } finally {
       setDeletingId(null);
     }
@@ -103,9 +104,12 @@ export default function ExpensesList() {
 
   const load = useCallback(async () => {
     try {
-      setList(await api.get<any[]>('/expenses'));
-    } catch {
-      setList([]);
+      const data = await api.get<any[]>('/expenses');
+      setList(Array.isArray(data) ? data : []);
+      setLoadError(null);
+    } catch (e: any) {
+      console.warn('Failed to load expenses', e);
+      setLoadError(e?.message || 'Failed to load expenses');
     }
   }, []);
 
@@ -366,6 +370,20 @@ export default function ExpensesList() {
                 </View>
               </View>
 
+              {/* Split Payments Breakdown Badges */}
+              {Array.isArray(item.split_payments) && item.split_payments.length > 0 ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                  {item.split_payments.map((sp: any, spi: number) => (
+                    <View key={spi} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, gap: 4 }}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#15803D' }}>
+                        {sp.mode === 'cash' ? '💵 Cash' : sp.mode === 'upi' ? '📱 UPI' : '🏦 Online'}: {inr(sp.amount)}
+                        {sp.bank_name ? ` (${sp.bank_name})` : ''}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
               {/* Customer / Job Metadata Badges (Name, Mobile, PAN, GST, Linked Invoice) */}
               {(item.customer_name || item.customer_mobile || item.customer_pan || item.customer_gst || item.sale_invoice_no) ? (
                 <View style={styles.custMetaContainer}>
@@ -392,10 +410,10 @@ export default function ExpensesList() {
                     </View>
                   ) : null}
                   {item.sale_invoice_no ? (
-                    <View style={[styles.metaBadge, { backgroundColor: '#E0E7FF', borderColor: '#C7D2FE' }]}>
-                      <Ionicons name="document-text-outline" size={12} color="#3730A3" />
-                      <Text style={[styles.metaBadgeTxt, { color: '#3730A3', fontWeight: '800' }]}>
-                        Sale: {item.sale_invoice_no} {item.sale_item_name ? `(${item.sale_item_name})` : ''}
+                    <View style={[styles.metaBadge, { backgroundColor: item.is_whole_voucher ? '#FEF3C7' : '#E0E7FF', borderColor: item.is_whole_voucher ? '#FDE68A' : '#C7D2FE' }]}>
+                      <Ionicons name={item.is_whole_voucher ? 'receipt-outline' : 'document-text-outline'} size={12} color={item.is_whole_voucher ? '#B45309' : '#3730A3'} />
+                      <Text style={[styles.metaBadgeTxt, { color: item.is_whole_voucher ? '#B45309' : '#3730A3', fontWeight: '800' }]}>
+                        {item.is_whole_voucher ? `Whole Voucher: ${item.sale_invoice_no}` : `Sale: ${item.sale_invoice_no} (${item.sale_item_name || 'Item'})`}
                       </Text>
                     </View>
                   ) : null}

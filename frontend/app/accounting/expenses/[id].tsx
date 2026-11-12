@@ -280,6 +280,25 @@ export default function ExpenseDetail() {
             </View>
           ) : null}
 
+          {/* Split Payment Breakdown Card */}
+          {Array.isArray(exp.split_payments) && exp.split_payments.length > 0 ? (
+            <View style={{ backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: radius.sm, padding: 10, marginTop: 8, gap: 6 }}>
+              <Text style={{ fontSize: 11, fontWeight: '800', color: '#166534', textTransform: 'uppercase' }}>
+                Multi-Split Payment Breakdown:
+              </Text>
+              {exp.split_payments.map((sp: any, spi: number) => (
+                <View key={spi} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ fontSize: font.sm, color: '#1E293B', fontWeight: '600' }}>
+                    {sp.mode === 'cash' ? '💵 Cash' : sp.mode === 'upi' ? '📱 UPI' : '🏦 Bank Transfer'}
+                    {sp.bank_name ? ` (${sp.bank_name})` : ''}
+                    {sp.reference_no ? ` • Ref: ${sp.reference_no}` : ''}
+                  </Text>
+                  <Text style={{ fontSize: font.sm, fontWeight: '800', color: '#15803D' }}>{inr(sp.amount)}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
           <View style={styles.divider} />
 
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -311,6 +330,15 @@ export default function ExpenseDetail() {
         {(exp.customer_name || exp.customer_mobile || exp.customer_pan || exp.customer_gst || exp.sale_invoice_no) ? (
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>CLIENT & LINKED SALE DETAILS</Text>
+
+            {exp.is_whole_voucher ? (
+              <View style={[styles.detailRow, { backgroundColor: '#FEF3C7', padding: 8, borderRadius: 6, marginBottom: 6 }]}>
+                <Ionicons name="receipt-outline" size={16} color="#B45309" />
+                <Text style={{ flex: 1, color: '#B45309', fontWeight: '800', fontSize: font.sm, marginLeft: 6 }}>
+                  Whole Voucher Disbursement (All Items Combined)
+                </Text>
+              </View>
+            ) : null}
 
             {exp.customer_name ? (
               <View style={styles.detailRow}>

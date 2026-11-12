@@ -66,7 +66,7 @@ export default function ExpenseApprovalDetailScreen() {
     }
   };
 
-  const isCreator = user?.id === voucher?.created_by?.user_id;
+  const isCreator = (user?.user_id && user.user_id === voucher?.created_by?.user_id) || ((user as any)?.id && (user as any).id === voucher?.created_by?.user_id);
   const isSuperAdmin = user?.role === 'super_admin';
   const isApproverRole = user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager';
   const canApprove = isApproverRole && (!isCreator || isSuperAdmin);

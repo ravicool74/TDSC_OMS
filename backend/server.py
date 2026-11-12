@@ -3,9 +3,9 @@ import re
 import uuid
 import logging
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 import bcrypt
 import certifi
@@ -21,7 +21,7 @@ from payment_in_pdf import build_payment_in_pdf
 from expense_pdf import build_expense_pdf
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from starlette.middleware.cors import CORSMiddleware
 from security_vault import log_audit_entry, encrypt_credential, decrypt_credential, mask_credential
 from branch_routes import make_branch_router
@@ -802,16 +802,45 @@ class Expense(BaseModel):
     sale_item_name: Optional[str] = None
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
+    is_whole_voucher: bool = False
+    split_payments: Optional[List[dict]] = None
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
-    created_at: datetime = Field(default_factory=now_utc)
+    created_at: Any = Field(default_factory=now_utc)
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def _validate_created_at(cls, v):
+        if not v:
+            return now_utc()
+        if isinstance(v, datetime):
+            return v
+        s = str(v).strip()
+        formats = [
+            "%d-%m-%Y %I:%M:%S %p",
+            "%d/%m/%Y %I:%M:%S %p",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+            "%d-%m-%Y",
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+        try:
+            return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        except Exception:
+            return now_utc()
 
 
 class ExpenseInput(BaseModel):
     date: str
     category: str
     amount: float
-    payment_mode: str
+    payment_mode: str = "cash"
     bank_account_id: Optional[str] = None
     vendor: Optional[str] = None
     description: Optional[str] = None
@@ -827,6 +856,8 @@ class ExpenseInput(BaseModel):
     sale_item_name: Optional[str] = None
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
+    is_whole_voucher: Optional[bool] = False
+    split_payments: Optional[List[dict]] = None
     status: Optional[str] = "pending"
 
 
@@ -849,6 +880,8 @@ class ExpenseUpdateInput(BaseModel):
     sale_invoice_no: Optional[str] = None
     sale_invoice_date: Optional[str] = None
     sale_item_name: Optional[str] = None
+    is_whole_voucher: Optional[bool] = None
+    split_payments: Optional[List[dict]] = None
 
 
 class ExpenseDecision(BaseModel):
@@ -2424,16 +2457,37 @@ async def _peek_next_no(counter_key: str, prefix: str) -> str:
     return f"{prefix}-{seq:04d}"
 
 
+def parse_date_to_date_obj(date_str: Optional[Any]) -> date:
+    """Parse flexible date strings (YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, ISO) to date object."""
+    if not date_str:
+        return datetime.now(timezone.utc).date()
+    if isinstance(date_str, datetime):
+        return date_str.date()
+    if isinstance(date_str, date):
+        return date_str
+    s = str(date_str).strip()
+    formats = [
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%Y/%m/%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%d-%m-%Y %I:%M:%S %p",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(s[:19], fmt).date()
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(s).date()
+    except Exception:
+        return datetime.now(timezone.utc).date()
+
+
 def get_indian_financial_year(date_str: Optional[str] = None) -> str:
     """Return Indian Financial Year format like '2026-27' for a given ISO date (Apr 1 - Mar 31)."""
-    try:
-        if date_str:
-            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
-        else:
-            d = datetime.now(timezone.utc).date()
-    except Exception:
-        d = datetime.now(timezone.utc).date()
-
+    d = parse_date_to_date_obj(date_str)
     year = d.year
     if d.month >= 4:
         start_yr = year
@@ -2904,6 +2958,21 @@ async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_curr
                 "remaining_balance": remaining,
                 "expense_history": prior_exp,
             })
+
+    # Summary across the entire voucher (for whole-voucher expense booking)
+    all_prior_exp = await db.expenses.find({
+        "sale_invoice_id": iid,
+        "status": {"$ne": "rejected"}
+    }, {"_id": 0, "amount": 1, "expense_no": 1, "date": 1, "status": 1, "sale_item_name": 1, "is_whole_voucher": 1}).to_list(500)
+    total_already_spent = round(sum(float(x.get("amount") or 0) for x in all_prior_exp), 2)
+
+    if passed_items:
+        total_pass_on_billed = round(sum(it["billed_amount"] for it in passed_items), 2)
+    else:
+        total_pass_on_billed = round(float(inv.get("total_amount") or 0.0), 2)
+
+    total_remaining_balance = round(max(0.0, total_pass_on_billed - total_already_spent), 2)
+
     return {
         "invoice_id": iid,
         "invoice_no": inv.get("invoice_no"),
@@ -2912,6 +2981,9 @@ async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_curr
         "party_name": inv.get("party_name"),
         "party_mobile": inv.get("party_mobile"),
         "total_amount": inv.get("total_amount"),
+        "total_pass_on_billed": total_pass_on_billed,
+        "total_already_spent": total_already_spent,
+        "total_remaining_balance": total_remaining_balance,
         "passed_on_items": passed_items,
     }
 
@@ -2925,6 +2997,31 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
     exp_dict["created_by"] = current.user_id
     exp_dict["created_by_name"] = current.name
 
+    # Normalize date
+    norm_date = parse_date_to_date_obj(payload.date).strftime("%Y-%m-%d")
+    exp_dict["date"] = norm_date
+
+    # Multi-split payments validation & breakdown description
+    if payload.split_payments and len(payload.split_payments) > 0:
+        total_split = sum(float(p.get("amount") or 0) for p in payload.split_payments)
+        if abs(total_split - payload.amount) > 0.05:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Total of split payments (₹{total_split:,.2f}) must match total expense amount (₹{payload.amount:,.2f})"
+            )
+        split_summary_parts = []
+        for p in payload.split_payments:
+            pm = (p.get("mode") or "payment").upper()
+            amt = float(p.get("amount") or 0)
+            bname = f" ({p.get('bank_name')})" if p.get('bank_name') else ""
+            ref = f" Ref: {p.get('reference_no')}" if p.get('reference_no') else ""
+            split_summary_parts.append(f"{pm}{bname}: ₹{amt:,.2f}{ref}")
+        split_text = " | ".join(split_summary_parts)
+        if not exp_dict.get("description"):
+            exp_dict["description"] = split_text
+        elif split_text not in exp_dict["description"]:
+            exp_dict["description"] = f"{exp_dict['description']}\n{split_text}"
+
     # Auto-fill customer details if customer_id is provided
     if payload.customer_id and not payload.sale_invoice_id:
         cust = await db.customers.find_one({"id": payload.customer_id}, {"_id": 0})
@@ -2935,7 +3032,7 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
             exp_dict["customer_gst"] = exp_dict.get("customer_gst") or cust.get("gst_no")
             exp_dict["customer_code"] = exp_dict.get("customer_code") or cust.get("customer_code")
 
-    # If linked to a Sale Invoice, perform strict pass-on item balance validation
+    # If linked to a Sale Invoice, perform pass-on item / whole voucher balance validation
     if payload.sale_invoice_id:
         inv = await db.invoices.find_one({"id": payload.sale_invoice_id}, {"_id": 0})
         if not inv:
@@ -2965,47 +3062,79 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
         exp_dict["sale_invoice_no"] = inv.get("invoice_no")
         exp_dict["sale_invoice_date"] = inv.get("date")
 
-        # Find the specific Passed On Money item
-        sale_item = None
-        for it in inv.get("items", []):
-            if it.get("name", "").strip().lower() == (payload.sale_item_name or "").strip().lower():
-                sale_item = it
-                break
+        if payload.is_whole_voucher:
+            # Whole Voucher Booking
+            passed_items = []
+            for it in inv.get("items", []):
+                name = it.get("name", "").strip()
+                itype = it.get("item_type")
+                if (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES]):
+                    passed_items.append(it)
 
-        if not sale_item:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Item '{payload.sale_item_name}' was not found in Sale Voucher {inv.get('invoice_no')}"
-            )
+            if passed_items:
+                total_pass_on = sum(float(it.get("amount") or (float(it.get("qty", 1)) * float(it.get("price", 0)))) for it in passed_items)
+            else:
+                total_pass_on = float(inv.get("total_amount") or 0.0)
 
-        # Check that it is indeed a Passed On item
-        name = sale_item.get("name", "").strip()
-        itype = sale_item.get("item_type")
-        is_pass_on = (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES])
-        if not is_pass_on:
-            raise HTTPException(
-                status_code=400,
-                detail=f"'{name}' is an Actual Service item, not a Passed On Money item. Expenses can only be booked against Passed On Money items."
-            )
+            prior_expenses = await db.expenses.find({
+                "sale_invoice_id": payload.sale_invoice_id,
+                "status": {"$ne": "rejected"}
+            }, {"_id": 0, "amount": 1}).to_list(1000)
+            already_spent = sum(float(x.get("amount") or 0) for x in prior_expenses)
+            remaining_balance = round(max(0.0, total_pass_on - already_spent), 2)
 
-        line_total = float(sale_item.get("amount") or (float(sale_item.get("qty", 1)) * float(sale_item.get("price", 0))))
-        prior_expenses = await db.expenses.find({
-            "sale_invoice_id": payload.sale_invoice_id,
-            "sale_item_name": sale_item.get("name"),
-            "status": {"$ne": "rejected"},
-        }, {"_id": 0, "amount": 1}).to_list(1000)
-        already_spent = sum(float(x.get("amount") or 0) for x in prior_expenses)
-        remaining_balance = round(max(0.0, line_total - already_spent), 2)
+            if round(payload.amount, 2) > remaining_balance:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available voucher balance ₹{remaining_balance:,.2f} (Received: ₹{total_pass_on:,.2f}, Already Spent: ₹{already_spent:,.2f})"
+                )
 
-        if round(payload.amount, 2) > remaining_balance:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available Passed On Money balance ₹{remaining_balance:,.2f} for '{sale_item.get('name')}' (Received: ₹{line_total:,.2f}, Already Spent: ₹{already_spent:,.2f})"
-            )
+            exp_dict["is_whole_voucher"] = True
+            exp_dict["sale_item_name"] = payload.sale_item_name or "All Voucher Items"
+            exp_dict["pass_on_item_type"] = "passed_on_money"
+            exp_dict["pass_on_received_amount"] = total_pass_on
+        else:
+            # Individual Item Validation
+            sale_item = None
+            for it in inv.get("items", []):
+                if it.get("name", "").strip().lower() == (payload.sale_item_name or "").strip().lower():
+                    sale_item = it
+                    break
 
-        exp_dict["sale_item_name"] = sale_item.get("name")
-        exp_dict["pass_on_item_type"] = "passed_on_money"
-        exp_dict["pass_on_received_amount"] = line_total
+            if not sale_item:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Item '{payload.sale_item_name}' was not found in Sale Voucher {inv.get('invoice_no')}"
+                )
+
+            # Check that it is indeed a Passed On item
+            name = sale_item.get("name", "").strip()
+            itype = sale_item.get("item_type")
+            is_pass_on = (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES])
+            if not is_pass_on:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"'{name}' is an Actual Service item, not a Passed On Money item. Expenses can only be booked against Passed On Money items."
+                )
+
+            line_total = float(sale_item.get("amount") or (float(sale_item.get("qty", 1)) * float(sale_item.get("price", 0))))
+            prior_expenses = await db.expenses.find({
+                "sale_invoice_id": payload.sale_invoice_id,
+                "sale_item_name": sale_item.get("name"),
+                "status": {"$ne": "rejected"},
+            }, {"_id": 0, "amount": 1}).to_list(1000)
+            already_spent = sum(float(x.get("amount") or 0) for x in prior_expenses)
+            remaining_balance = round(max(0.0, line_total - already_spent), 2)
+
+            if round(payload.amount, 2) > remaining_balance:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available Passed On Money balance ₹{remaining_balance:,.2f} for '{sale_item.get('name')}' (Received: ₹{line_total:,.2f}, Already Spent: ₹{already_spent:,.2f})"
+                )
+
+            exp_dict["sale_item_name"] = sale_item.get("name")
+            exp_dict["pass_on_item_type"] = "passed_on_money"
+            exp_dict["pass_on_received_amount"] = line_total
 
     e = Expense(**exp_dict)
     await db.expenses.insert_one(e.dict())
@@ -3077,7 +3206,18 @@ async def list_expenses(
                 if not d.get("customer_gst"): d["customer_gst"] = c.get("gst_no")
                 if not d.get("customer_code"): d["customer_code"] = c.get("customer_code")
 
-    return [Expense(**d) for d in docs]
+    res = []
+    for d in docs:
+        try:
+            res.append(Expense(**d))
+        except Exception as e:
+            logging.getLogger("fms.expenses").warning(f"Failed parsing expense {d.get('id')}: {e}")
+            try:
+                d["created_at"] = now_utc()
+                res.append(Expense(**d))
+            except Exception:
+                pass
+    return res
 
 
 @api_router.get("/expenses/{eid}", response_model=Expense)
@@ -3444,6 +3584,13 @@ def _recalc_invoice(items: List[InvoiceItem]):
 async def create_invoice(payload: InvoiceInput, current: User = Depends(get_current_user)):
     if not payload.party_id or not payload.party_name.strip():
         raise HTTPException(status_code=400, detail="Party (Customer) is required")
+    # Normalize input dates for reliable back-dating and FY mapping
+    payload.date = parse_date_to_date_obj(payload.date).strftime("%Y-%m-%d")
+    if payload.due_date:
+        payload.due_date = parse_date_to_date_obj(payload.due_date).strftime("%Y-%m-%d")
+    else:
+        payload.due_date = payload.date
+
     items, subtotal, tdisc, ttax, ttotal = _recalc_invoice(payload.items or [])
     if payload.invoice_type == "sale":
         custom_no = (payload.invoice_no or "").strip()
@@ -3685,10 +3832,21 @@ async def get_invoice_pdf(iid: str, token: Optional[str] = None, authorization: 
 
 
 @api_router.patch("/invoices/{iid}", response_model=Invoice)
-async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depends(require_admin)):
+async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depends(get_current_user)):
     existing = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Authorized roles: admin, manager, accountant, DEO, or invoice creator
+    allowed_roles = {"admin", "super_admin", "manager", "branch_manager", "assistant_branch_manager", "accountant", "custom_accounts_assistant", "data_entry_operator", "employee"}
+    is_owner = (existing.get("created_by") == current.user_id)
+    if current.role not in allowed_roles and not is_owner:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this invoice")
+
+    # Normalize dates for reliable back-dating
+    norm_date = parse_date_to_date_obj(payload.date).strftime("%Y-%m-%d") if payload.date else existing.get("date")
+    norm_due = parse_date_to_date_obj(payload.due_date).strftime("%Y-%m-%d") if payload.due_date else norm_date
+
     items, subtotal, tdisc, ttax, ttotal = _recalc_invoice(payload.items or [])
     total = ttotal if ttotal > 0 else float(payload.total_amount or 0)
     paid = float(payload.paid_amount or 0)
@@ -3697,20 +3855,50 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
     balance = round(total - paid, 2)
     status = "paid" if balance <= 0 and total > 0 else ("partial" if paid > 0 else "unpaid")
     updates = {
-        "invoice_type": payload.invoice_type, "payment_type": payload.payment_type,
+        "invoice_type": payload.invoice_type,
+        "payment_type": payload.payment_type,
         "payment_mode": payload.payment_mode or "cash",
-        "date": payload.date, "payment_terms": payload.payment_terms, "due_date": payload.due_date,
-        "party_id": payload.party_id, "party_name": payload.party_name,
-        "party_mobile": payload.party_mobile, "party_gst": payload.party_gst,
+        "date": norm_date,
+        "payment_terms": payload.payment_terms or existing.get("payment_terms") or "Custom",
+        "due_date": norm_due,
+        "party_id": payload.party_id,
+        "party_name": payload.party_name,
+        "party_mobile": payload.party_mobile,
+        "party_gst": payload.party_gst,
         "items": [it.dict() for it in items],
-        "subtotal": subtotal, "total_discount": tdisc, "total_tax": ttax,
-        "total_amount": total, "paid_amount": paid, "balance": balance, "status": status,
+        "subtotal": subtotal,
+        "total_discount": tdisc,
+        "total_tax": ttax,
+        "total_amount": total,
+        "paid_amount": paid,
+        "balance": balance,
+        "status": status,
         "notes": payload.notes,
         "signatory_name": payload.signatory_name or "अंजू कुमारी",
         "signature_url": payload.signature_url,
         "include_signature": True if payload.include_signature is None else payload.include_signature,
+        "updated_at": now_utc(),
+        "updated_by": current.user_id,
     }
     await db.invoices.update_one({"id": iid}, {"$set": updates})
+
+    # Sync any auto-linked income records with updated date and amount
+    inv_no = existing.get("invoice_no") or ""
+    await db.income.update_many(
+        {"$or": [
+            {"remarks": {"$regex": re.escape(iid)}},
+            {"remarks": {"$regex": re.escape(inv_no)}}
+        ]},
+        {"$set": {
+            "date": norm_date,
+            "amount": total,
+            "client_id": payload.party_id,
+            "client_name": payload.party_name,
+            "client_mobile": payload.party_mobile,
+            "payment_mode": payload.payment_mode or ("cash" if payload.payment_type == "cash" else "bank"),
+        }}
+    )
+
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
     items_d = d.get("items") or []
     for it in items_d:

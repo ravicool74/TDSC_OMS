@@ -16,8 +16,16 @@ export default function InvoiceDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin' || user?.role === 'manager';
   const [inv, setInv] = useState<any | null>(null);
+  const isAdmin = user?.role === 'admin' || user?.role === 'manager' || user?.role === 'super_admin';
+  const canEdit =
+    isAdmin ||
+    user?.role === 'branch_manager' ||
+    user?.role === 'assistant_branch_manager' ||
+    user?.role === 'accountant' ||
+    user?.role === 'custom_accounts_assistant' ||
+    user?.role === 'data_entry_operator' ||
+    (!!inv?.created_by && (inv?.created_by === (user as any)?.id || inv?.created_by === user?.user_id));
 
   // Edit Signatory Modal State
   const [signModalVisible, setSignModalVisible] = useState(false);
@@ -138,15 +146,15 @@ export default function InvoiceDetail() {
           <Pressable onPress={printPdf} hitSlop={8} testID="print-hdr" style={styles.topIconBtn}>
             <Ionicons name="print" size={20} color={colors.brandPrimary} />
           </Pressable>
+          {canEdit ? (
+            <Pressable onPress={edit} hitSlop={8} testID="edit-hdr" style={styles.topIconBtn}>
+              <Ionicons name="create-outline" size={20} color="#B45309" />
+            </Pressable>
+          ) : null}
           {isAdmin ? (
-            <>
-              <Pressable onPress={edit} hitSlop={8} testID="edit-hdr" style={styles.topIconBtn}>
-                <Ionicons name="create-outline" size={20} color="#B45309" />
-              </Pressable>
-              <Pressable onPress={remove} hitSlop={8} testID="del-hdr" style={styles.topIconBtn}>
-                <Ionicons name="trash-outline" size={20} color={colors.error} />
-              </Pressable>
-            </>
+            <Pressable onPress={remove} hitSlop={8} testID="del-hdr" style={styles.topIconBtn}>
+              <Ionicons name="trash-outline" size={20} color={colors.error} />
+            </Pressable>
           ) : null}
         </View>
       )} />
@@ -398,7 +406,7 @@ export default function InvoiceDetail() {
 const Row: React.FC<{ label: string; value: string; bold?: boolean; color?: string; size?: number }> = ({ label, value, bold, color, size }) => (
   <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 }}>
     <Text style={{ color: colors.muted, fontSize: font.sm }}>{label}</Text>
-    <Text style={{ color: color || '#111827', fontWeight: bold ? '800' : '600', fontSize: size || font.md }}>{value}</Text>
+    <Text style={{ color: color || '#111827', fontWeight: bold ? '800' : '600', fontSize: size || font.base }}>{value}</Text>
   </View>
 );
 
@@ -422,8 +430,8 @@ const styles = StyleSheet.create({
   itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#F3F4F6', gap: 10 },
   itemIndexBox: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' },
   itemIndexTxt: { fontSize: 11, fontWeight: '800', color: '#475569' },
-  itemName: { color: '#111827', fontWeight: '700', fontSize: font.md },
-  itemAmt: { color: '#059669', fontWeight: '800', fontSize: font.md },
+  itemName: { color: '#111827', fontWeight: '700', fontSize: font.base },
+  itemAmt: { color: '#059669', fontWeight: '800', fontSize: font.base },
   divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 4 },
   topIconBtn: { padding: 6, borderRadius: radius.sm, backgroundColor: '#EFF6FF' },
 
