@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
+const distDir = path.join(__dirname, '..', 'dist');
+const indexPath = path.join(distDir, 'index.html');
 
 if (fs.existsSync(indexPath)) {
   let html = fs.readFileSync(indexPath, 'utf8');
@@ -27,6 +28,15 @@ if (fs.existsSync(indexPath)) {
     html = html.replace('</head>', pwaTags);
     fs.writeFileSync(indexPath, html, 'utf8');
     console.log('Successfully injected iOS Safari PWA tags into dist/index.html');
+  }
+
+  // Generate 404.html and login.html so static web hosts (Vercel/Netlify) never throw 404 on subroutes
+  try {
+    fs.copyFileSync(indexPath, path.join(distDir, '404.html'));
+    fs.copyFileSync(indexPath, path.join(distDir, 'login.html'));
+    console.log('Successfully created 404.html and login.html SPA fallbacks');
+  } catch (e) {
+    console.warn('Failed creating 404.html fallback:', e.message);
   }
 }
 
