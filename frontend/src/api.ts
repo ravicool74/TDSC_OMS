@@ -147,10 +147,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  expenseApprovalAction: (id: string, action: string, remarks?: string) =>
+  expenseApprovalAction: (
+    id: string,
+    action: string,
+    remarks?: string,
+    extra?: { selected_item_ids?: string[]; approved_amount?: number }
+  ) =>
     request<any>(`/expense-approvals/${id}/action`, {
       method: 'POST',
-      body: JSON.stringify({ action, remarks }),
+      body: JSON.stringify({ action, remarks, ...(extra || {}) }),
     }),
   deleteExpenseApproval: (id: string) =>
     request<any>(`/expense-approvals/${id}`, {

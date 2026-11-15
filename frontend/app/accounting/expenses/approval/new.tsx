@@ -56,6 +56,11 @@ export default function NewExpenseApprovalScreen() {
   const [loadingSaleVouchers, setLoadingSaleVouchers] = useState(false);
   const [selectedSaleVoucher, setSelectedSaleVoucher] = useState<any | null>(null);
 
+  // Pass-on money items multi-selection
+  const [passOnItems, setPassOnItems] = useState<any[]>([]);
+  const [loadingPassOnItems, setLoadingPassOnItems] = useState(false);
+  const [selectedPassOnNames, setSelectedPassOnNames] = useState<string[]>([]);
+
   // Line Items (Section 3)
   const [items, setItems] = useState<ExpenseItem[]>([
     { id: '1', head: 'Tender Fee', description: '', qty: '1', rate: '', amount: 0 },
@@ -79,6 +84,8 @@ export default function NewExpenseApprovalScreen() {
     if (!selectedCustomer) {
       setSaleVouchers([]);
       setSelectedSaleVoucher(null);
+      setPassOnItems([]);
+      setSelectedPassOnNames([]);
       return;
     }
     (async () => {
@@ -93,6 +100,88 @@ export default function NewExpenseApprovalScreen() {
       }
     })();
   }, [selectedCustomer]);
+
+  // Handle selecting a sale voucher and loading its passed-on items
+  const handleSelectSaleVoucher = async (sv: any) => {
+    setSelectedSaleVoucher(sv);
+    setPassOnItems([]);
+    setSelectedPassOnNames([]);
+    setLoadingPassOnItems(true);
+    try {
+      const res = await api.get<any>(`/invoices/${sv.sale_voucher_id}/passed-on-items`);
+      const poiList = res?.passed_on_items || [];
+      setPassOnItems(poiList);
+      const avail = poiList.filter((x: any) => x.remaining_balance > 0);
+      if (avail.length > 0) {
+        setSelectedPassOnNames(avail.map((x: any) => x.name));
+        setItems(
+          avail.map((it: any, idx: number) => {
+            const amt = it.remaining_balance > 0 ? it.remaining_balance : it.billed_amount;
+            return {
+              id: it.item_id || `poi_${idx}_${Date.now()}`,
+              head: it.name || 'Tender Fee',
+              description: `Disbursement of client pass-on funds for ${it.name} against Voucher ${sv.sale_voucher_no || ''}`,
+              qty: '1',
+              rate: String(amt || 0),
+              amount: Number(amt || 0),
+            };
+          })
+        );
+      }
+    } catch {
+      setPassOnItems([]);
+    } finally {
+      setLoadingPassOnItems(false);
+    }
+  };
+
+  const handleTogglePassOnItem = (it: any) => {
+    if (it.remaining_balance <= 0) return;
+    const isChosen = selectedPassOnNames.includes(it.name);
+    const nextNames = isChosen
+      ? selectedPassOnNames.filter(x => x !== it.name)
+      : [...selectedPassOnNames, it.name];
+    setSelectedPassOnNames(nextNames);
+
+    const chosen = passOnItems.filter(x => nextNames.includes(x.name));
+    if (chosen.length > 0) {
+      setItems(
+        chosen.map((poi: any, idx: number) => {
+          const amt = poi.remaining_balance > 0 ? poi.remaining_balance : poi.billed_amount;
+          return {
+            id: poi.item_id || `poi_${idx}_${Date.now()}`,
+            head: poi.name || 'Tender Fee',
+            description: `Disbursement of client pass-on funds for ${poi.name} against Voucher ${selectedSaleVoucher?.sale_voucher_no || ''}`,
+            qty: '1',
+            rate: String(amt || 0),
+            amount: Number(amt || 0),
+          };
+        })
+      );
+    }
+  };
+
+  const handleToggleSelectAllPassOn = () => {
+    const avail = passOnItems.filter(x => x.remaining_balance > 0);
+    if (selectedPassOnNames.length === avail.length) {
+      setSelectedPassOnNames([]);
+    } else {
+      setSelectedPassOnNames(avail.map(x => x.name));
+      setItems(
+        avail.map((poi: any, idx: number) => {
+          const amt = poi.remaining_balance > 0 ? poi.remaining_balance : poi.billed_amount;
+          return {
+            id: poi.item_id || `poi_${idx}_${Date.now()}`,
+            head: poi.name || 'Tender Fee',
+            description: `Disbursement of client pass-on funds for ${poi.name} against Voucher ${selectedSaleVoucher?.sale_voucher_no || ''}`,
+            qty: '1',
+            rate: String(amt || 0),
+            amount: Number(amt || 0),
+          };
+        })
+      );
+    }
+  };
 
   // Line item manipulation
   const updateItem = (id: string, field: keyof ExpenseItem, val: string) => {
@@ -271,7 +360,7 @@ export default function NewExpenseApprovalScreen() {
                   return (
                     <Pressable
                       key={sv.sale_voucher_id}
-                      onPress={() => setSelectedSaleVoucher(sv)}
+                      onPress={() => handleSelectSaleVoucher(sv)}
                       style={[styles.saleCard, isSel && styles.saleCardActive]}
                       testID={`sale-voucher-${sv.sale_voucher_id}`}
                     >
@@ -309,6 +398,124 @@ export default function NewExpenseApprovalScreen() {
                     </Pressable>
                   );
                 })}
+              </View>
+            )}
+
+            {/* Passed On Money Items in Voucher */}
+            {selectedSaleVoucher && (
+              <View style={{ gap: 6, marginTop: 12 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: colors.onSurface }}>
+                    Passed On Money Items in Voucher ({passOnItems.length}) *
+                  </Text>
+                  <Text style={{ fontSize: 11, color: colors.muted }}>
+                    Multi-select items (1 by 1 or All together)
+                  </Text>
+                </View>
+
+                {loadingPassOnItems ? (
+                  <ActivityIndicator color="#0D9488" style={{ marginVertical: 12 }} />
+                ) : passOnItems.length === 0 ? (
+                  <View style={styles.alertBox}>
+                    <Ionicons name="information-circle-outline" size={18} color="#0284C7" />
+                    <Text style={[styles.alertTxt, { color: '#0369A1' }]}>
+                      No specific Passed-On line items tagged in {selectedSaleVoucher.sale_voucher_no}. You can enter expense lines manually below.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.poiTable}>
+                    {/* Header with All Checkbox */}
+                    <View style={styles.poiHeaderRow}>
+                      <Text style={[styles.poiThTxt, { flex: 2 }]}>Fee Item Name</Text>
+                      <Text style={[styles.poiThTxt, { flex: 1.2, textAlign: 'right' }]}>Received</Text>
+                      <Text style={[styles.poiThTxt, { flex: 1.2, textAlign: 'right' }]}>Spent</Text>
+                      <Text style={[styles.poiThTxt, { flex: 1.2, textAlign: 'right' }]}>Balance</Text>
+                      <Pressable
+                        onPress={handleToggleSelectAllPassOn}
+                        style={{ width: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                        hitSlop={6}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '800', color: '#0F766E' }}>All</Text>
+                        <Ionicons
+                          name={
+                            passOnItems.filter(x => x.remaining_balance > 0).length > 0 &&
+                            passOnItems.filter(x => x.remaining_balance > 0).every(it => selectedPassOnNames.includes(it.name))
+                              ? 'checkbox'
+                              : selectedPassOnNames.length > 0
+                                ? 'remove-circle-outline'
+                                : 'square-outline'
+                          }
+                          size={16}
+                          color="#0D9488"
+                        />
+                      </Pressable>
+                    </View>
+
+                    {/* Rows */}
+                    {passOnItems.map(it => {
+                      const isChosen = selectedPassOnNames.includes(it.name);
+                      const isZero = it.remaining_balance <= 0;
+                      return (
+                        <Pressable
+                          key={it.name}
+                          onPress={() => !isZero && handleTogglePassOnItem(it)}
+                          style={[
+                            styles.poiDataRow,
+                            isChosen && styles.poiDataRowChosen,
+                            isZero && { opacity: 0.6, backgroundColor: '#F8FAFC' },
+                          ]}
+                        >
+                          <View style={{ flex: 2 }}>
+                            <Text style={[styles.poiName, isChosen && { color: '#0D9488', fontWeight: '800' }]}>{it.name}</Text>
+                            <Text style={styles.poiFeeType}>{it.fee_type || 'Reimbursement'}</Text>
+                          </View>
+                          <Text style={[styles.poiAmt, { flex: 1.2, textAlign: 'right' }]}>
+                            ₹{Number(it.billed_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </Text>
+                          <Text style={[styles.poiAmt, { flex: 1.2, textAlign: 'right', color: '#DC2626' }]}>
+                            ₹{Number(it.already_spent || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.poiAmt,
+                              { flex: 1.2, textAlign: 'right', fontWeight: '800' },
+                              isZero ? { color: '#94A3B8' } : { color: '#059669' },
+                            ]}
+                          >
+                            ₹{Number(it.remaining_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </Text>
+                          <View style={{ width: 60, alignItems: 'center', justifyContent: 'center' }}>
+                            <Ionicons
+                              name={isChosen ? 'checkbox' : isZero ? 'close-circle-outline' : 'square-outline'}
+                              size={20}
+                              color={isChosen ? '#0D9488' : isZero ? '#94A3B8' : colors.muted}
+                            />
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+
+                    {/* Total Row */}
+                    <View style={styles.poiTotalRow}>
+                      <View style={{ flex: 2 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '800', color: '#0F766E' }}>
+                          Total Selected ({selectedPassOnNames.length}/{passOnItems.length} Selected)
+                        </Text>
+                        <Text style={{ fontSize: 9, color: '#14B8A6', fontWeight: '600' }}>Combined Sum</Text>
+                      </View>
+                      <Text style={{ flex: 1.2, textAlign: 'right', fontSize: 12, fontWeight: '800', color: '#0F172A' }}>
+                        ₹{passOnItems.filter(x => selectedPassOnNames.includes(x.name)).reduce((sum, x) => sum + (x.billed_amount || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </Text>
+                      <Text style={{ flex: 1.2, textAlign: 'right', fontSize: 12, fontWeight: '800', color: '#DC2626' }}>
+                        ₹{passOnItems.filter(x => selectedPassOnNames.includes(x.name)).reduce((sum, x) => sum + (x.already_spent || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </Text>
+                      <Text style={{ flex: 1.2, textAlign: 'right', fontSize: 13, fontWeight: '900', color: '#059669' }}>
+                        ₹{passOnItems.filter(x => selectedPassOnNames.includes(x.name)).reduce((sum, x) => sum + (x.remaining_balance || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </Text>
+                      <View style={{ width: 60 }} />
+                    </View>
+                  </View>
+                )}
               </View>
             )}
           </View>
@@ -874,4 +1081,73 @@ const styles = StyleSheet.create({
   },
   pickerItemTitle: { fontSize: font.sm, fontWeight: '700', color: colors.onSurface },
   pickerItemSub: { fontSize: 10, color: colors.muted, marginTop: 2 },
+  alertBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: radius.md,
+    padding: 10,
+  },
+  alertTxt: {
+    fontSize: 12,
+    color: '#0369A1',
+    flex: 1,
+  },
+  poiTable: {
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.md,
+    overflow: 'hidden',
+  },
+  poiHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#CBD5E1',
+  },
+  poiThTxt: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  poiDataRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  poiDataRowChosen: {
+    backgroundColor: '#F0FDFA',
+  },
+  poiName: {
+    fontSize: font.sm,
+    fontWeight: '700',
+    color: colors.onSurface,
+  },
+  poiFeeType: {
+    fontSize: 10,
+    color: colors.muted,
+  },
+  poiAmt: {
+    fontSize: 11,
+    color: colors.onSurface,
+  },
+  poiTotalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    backgroundColor: '#F0FDFA',
+    borderTopWidth: 2,
+    borderTopColor: '#0D9488',
+  },
 });

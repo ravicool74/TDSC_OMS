@@ -46,6 +46,9 @@ export default function ExpenseApprovalDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
 
+  // Multi-Selection State for Item-Level Approval
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+
   // Action Modal (Reject / Return)
   const [actionModal, setActionModal] = useState<{ open: boolean; type: 'reject' | 'return' | null }>({
     open: false,
@@ -60,12 +63,18 @@ export default function ExpenseApprovalDetailScreen() {
   const [editNotes, setEditNotes] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [editErr, setEditErr] = useState<string | null>(null);
+  const [loadingInvoiceItems, setLoadingInvoiceItems] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
     try {
       const data = await api.getExpenseApproval(String(id));
       setVoucher(data);
+      if (data.approved_item_ids && data.approved_item_ids.length > 0) {
+        setSelectedItemIds(data.approved_item_ids.map(String));
+      } else {
+        setSelectedItemIds((data.expenses || []).map((it: any, idx: number) => String(it.id || idx)));
+      }
     } catch (e: any) {
       notify('Error', e?.message || 'Could not load expense voucher');
     } finally {
@@ -74,6 +83,34 @@ export default function ExpenseApprovalDetailScreen() {
   }, [id]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Selected items calculation
+  const selectedExpenses = React.useMemo(() => {
+    const expenses = voucher?.expenses || [];
+    return expenses.filter((it: any, idx: number) => {
+      const itemId = String(it.id || idx);
+      return selectedItemIds.includes(itemId);
+    });
+  }, [voucher?.expenses, selectedItemIds]);
+
+  const totalSelectedAmount = React.useMemo(() => {
+    return selectedExpenses.reduce((sum: number, it: any) => sum + Number(it.amount || 0), 0);
+  }, [selectedExpenses]);
+
+  const handleToggleItem = (itemId: string) => {
+    setSelectedItemIds(prev =>
+      prev.includes(itemId) ? prev.filter(x => x !== itemId) : [...prev, itemId]
+    );
+  };
+
+  const handleToggleSelectAll = () => {
+    const allIds = (voucher?.expenses || []).map((it: any, idx: number) => String(it.id || idx));
+    if (selectedItemIds.length === allIds.length) {
+      setSelectedItemIds([]);
+    } else {
+      setSelectedItemIds(allIds);
+    }
+  };
 
   const printPdf = async () => {
     if (!voucher) return;
@@ -97,16 +134,27 @@ export default function ExpenseApprovalDetailScreen() {
 
   const handleApprove = async () => {
     if (!voucher) return;
+    if (selectedItemIds.length === 0) {
+      notify('Selection Required', 'Please select at least one expense item to approve.');
+      return;
+    }
+    const count = selectedItemIds.length;
+    const totalCount = voucher.expenses?.length || 0;
     const ok = await confirm(
       'Approve Expense?',
-      `Confirm approval for expense voucher ${voucher.voucher_no} of amount ₹${Number(voucher.total_expense_amount || 0).toLocaleString('en-IN')}. This will post to the accounting ledger and sync with All Expenses.`,
+      `Confirm approval for ${count} of ${totalCount} selected expense item(s) totaling ₹${totalSelectedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}. This will post to the accounting ledger and sync with All Expenses.`,
       { confirmText: 'Approve Expense', destructive: false }
     );
     if (!ok) return;
 
     setActing(true);
     try {
-      await api.expenseApprovalAction(voucher.id, 'approve', 'Approved by authorized personnel');
+      await api.expenseApprovalAction(
+        voucher.id,
+        'approve',
+        `Approved ${count} item(s) totaling ₹${totalSelectedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`,
+        { selected_item_ids: selectedItemIds, approved_amount: totalSelectedAmount }
+      );
       notify('Approved', `Expense Voucher ${voucher.voucher_no} approved ✓`);
       await load();
     } catch (e: any) {
@@ -210,6 +258,37 @@ export default function ExpenseApprovalDetailScreen() {
     setEditNotes(voucher.notes || '');
     setEditErr(null);
     setEditModalOpen(true);
+  };
+
+  const handleFetchPassOnItemsForEdit = async () => {
+    if (!voucher?.sale_voucher_id) return;
+    setLoadingInvoiceItems(true);
+    setEditErr(null);
+    try {
+      const res = await api.get<any>(`/invoices/${voucher.sale_voucher_id}/passed-on-items`);
+      const items = res?.passed_on_items || [];
+      if (!items.length) {
+        setEditErr(`No passed-on items found in voucher ${voucher.sale_voucher_no}`);
+        return;
+      }
+      const mapped = items.map((poi: any, idx: number) => {
+        const amt = poi.remaining_balance > 0 ? poi.remaining_balance : poi.billed_amount;
+        return {
+          id: poi.item_id || `poi_${idx}_${Date.now()}`,
+          head: poi.name || 'Tender Fee',
+          description: `Disbursement of client pass-on funds for ${poi.name} against Voucher ${voucher.sale_voucher_no}`,
+          qty: '1',
+          rate: String(amt || 0),
+          amount: Number(amt || 0),
+        };
+      });
+      setEditItems(mapped);
+      notify('Imported', `Loaded ${mapped.length} passed-on items from ${voucher.sale_voucher_no}`);
+    } catch (e: any) {
+      setEditErr(e?.message || 'Failed to load passed-on items from invoice');
+    } finally {
+      setLoadingInvoiceItems(false);
+    }
   };
 
   const updateEditItem = (itemId: string, field: 'head' | 'description' | 'qty' | 'rate', val: string) => {
@@ -447,34 +526,133 @@ export default function ExpenseApprovalDetailScreen() {
         {/* Section 3: Itemized Expenses */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
-            <Ionicons name="list" size={20} color="#7C3AED" />
-            <Text style={styles.cardTitle}>Itemized Expense Breakdown</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+              <Ionicons name="list" size={20} color="#7C3AED" />
+              <Text style={styles.cardTitle}>Itemized Expense Breakdown</Text>
+            </View>
+            {canApprove && (status === 'submitted' || status === 'verified' || status === 'returned') ? (
+              <View style={styles.multiSelectBadge}>
+                <Ionicons name="checkbox-outline" size={13} color="#0D9488" />
+                <Text style={styles.multiSelectBadgeTxt}>Multi-Select Active</Text>
+              </View>
+            ) : null}
           </View>
 
+          <Text style={styles.sectionSubtitleTxt}>
+            {canApprove && (status === 'submitted' || status === 'verified' || status === 'returned')
+              ? 'Select individual expense items (or click "All" to select all) to calculate the combined approval total.'
+              : 'Itemized list of expenses claimed against the linked sale voucher.'}
+          </Text>
+
+          {/* Table Header with Multi-Select Toggle */}
           <View style={styles.tableHeader}>
+            {canApprove && (status === 'submitted' || status === 'verified' || status === 'returned') ? (
+              <Pressable
+                onPress={handleToggleSelectAll}
+                style={styles.selectAllHeaderBtn}
+                hitSlop={6}
+                accessibilityLabel="Toggle select all items"
+              >
+                <Ionicons
+                  name={
+                    (voucher.expenses || []).length > 0 &&
+                    selectedItemIds.length === (voucher.expenses || []).length
+                      ? 'checkbox'
+                      : selectedItemIds.length > 0
+                        ? 'remove-circle-outline'
+                        : 'square-outline'
+                  }
+                  size={18}
+                  color="#0D9488"
+                />
+                <Text style={styles.selectAllHeaderTxt}>All</Text>
+              </Pressable>
+            ) : null}
             <Text style={[styles.thTxt, { flex: 2 }]}>Head / Particulars</Text>
             <Text style={[styles.thTxt, { width: 40, textAlign: 'center' }]}>Qty</Text>
             <Text style={[styles.thTxt, { width: 70, textAlign: 'right' }]}>Rate</Text>
-            <Text style={[styles.thTxt, { width: 80, textAlign: 'right' }]}>Amount</Text>
+            <Text style={[styles.thTxt, { width: 85, textAlign: 'right' }]}>Amount</Text>
           </View>
 
-          {(voucher.expenses || []).map((it: any, idx: number) => (
-            <View key={it.id || idx} style={styles.tableRow}>
-              <View style={{ flex: 2 }}>
-                <Text style={styles.itemHead}>{it.head}</Text>
-                {it.description ? <Text style={styles.itemDesc}>{it.description}</Text> : null}
-              </View>
-              <Text style={[styles.tdTxt, { width: 40, textAlign: 'center' }]}>{it.qty || 1}</Text>
-              <Text style={[styles.tdTxt, { width: 70, textAlign: 'right' }]}>₹ {Number(it.rate || 0).toLocaleString('en-IN')}</Text>
-              <Text style={[styles.tdTxt, { width: 80, textAlign: 'right', fontWeight: '800' }]}>
-                ₹ {Number(it.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-              </Text>
-            </View>
-          ))}
+          {/* Item Rows */}
+          {(voucher.expenses || []).map((it: any, idx: number) => {
+            const itemId = String(it.id || idx);
+            const isSelected = selectedItemIds.includes(itemId);
+            const isApprovedItem = (voucher.approved_item_ids || []).includes(itemId);
+            const isInteractable = canApprove && (status === 'submitted' || status === 'verified' || status === 'returned');
 
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLbl}>Total Claimed Amount</Text>
-            <Text style={styles.totalVal}>₹ {totExp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</Text>
+            return (
+              <Pressable
+                key={itemId}
+                onPress={() => {
+                  if (isInteractable) {
+                    handleToggleItem(itemId);
+                  }
+                }}
+                style={[
+                  styles.tableRow,
+                  isSelected && isInteractable && styles.tableRowSelected,
+                ]}
+              >
+                {isInteractable ? (
+                  <View style={styles.rowCheckCell}>
+                    <Ionicons
+                      name={isSelected ? 'checkbox' : 'square-outline'}
+                      size={20}
+                      color={isSelected ? '#0D9488' : '#94A3B8'}
+                    />
+                  </View>
+                ) : status === 'approved' ? (
+                  <View style={styles.rowCheckCell}>
+                    <Ionicons
+                      name={isApprovedItem || !(voucher.approved_item_ids?.length) ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={18}
+                      color={isApprovedItem || !(voucher.approved_item_ids?.length) ? '#10B981' : '#CBD5E1'}
+                    />
+                  </View>
+                ) : null}
+
+                <View style={{ flex: 2 }}>
+                  <Text style={[styles.itemHead, isSelected && isInteractable && { color: '#0F766E', fontWeight: '800' }]}>
+                    {it.head}
+                  </Text>
+                  {it.description ? <Text style={styles.itemDesc}>{it.description}</Text> : null}
+                </View>
+                <Text style={[styles.tdTxt, { width: 40, textAlign: 'center' }]}>{it.qty || 1}</Text>
+                <Text style={[styles.tdTxt, { width: 70, textAlign: 'right' }]}>
+                  ₹ {Number(it.rate || 0).toLocaleString('en-IN')}
+                </Text>
+                <Text style={[styles.tdTxt, { width: 85, textAlign: 'right', fontWeight: '800', color: isSelected && isInteractable ? '#0F766E' : colors.onSurface }]}>
+                  ₹ {Number(it.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </Text>
+              </Pressable>
+            );
+          })}
+
+          {/* Jod Kar Total Row (Dedicated Total of Selected Items) */}
+          <View style={styles.selectedTotalRow}>
+            <View style={{ flex: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={styles.totalBadge}>
+                <Text style={styles.totalBadgeTxt}>
+                  {selectedItemIds.length}/{(voucher.expenses || []).length} Selected
+                </Text>
+              </View>
+              <View>
+                <Text style={styles.selectedTotalLabel}>Total Selected for Approval</Text>
+                <Text style={styles.selectedTotalSub}>Jod kar Total Amount</Text>
+              </View>
+            </View>
+            <Text style={styles.selectedTotalVal}>
+              ₹ {totalSelectedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            </Text>
+          </View>
+
+          {/* Voucher Total Claimed Row */}
+          <View style={styles.voucherTotalRow}>
+            <Text style={styles.voucherTotalLbl}>Voucher Total Claimed</Text>
+            <Text style={styles.voucherTotalVal}>
+              ₹ {totExp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            </Text>
           </View>
 
           {voucher.notes ? (
@@ -529,12 +707,21 @@ export default function ExpenseApprovalDetailScreen() {
               {canApprove && (status === 'submitted' || status === 'verified' || status === 'returned') ? (
                 <Pressable
                   onPress={handleApprove}
-                  style={[styles.btnApprove, acting && { opacity: 0.6 }]}
-                  disabled={acting}
+                  style={[
+                    styles.btnApprove,
+                    (acting || selectedItemIds.length === 0) && { opacity: 0.5 },
+                  ]}
+                  disabled={acting || selectedItemIds.length === 0}
                   testID="action-approve-btn"
                 >
                   <Ionicons name="checkmark-circle" size={16} color="#FFF" />
-                  <Text style={styles.btnApproveTxt}>Approve Expense</Text>
+                  <Text style={styles.btnApproveTxt}>
+                    {selectedItemIds.length === 0
+                      ? 'Select Items to Approve'
+                      : selectedItemIds.length === (voucher.expenses || []).length
+                        ? `Approve All (₹${totalSelectedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })})`
+                        : `Approve Selected (${selectedItemIds.length}) (₹${totalSelectedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })})`}
+                  </Text>
                 </Pressable>
               ) : null}
 
@@ -727,6 +914,25 @@ export default function ExpenseApprovalDetailScreen() {
                     ₹ {recAmt.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                   </Text>
                 </View>
+
+                {voucher.sale_voucher_id ? (
+                  <Pressable
+                    onPress={handleFetchPassOnItemsForEdit}
+                    disabled={loadingInvoiceItems}
+                    style={styles.fetchPassOnBtn}
+                  >
+                    {loadingInvoiceItems ? (
+                      <ActivityIndicator size="small" color="#0D9488" />
+                    ) : (
+                      <>
+                        <Ionicons name="cloud-download-outline" size={16} color="#0D9488" />
+                        <Text style={styles.fetchPassOnBtnTxt}>
+                          Load / Import All Passed-On Items from {voucher.sale_voucher_no}
+                        </Text>
+                      </>
+                    )}
+                  </Pressable>
+                ) : null}
               </View>
 
               {/* Line Items List */}
@@ -1232,5 +1438,124 @@ const styles = StyleSheet.create({
     borderColor: '#BBF7D0',
     borderRadius: radius.md,
     padding: 10,
+  },
+  multiSelectBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginLeft: 'auto',
+  },
+  multiSelectBadgeTxt: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  sectionSubtitleTxt: {
+    fontSize: 11,
+    color: colors.muted,
+    marginBottom: 8,
+  },
+  selectAllHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingRight: 6,
+  },
+  selectAllHeaderTxt: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  rowCheckCell: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
+  },
+  tableRowSelected: {
+    backgroundColor: '#F0FDFA',
+    borderColor: '#99F6E4',
+  },
+  selectedTotalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#F0FDFA',
+    borderTopWidth: 2,
+    borderTopColor: '#0D9488',
+    borderRadius: radius.sm,
+    marginTop: 8,
+  },
+  selectedTotalLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  selectedTotalSub: {
+    fontSize: 9,
+    color: '#14B8A6',
+    fontWeight: '700',
+  },
+  selectedTotalVal: {
+    fontSize: font.base,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  totalBadge: {
+    backgroundColor: '#0D9488',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  totalBadgeTxt: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  voucherTotalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#F8FAFC',
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  voucherTotalLbl: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.muted,
+  },
+  voucherTotalVal: {
+    fontSize: font.sm,
+    fontWeight: '800',
+    color: colors.onSurface,
+  },
+  fetchPassOnBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    borderRadius: radius.md,
+    marginTop: 6,
+  },
+  fetchPassOnBtnTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0F766E',
   },
 });

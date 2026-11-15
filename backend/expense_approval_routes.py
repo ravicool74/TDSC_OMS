@@ -59,6 +59,8 @@ class ExpenseApprovalInput(BaseModel):
 class ApproverActionInput(BaseModel):
     action: str  # 'approve', 'verify', 'reject', 'return', 'reopen'
     remarks: Optional[str] = None
+    selected_item_ids: Optional[List[str]] = None
+    approved_amount: Optional[float] = None
 
 
 class WorkflowConfigInput(BaseModel):
@@ -483,11 +485,17 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         stage_2_user_ids = [u.get("user_id") for u in cfg.get("stage_2_users", []) if u.get("user_id")]
 
         next_status = ""
+        updates = {
+            "status": next_status,
+            "updated_at": now_str,
+        }
+
         if action == "verify":
             can_verify = is_admin or (current.role in stage_1_roles) or (uid in stage_1_user_ids)
             if not can_verify:
                 raise HTTPException(status_code=403, detail="You do not have permission to verify vouchers at Stage 1.")
             next_status = "verified"
+            updates["status"] = next_status
 
         elif action == "approve":
             # If multi-stage, must be verified first unless caller is admin or single_stage
@@ -499,23 +507,51 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             if not can_approve:
                 raise HTTPException(status_code=403, detail="You do not have permission for Final Approval at Stage 2.")
             next_status = "approved"
+            updates["status"] = next_status
+
+            all_expenses = voucher.get("expenses") or []
+            selected_ids = [str(x) for x in (payload.selected_item_ids or [])]
+
+            if selected_ids:
+                approved_items = [
+                    it for idx, it in enumerate(all_expenses)
+                    if (str(it.get("id")) in selected_ids or str(idx) in selected_ids)
+                ]
+            else:
+                approved_items = all_expenses
+
+            if payload.approved_amount is not None and float(payload.approved_amount) > 0:
+                total_approved = round(float(payload.approved_amount), 2)
+            else:
+                total_approved = round(sum(float(it.get("amount") or 0) for it in approved_items), 2)
+
+            updates["approved_item_ids"] = [
+                (it.get("id") or str(idx)) for idx, it in enumerate(all_expenses)
+                if (not selected_ids or str(it.get("id")) in selected_ids or str(idx) in selected_ids)
+            ]
+            updates["approved_items"] = approved_items
+            updates["approved_amount"] = total_approved
+            updates["total_expense_amount"] = total_approved
 
         elif action == "reject":
             can_reject = is_admin or (current.role in stage_1_roles) or (current.role in stage_2_roles) or (uid in stage_1_user_ids) or (uid in stage_2_user_ids)
             if not can_reject:
                 raise HTTPException(status_code=403, detail="You do not have permission to reject this voucher.")
             next_status = "rejected"
+            updates["status"] = next_status
 
         elif action == "return":
             can_return = is_admin or (current.role in stage_1_roles) or (current.role in stage_2_roles) or (uid in stage_1_user_ids) or (uid in stage_2_user_ids)
             if not can_return:
                 raise HTTPException(status_code=403, detail="You do not have permission to return this voucher.")
             next_status = "returned"
+            updates["status"] = next_status
 
         elif action == "reopen":
             if not is_admin:
                 raise HTTPException(status_code=403, detail="Only Admins can reopen an expense voucher.")
             next_status = "submitted"
+            updates["status"] = next_status
         else:
             raise HTTPException(status_code=400, detail=f"Invalid action '{action}'")
 
@@ -523,12 +559,11 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             "action": "reopened" if action == "reopen" else next_status,
             "actor": {"user_id": uid, "name": current.name, "role": current.role},
             "timestamp": now_str,
-            "remarks": remarks or (f"Voucher reopened by {current.name} (Admin)" if action == "reopen" else f"Action {action} performed"),
-        }
-
-        updates = {
-            "status": next_status,
-            "updated_at": now_str,
+            "remarks": remarks or (
+                f"Approved {len(updates.get('approved_items', []))} item(s) totaling ₹{updates.get('approved_amount', 0):,.2f}"
+                if next_status == "approved"
+                else (f"Voucher reopened by {current.name} (Admin)" if action == "reopen" else f"Action {action} performed")
+            ),
         }
 
         # If reopen, remove or unapprove linked expense in accounting ledger
@@ -557,6 +592,10 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
 
         # If approved, post or activate in general ledger / expenses collection for accounting integration
         elif next_status == "approved":
+            final_approved_amt = updates.get("total_expense_amount") or voucher.get("total_expense_amount") or 0
+            approved_items_list = updates.get("approved_items") or voucher.get("expenses") or []
+            primary_head = approved_items_list[0]["head"] if approved_items_list else "Pass-on Expense"
+
             linked_eid = voucher.get("linked_expense_id")
             existing_exp = await db.expenses.find_one({"id": linked_eid}, {"_id": 0}) if linked_eid else None
 
@@ -568,8 +607,8 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
                         "status": "approved",
                         "approved_by": current.name,
                         "approved_at": now_str,
-                        "amount": voucher.get("total_expense_amount") or existing_exp.get("amount", 0),
-                        "notes": f"Approved via Workflow (Voucher: {voucher['voucher_no']}). {remarks}".strip(),
+                        "amount": final_approved_amt,
+                        "notes": f"Approved {len(approved_items_list)} item(s) via Workflow (Voucher: {voucher['voucher_no']}). {remarks}".strip(),
                         "updated_at": now_str,
                     }}
                 )
@@ -577,13 +616,12 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             else:
                 # Auto-seed a new approved expense into db.expenses
                 exp_id = f"exp_{uuid.uuid4().hex[:12]}"
-                primary_head = voucher["expenses"][0]["head"] if voucher.get("expenses") else "Pass-on Expense"
                 expense_record = {
                     "id": exp_id,
                     "expense_no": f"EXP-{voucher['voucher_no']}",
                     "date": voucher.get("voucher_date") or datetime.now().strftime("%Y-%m-%d"),
                     "category": primary_head,
-                    "amount": voucher.get("total_expense_amount") or 0,
+                    "amount": final_approved_amt,
                     "payment_mode": "bank_transfer",
                     "customer_id": voucher.get("customer_id"),
                     "customer_name": voucher.get("customer_name"),
@@ -595,7 +633,7 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
                     "approved_at": now_str,
                     "created_by": uid,
                     "created_at": now_str,
-                    "notes": f"Generated from approved Expense Approval Voucher {voucher['voucher_no']}. {remarks}".strip(),
+                    "notes": f"Generated from approved Expense Approval Voucher {voucher['voucher_no']} ({len(approved_items_list)} items approved). {remarks}".strip(),
                 }
                 await db.expenses.insert_one(expense_record)
                 updates["linked_expense_id"] = exp_id
