@@ -30,13 +30,18 @@ if (fs.existsSync(indexPath)) {
     console.log('Successfully injected iOS Safari PWA tags into dist/index.html');
   }
 
-  // Generate 404.html and login.html so static web hosts (Vercel/Netlify) never throw 404 on subroutes
+  // Generate 404.html, login.html, and login/index.html so static web hosts (Vercel/Netlify) never throw 404 on subroutes
   try {
     fs.copyFileSync(indexPath, path.join(distDir, '404.html'));
     fs.copyFileSync(indexPath, path.join(distDir, 'login.html'));
-    console.log('Successfully created 404.html and login.html SPA fallbacks');
+    const loginDir = path.join(distDir, 'login');
+    if (!fs.existsSync(loginDir)) {
+      fs.mkdirSync(loginDir, { recursive: true });
+    }
+    fs.copyFileSync(indexPath, path.join(loginDir, 'index.html'));
+    console.log('Successfully created 404.html, login.html, and login/index.html SPA fallbacks');
   } catch (e) {
-    console.warn('Failed creating 404.html fallback:', e.message);
+    console.warn('Failed creating static SPA fallbacks:', e.message);
   }
 }
 
