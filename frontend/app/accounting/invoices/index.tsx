@@ -222,6 +222,10 @@ export default function InvoicesList() {
               </Pressable>
 
               <View style={styles.actions}>
+                <Pressable onPress={() => router.push({ pathname: `/accounting/invoices/${item.id}`, params: { showProfit: 'true' } } as any)} testID={`profit-${item.id}`} style={[styles.actBtn, { backgroundColor: '#ECFDF5' }]}>
+                  <Ionicons name="trending-up" size={16} color="#059669" />
+                  <Text style={[styles.actTxt, { color: '#059669' }]}>Profit</Text>
+                </Pressable>
                 <Pressable onPress={() => printPdf(item)} testID={`print-${item.id}`} style={[styles.actBtn, { backgroundColor: '#EFF6FF' }]}>
                   <Ionicons name="print" size={16} color={colors.brandPrimary} />
                   <Text style={[styles.actTxt, { color: colors.brandPrimary }]}>Print</Text>

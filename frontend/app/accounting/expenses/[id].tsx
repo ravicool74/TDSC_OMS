@@ -19,7 +19,7 @@ import { api } from '@/src/api';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
 import { useAuth } from '@/src/AuthContext';
-import { notify } from '@/src/dialog';
+import { notify, confirm } from '@/src/dialog';
 
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
@@ -91,22 +91,22 @@ export default function ExpenseDetail() {
   const onAttachmentsChange = (list: Attachment[]) =>
     setExp((p: any) => (p ? { ...p, attachments: list } : p));
 
-  const remove = () =>
-    Alert.alert('Delete Expense?', `Delete ${exp?.expense_no}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await api.del(`/expenses/${id}`);
-            router.back();
-          } catch (e: any) {
-            Alert.alert('Failed', e?.message || 'Try again');
-          }
-        },
-      },
-    ]);
+  const remove = async () => {
+    const ok = await confirm(
+      'Delete Expense?',
+      `Are you sure you want to delete Expense "${exp?.expense_no || 'EXP'}"? This cannot be undone.`,
+      { confirmText: 'Delete', destructive: true }
+    );
+    if (!ok) return;
+
+    try {
+      await api.del(`/expenses/${id}`);
+      notify('Deleted', `Expense ${exp?.expense_no || ''} deleted.`);
+      router.replace('/accounting/expenses' as any);
+    } catch (e: any) {
+      notify('Failed', e?.message || 'Could not delete expense');
+    }
+  };
 
   const decide = async (action: 'verify' | 'approve' | 'reject') => {
     try {

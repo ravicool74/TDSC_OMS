@@ -11,35 +11,7 @@ import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
 import { notify } from '@/src/dialog';
 
 const today = () => new Date().toISOString().slice(0, 10);
-
-const parseDateFlexible = (d: string): string => {
-  if (!d) return '';
-  d = d.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
-  const dm = d.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (dm) {
-    const day = dm[1].padStart(2, '0');
-    const month = dm[2].padStart(2, '0');
-    const year = dm[3];
-    return `${year}-${month}-${day}`;
-  }
-  const dt = new Date(d);
-  if (!isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
-  return d;
-};
-
-const safeAddDays = (d: string, days: number): string => {
-  try {
-    const std = parseDateFlexible(d);
-    const t = new Date(std);
-    if (isNaN(t.getTime())) return d;
-    t.setDate(t.getDate() + days);
-    return t.toISOString().slice(0, 10);
-  } catch {
-    return d;
-  }
-};
-
+const addDays = (d: string, days: number) => { const t = new Date(d); t.setDate(t.getDate() + days); return t.toISOString().slice(0, 10); };
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 const TERMS = [
@@ -88,7 +60,7 @@ export default function NewInvoice() {
   const [paidAmountInput, setPaidAmountInput] = useState<string>('');
   const [date, setDate] = useState(today());
   const [terms, setTerms] = useState<string>('Net 60 days');
-  const [dueDate, setDueDate] = useState(safeAddDays(today(), 60));
+  const [dueDate, setDueDate] = useState(addDays(today(), 60));
   const [showTerms, setShowTerms] = useState(false);
 
   const [party, setParty] = useState<PickedParty | null>(null);
@@ -105,52 +77,43 @@ export default function NewInvoice() {
   const [invoiceNo, setInvoiceNo] = useState<string>('AUTO'); // just display
   const [busy, setBusy] = useState(false);
 
-  // Recompute due date only when terms change and is NOT custom
+  // Recompute due date when date or terms change
   useEffect(() => {
     const t = TERMS.find(x => x.label === terms);
-    if (t && t.days > 0) setDueDate(safeAddDays(date, t.days));
+    if (t && t.days > 0) setDueDate(addDays(date, t.days));
   }, [date, terms]);
 
-  // Initial load for edit mode: dependent ONLY on [editId], NOT date!
+  // Preview counter or load existing (edit mode)
   useEffect(() => {
-    if (!editId) return;
-    let mounted = true;
     (async () => {
+      if (editId) {
+        try {
+          const ex = await api.get<any>(`/invoices/${editId}`);
+          setInvoiceNo(ex.invoice_no || 'EDIT');
+          if (ex.invoice_type) setActualInvoiceType(ex.invoice_type);
+          setPaymentType(ex.payment_type || 'credit');
+          setPaymentMode(ex.payment_mode || 'cash');
+          setPaidAmountInput(String(ex.paid_amount || ''));
+          setDate(ex.date || today());
+          setTerms(ex.payment_terms || 'Custom');
+          setDueDate(ex.due_date || today());
+          setParty({ id: ex.party_id, name: ex.party_name, mobile: ex.party_mobile || '', pan: '', aadhar: '', gst_no: ex.party_gst || null, customer_code: null } as any);
+          setItems((ex.items || []).map((it: any, idx: number) => ({
+            key: `${it.item_id || idx}-${idx}`, item_id: it.item_id || undefined,
+            name: it.name, unit: it.unit || 'PCS', qty: String(it.qty || 1),
+            price: String(it.price || 0), tax_rate: String(it.tax_rate || 0), discount: String(it.discount || 0),
+            item_type: it.item_type || 'actual_service', fee_type: it.fee_type || undefined,
+          })));
+          setNotes(ex.notes || '');
+          setAttachments(ex.attachments || []);
+          setSignatoryName(ex.signatory_name || 'अंजू कुमारी');
+          setIncludeSignature(ex.include_signature !== false);
+          setSignatureUrl(ex.signature_url || null);
+        } catch (e: any) { notify('Load failed', String(e?.message || 'Unable to load')); }
+        return;
+      }
       try {
-        const ex = await api.get<any>(`/invoices/${editId}`);
-        if (!mounted) return;
-        setInvoiceNo(ex.invoice_no || 'EDIT');
-        if (ex.invoice_type) setActualInvoiceType(ex.invoice_type);
-        setPaymentType(ex.payment_type || 'credit');
-        setPaymentMode(ex.payment_mode || 'cash');
-        setPaidAmountInput(String(ex.paid_amount || ''));
-        setDate(ex.date || today());
-        setTerms(ex.payment_terms || 'Custom');
-        setDueDate(ex.due_date || ex.date || today());
-        setParty({ id: ex.party_id, name: ex.party_name, mobile: ex.party_mobile || '', pan: '', aadhar: '', gst_no: ex.party_gst || null, customer_code: null } as any);
-        setItems((ex.items || []).map((it: any, idx: number) => ({
-          key: `${it.item_id || idx}-${idx}`, item_id: it.item_id || undefined,
-          name: it.name, unit: it.unit || 'PCS', qty: String(it.qty || 1),
-          price: String(it.price || 0), tax_rate: String(it.tax_rate || 0), discount: String(it.discount || 0),
-          item_type: it.item_type || 'actual_service', fee_type: it.fee_type || undefined,
-        })));
-        setNotes(ex.notes || '');
-        setAttachments(ex.attachments || []);
-        setSignatoryName(ex.signatory_name || 'अंजू कुमारी');
-        setIncludeSignature(ex.include_signature !== false);
-        setSignatureUrl(ex.signature_url || null);
-      } catch (e: any) { notify('Load failed', String(e?.message || 'Unable to load')); }
-    })();
-    return () => { mounted = false; };
-  }, [editId]);
-
-  // Preview counter for NEW invoices: runs when date or type changes, ONLY when !editId
-  useEffect(() => {
-    if (editId) return;
-    (async () => {
-      try {
-        const cleanDate = parseDateFlexible(date) || date;
-        const next = await api.get<any>(`/invoices/next-no?invoice_type=${actualInvoiceType}&date=${cleanDate}`);
+        const next = await api.get<any>(`/invoices/next-no?invoice_type=${actualInvoiceType}&date=${date}`);
         if (next?.next_no) {
           setInvoiceNo(`${next.next_no} (preview)`);
         } else {
@@ -230,16 +193,12 @@ export default function NewInvoice() {
     }
     setBusy(true);
     try {
-      const cleanDate = parseDateFlexible(date) || date;
-      const cleanDueDate = paymentType === 'cash' ? cleanDate : (parseDateFlexible(dueDate) || cleanDate);
       const body = {
         invoice_type: actualInvoiceType,
         invoice_no: invoiceNo && !invoiceNo.includes('preview') && invoiceNo !== 'AUTO' ? invoiceNo.trim() : undefined,
         payment_type: paymentType,
         payment_mode: paymentMode,
-        date: cleanDate,
-        payment_terms: terms,
-        due_date: cleanDueDate,
+        date, payment_terms: terms, due_date: paymentType === 'cash' ? date : dueDate,
         party_id: party.id, party_name: party.name, party_mobile: party.mobile || null, party_gst: party.gst_no || null,
         items: items.map(it => ({
           item_id: it.item_id || null, name: it.name, unit: it.unit,
@@ -266,14 +225,20 @@ export default function NewInvoice() {
           } catch { attachErrors++; }
         }
       }
-      // Also create an Income record so it flows into dashboard/reports when it's a regular Sale
-      if (!editId && actualInvoiceType === 'sale' && totals.total > 0) {
+      // Only create an Income record if payment was actually received at invoice generation
+      const actualPaidAtGen = paymentType === 'cash' ? totals.total : (Number(paidNum) || 0);
+      if (!editId && actualInvoiceType === 'sale' && actualPaidAtGen > 0) {
         try {
           await api.post('/income', {
-            date: cleanDate, client_id: party.id, client_name: party.name, client_mobile: party.mobile || null,
+            date, client_id: party.id, client_name: party.name, client_mobile: party.mobile || null,
             service_category: 'DSC Services', service_name: `Invoice ${inv.invoice_no || ''}`,
-            amount: totals.total, payment_mode: paymentType === 'cash' ? 'cash' : 'bank',
-            remarks: `Auto-linked to invoice ${inv.invoice_no || inv.id}`,
+            amount: actualPaidAtGen, payment_mode: paymentType === 'cash' ? 'cash' : (paymentMode || 'cash'),
+            remarks: `Initial down payment for invoice ${inv.invoice_no || inv.id}`,
+            linked_vouchers: [{
+              voucher_id: inv.id,
+              voucher_no: inv.invoice_no,
+              allocated_amount: actualPaidAtGen,
+            }],
           });
         } catch {}
       }
@@ -341,17 +306,7 @@ export default function NewInvoice() {
                 <Ionicons name="chevron-down" size={16} color={colors.muted} />
               </View>
             </Pressable>
-            {paymentType === 'cash' ? (
-              <Cell label="Due On (Immediate / Cash)" value={date} disabled />
-            ) : (
-              <Cell
-                label={terms === 'Custom' ? 'Due On (Custom Date)' : 'Due On'}
-                value={dueDate}
-                onChangeText={setDueDate}
-                placeholder="YYYY-MM-DD"
-                testID="in-due"
-              />
-            )}
+            <Cell label="Due On" value={paymentType === 'cash' ? date : dueDate} onChangeText={setDueDate} placeholder="YYYY-MM-DD" testID="in-due" />
           </View>
 
           {/* Party */}
@@ -471,7 +426,7 @@ export default function NewInvoice() {
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
               >
                 <Ionicons name={includeSignature ? 'checkbox' : 'square-outline'} size={18} color={includeSignature ? colors.brandPrimary : colors.muted} />
-                <Text style={{ fontSize: 12, color: '#111827', fontWeight: '600' }}>Include on Voucher</Text>
+                <Text style={{ fontSize: 12, color: colors.onSurface, fontWeight: '600' }}>Include on Voucher</Text>
               </Pressable>
             </View>
             <TextInput
@@ -519,18 +474,7 @@ export default function NewInvoice() {
           <View style={[styles.termsSheet, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]}>
             <Text style={styles.termsTitle}>Payment Terms</Text>
             {TERMS.map(t => (
-              <Pressable
-                key={t.label}
-                onPress={() => {
-                  setTerms(t.label);
-                  if (t.days > 0) {
-                    setDueDate(safeAddDays(date, t.days));
-                  }
-                  setShowTerms(false);
-                }}
-                style={styles.termsRow}
-                testID={`term-${t.label}`}
-              >
+              <Pressable key={t.label} onPress={() => { setTerms(t.label); setShowTerms(false); }} style={styles.termsRow} testID={`term-${t.label}`}>
                 <Text style={{ flex: 1, color: '#111827', fontWeight: '600' }}>{t.label}</Text>
                 {terms === t.label ? <Ionicons name="checkmark" size={20} color={colors.brandPrimary} /> : null}
               </Pressable>

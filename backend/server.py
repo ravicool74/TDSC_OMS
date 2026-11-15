@@ -3,7 +3,7 @@ import re
 import uuid
 import logging
 import secrets
-from datetime import datetime, date, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
 
@@ -206,7 +206,7 @@ class User(BaseModel):
     agency_name: Optional[str] = None
     company_name: Optional[str] = None
     must_change_password: Optional[bool] = False
-    created_at: datetime = Field(default_factory=now_utc)
+    created_at: Optional[Union[datetime, str]] = Field(default_factory=now_utc)
 
 
 class SignupInput(BaseModel):
@@ -536,7 +536,36 @@ class Task(BaseModel):
 
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
-    created_at: datetime = Field(default_factory=now_utc)
+    linked_voucher_no: Optional[str] = None
+    linked_approval_id: Optional[str] = None
+    created_at: Any = Field(default_factory=now_utc)
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def _validate_created_at(cls, v):
+        if not v:
+            return now_utc()
+        if isinstance(v, datetime):
+            return v
+        s = str(v).strip()
+        formats = [
+            "%d-%m-%Y %I:%M:%S %p",
+            "%d/%m/%Y %I:%M:%S %p",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+            "%d-%m-%Y",
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+        try:
+            return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        except Exception:
+            return now_utc()
 
 
 class TaskInput(BaseModel):
@@ -731,6 +760,8 @@ class Income(BaseModel):
     attachments: List[dict] = Field(default_factory=list)
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
+    linked_voucher_no: Optional[str] = None
+    linked_approval_id: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -793,6 +824,8 @@ class Expense(BaseModel):
     customer_id: Optional[str] = None
     customer_name: Optional[str] = None
     customer_mobile: Optional[str] = None
+    sale_item_names: Optional[List[str]] = None
+    selected_items: Optional[List[dict]] = None
     customer_pan: Optional[str] = None
     customer_gst: Optional[str] = None
     customer_code: Optional[str] = None
@@ -800,47 +833,22 @@ class Expense(BaseModel):
     sale_invoice_no: Optional[str] = None
     sale_invoice_date: Optional[str] = None
     sale_item_name: Optional[str] = None
+    sale_item_names: Optional[List[str]] = None
+    selected_items: Optional[List[dict]] = None
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
-    is_whole_voucher: bool = False
-    split_payments: Optional[List[dict]] = None
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
-    created_at: Any = Field(default_factory=now_utc)
-
-    @field_validator("created_at", mode="before")
-    @classmethod
-    def _validate_created_at(cls, v):
-        if not v:
-            return now_utc()
-        if isinstance(v, datetime):
-            return v
-        s = str(v).strip()
-        formats = [
-            "%d-%m-%Y %I:%M:%S %p",
-            "%d/%m/%Y %I:%M:%S %p",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d",
-            "%d/%m/%Y",
-            "%d-%m-%Y",
-        ]
-        for fmt in formats:
-            try:
-                return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-            except Exception:
-                pass
-        try:
-            return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
-        except Exception:
-            return now_utc()
+    linked_voucher_no: Optional[str] = None
+    linked_approval_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=now_utc)
 
 
 class ExpenseInput(BaseModel):
     date: str
     category: str
     amount: float
-    payment_mode: str = "cash"
+    payment_mode: str
     bank_account_id: Optional[str] = None
     vendor: Optional[str] = None
     description: Optional[str] = None
@@ -854,10 +862,10 @@ class ExpenseInput(BaseModel):
     sale_invoice_no: Optional[str] = None
     sale_invoice_date: Optional[str] = None
     sale_item_name: Optional[str] = None
+    sale_item_names: Optional[List[str]] = None
+    selected_items: Optional[List[dict]] = None
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
-    is_whole_voucher: Optional[bool] = False
-    split_payments: Optional[List[dict]] = None
     status: Optional[str] = "pending"
 
 
@@ -880,8 +888,6 @@ class ExpenseUpdateInput(BaseModel):
     sale_invoice_no: Optional[str] = None
     sale_invoice_date: Optional[str] = None
     sale_item_name: Optional[str] = None
-    is_whole_voucher: Optional[bool] = None
-    split_payments: Optional[List[dict]] = None
 
 
 class ExpenseDecision(BaseModel):
@@ -997,6 +1003,8 @@ class Invoice(BaseModel):
     payments: List[dict] = Field(default_factory=list)
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
+    linked_voucher_no: Optional[str] = None
+    linked_approval_id: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -2457,37 +2465,16 @@ async def _peek_next_no(counter_key: str, prefix: str) -> str:
     return f"{prefix}-{seq:04d}"
 
 
-def parse_date_to_date_obj(date_str: Optional[Any]) -> date:
-    """Parse flexible date strings (YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, ISO) to date object."""
-    if not date_str:
-        return datetime.now(timezone.utc).date()
-    if isinstance(date_str, datetime):
-        return date_str.date()
-    if isinstance(date_str, date):
-        return date_str
-    s = str(date_str).strip()
-    formats = [
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-        "%d-%m-%Y",
-        "%Y/%m/%d",
-        "%Y-%m-%d %H:%M:%S",
-        "%d-%m-%Y %I:%M:%S %p",
-    ]
-    for fmt in formats:
-        try:
-            return datetime.strptime(s[:19], fmt).date()
-        except Exception:
-            pass
-    try:
-        return datetime.fromisoformat(s).date()
-    except Exception:
-        return datetime.now(timezone.utc).date()
-
-
 def get_indian_financial_year(date_str: Optional[str] = None) -> str:
     """Return Indian Financial Year format like '2026-27' for a given ISO date (Apr 1 - Mar 31)."""
-    d = parse_date_to_date_obj(date_str)
+    try:
+        if date_str:
+            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        else:
+            d = datetime.now(timezone.utc).date()
+    except Exception:
+        d = datetime.now(timezone.utc).date()
+
     year = d.year
     if d.month >= 4:
         start_yr = year
@@ -2622,8 +2609,57 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
     )
     await db.income.insert_one(inc.dict())
 
+    # Auto-allocate unlinked Payment-In to customer's unpaid / partial sale invoices (FIFO basis)
+    allocated_vouchers = list(payload.linked_vouchers or [])
+    if not allocated_vouchers and float(payload.amount or 0.0) > 0 and (payload.client_id or payload.client_name):
+        cid = payload.client_id
+        cname = payload.client_name
+        match_or = []
+        if cid: match_or.append({"party_id": cid})
+        if cname: match_or.append({"party_name": cname})
+        
+        open_invoices = await db.invoices.find(
+            {
+                "invoice_type": {"$in": ["sale", None]},
+                "$or": match_or,
+                "balance": {"$gt": 0}
+            },
+            {"_id": 0}
+        ).sort([("date", 1), ("created_at", 1)]).to_list(50)
+        
+        rem_alloc = float(payload.amount or 0.0)
+        for sinv in open_invoices:
+            if rem_alloc <= 0: break
+            sinv_bal = float(sinv.get("balance") or 0.0)
+            if sinv_bal <= 0: continue
+            alloc_amt = min(sinv_bal, rem_alloc)
+            allocated_vouchers.append({
+                "voucher_id": sinv["id"],
+                "voucher_no": sinv.get("invoice_no"),
+                "voucher_date": sinv.get("date"),
+                "total_amount": sinv.get("total_amount"),
+                "previous_paid": sinv.get("paid_amount"),
+                "outstanding_balance": sinv_bal,
+                "allocated_amount": alloc_amt,
+                "payment_mode": payload.payment_mode or "cash",
+                "payment_type": f"Payment-In ({payload.service_name or 'Receipt'})",
+                "remarks": payload.remarks or f"Payment-In {no}",
+            })
+            rem_alloc = round(rem_alloc - alloc_amt, 2)
+        
+        if allocated_vouchers:
+            await db.income.update_one(
+                {"id": inc.id},
+                {"$set": {
+                    "linked_vouchers": allocated_vouchers,
+                    "linked_voucher_no": allocated_vouchers[0].get("voucher_no")
+                }}
+            )
+            inc.linked_vouchers = allocated_vouchers
+            inc.linked_voucher_no = allocated_vouchers[0].get("voucher_no")
+
     # Update linked sale vouchers and record payment history
-    for lv in (payload.linked_vouchers or []):
+    for lv in allocated_vouchers:
         vid = lv.get("voucher_id") or lv.get("id")
         alloc = float(lv.get("allocated_amount") or 0.0)
         if not vid or alloc <= 0:
@@ -2644,7 +2680,7 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
             "date": payload.date,
             "amount": alloc,
             "payment_mode": lv.get("payment_mode") or payload.payment_mode or "cash",
-            "payment_type": lv.get("payment_type") or "Part Payment",
+            "payment_type": lv.get("payment_type") or f"Payment-In ({payload.service_name or 'Receipt'})",
             "remarks": lv.get("remarks") or payload.remarks or f"Payment-In {no}",
             "created_at": now_utc().isoformat(),
             "balance_after": new_bal,
@@ -2664,7 +2700,13 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
                 "balance_after": max(0.0, round(tot_amt - cur_paid, 2)),
             })
 
-        existing_payments.append(payment_record)
+        if not any(p.get("payment_id") == inc.id or p.get("payment_no") == no for p in existing_payments):
+            existing_payments.append(payment_record)
+
+        try:
+            existing_payments.sort(key=lambda x: str(x.get("date") or "9999-99-99"))
+        except Exception:
+            pass
 
         await db.invoices.update_one(
             {"id": sinv["id"]},
@@ -2886,25 +2928,24 @@ async def list_passed_on_items(current: User = Depends(get_current_user)):
 
 
 @api_router.post("/passed-on-items", response_model=PassedOnItem)
-async def create_passed_on_item(payload: PassedOnItemInput, current: User = Depends(require_admin)):
+async def create_passed_on_item(payload: PassedOnItemInput, current: User = Depends(require_admin_or_manager)):
     name_clean = payload.name.strip()
     if not name_clean:
         raise HTTPException(status_code=400, detail="Fee item name is required")
     ex = await db.passed_on_items.find_one({"name": {"$regex": f"^{re.escape(name_clean)}$", "$options": "i"}})
     if ex:
         raise HTTPException(status_code=400, detail="Fee item with this name already exists")
-    it = PassedOnItem(
-        **payload.dict(),
-        name=name_clean,
-        is_system=False,
-        created_by=current.user_id,
-    )
+    data = payload.dict()
+    data["name"] = name_clean
+    data["is_system"] = False
+    data["created_by"] = current.user_id
+    it = PassedOnItem(**data)
     await db.passed_on_items.insert_one(it.dict())
     return it
 
 
 @api_router.patch("/passed-on-items/{poi_id}", response_model=PassedOnItem)
-async def update_passed_on_item(poi_id: str, payload: PassedOnItemUpdate, current: User = Depends(require_admin)):
+async def update_passed_on_item(poi_id: str, payload: PassedOnItemUpdate, current: User = Depends(require_admin_or_manager)):
     it = await db.passed_on_items.find_one({"id": poi_id}, {"_id": 0})
     if not it:
         raise HTTPException(status_code=404, detail="Passed on item not found")
@@ -2918,7 +2959,7 @@ async def update_passed_on_item(poi_id: str, payload: PassedOnItemUpdate, curren
 
 
 @api_router.delete("/passed-on-items/{poi_id}")
-async def delete_passed_on_item(poi_id: str, current: User = Depends(require_admin)):
+async def delete_passed_on_item(poi_id: str, current: User = Depends(require_admin_or_manager)):
     it = await db.passed_on_items.find_one({"id": poi_id}, {"_id": 0})
     if not it:
         raise HTTPException(status_code=404, detail="Passed on item not found")
@@ -2941,10 +2982,27 @@ async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_curr
             line_total = float(it.get("amount") or (float(it.get("qty", 1)) * float(it.get("price", 0))))
             prior_exp = await db.expenses.find({
                 "sale_invoice_id": iid,
-                "sale_item_name": name,
+                "$or": [
+                    {"sale_item_name": name},
+                    {"sale_item_names": name},
+                    {"selected_items.name": name}
+                ],
                 "status": {"$ne": "rejected"}
-            }, {"_id": 0, "amount": 1, "expense_no": 1, "date": 1, "status": 1}).to_list(100)
-            already_spent = round(sum(float(x.get("amount") or 0) for x in prior_exp), 2)
+            }, {"_id": 0, "amount": 1, "expense_no": 1, "date": 1, "status": 1, "sale_item_name": 1, "selected_items": 1}).to_list(100)
+            already_spent = 0.0
+            for x in prior_exp:
+                sel = x.get("selected_items")
+                if sel and isinstance(sel, list):
+                    found_sel = False
+                    for s in sel:
+                        if s.get("name", "").strip().lower() == name.lower():
+                            already_spent += float(s.get("allocated_amount") or s.get("amount") or 0)
+                            found_sel = True
+                    if not found_sel and x.get("sale_item_name") == name:
+                        already_spent += float(x.get("amount") or 0)
+                elif x.get("sale_item_name") == name:
+                    already_spent += float(x.get("amount") or 0)
+            already_spent = round(already_spent, 2)
             remaining = round(max(0.0, line_total - already_spent), 2)
             passed_items.append({
                 "item_id": it.get("item_id"),
@@ -2958,21 +3016,6 @@ async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_curr
                 "remaining_balance": remaining,
                 "expense_history": prior_exp,
             })
-
-    # Summary across the entire voucher (for whole-voucher expense booking)
-    all_prior_exp = await db.expenses.find({
-        "sale_invoice_id": iid,
-        "status": {"$ne": "rejected"}
-    }, {"_id": 0, "amount": 1, "expense_no": 1, "date": 1, "status": 1, "sale_item_name": 1, "is_whole_voucher": 1}).to_list(500)
-    total_already_spent = round(sum(float(x.get("amount") or 0) for x in all_prior_exp), 2)
-
-    if passed_items:
-        total_pass_on_billed = round(sum(it["billed_amount"] for it in passed_items), 2)
-    else:
-        total_pass_on_billed = round(float(inv.get("total_amount") or 0.0), 2)
-
-    total_remaining_balance = round(max(0.0, total_pass_on_billed - total_already_spent), 2)
-
     return {
         "invoice_id": iid,
         "invoice_no": inv.get("invoice_no"),
@@ -2981,9 +3024,6 @@ async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_curr
         "party_name": inv.get("party_name"),
         "party_mobile": inv.get("party_mobile"),
         "total_amount": inv.get("total_amount"),
-        "total_pass_on_billed": total_pass_on_billed,
-        "total_already_spent": total_already_spent,
-        "total_remaining_balance": total_remaining_balance,
         "passed_on_items": passed_items,
     }
 
@@ -2997,31 +3037,6 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
     exp_dict["created_by"] = current.user_id
     exp_dict["created_by_name"] = current.name
 
-    # Normalize date
-    norm_date = parse_date_to_date_obj(payload.date).strftime("%Y-%m-%d")
-    exp_dict["date"] = norm_date
-
-    # Multi-split payments validation & breakdown description
-    if payload.split_payments and len(payload.split_payments) > 0:
-        total_split = sum(float(p.get("amount") or 0) for p in payload.split_payments)
-        if abs(total_split - payload.amount) > 0.05:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Total of split payments (₹{total_split:,.2f}) must match total expense amount (₹{payload.amount:,.2f})"
-            )
-        split_summary_parts = []
-        for p in payload.split_payments:
-            pm = (p.get("mode") or "payment").upper()
-            amt = float(p.get("amount") or 0)
-            bname = f" ({p.get('bank_name')})" if p.get('bank_name') else ""
-            ref = f" Ref: {p.get('reference_no')}" if p.get('reference_no') else ""
-            split_summary_parts.append(f"{pm}{bname}: ₹{amt:,.2f}{ref}")
-        split_text = " | ".join(split_summary_parts)
-        if not exp_dict.get("description"):
-            exp_dict["description"] = split_text
-        elif split_text not in exp_dict["description"]:
-            exp_dict["description"] = f"{exp_dict['description']}\n{split_text}"
-
     # Auto-fill customer details if customer_id is provided
     if payload.customer_id and not payload.sale_invoice_id:
         cust = await db.customers.find_one({"id": payload.customer_id}, {"_id": 0})
@@ -3032,7 +3047,7 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
             exp_dict["customer_gst"] = exp_dict.get("customer_gst") or cust.get("gst_no")
             exp_dict["customer_code"] = exp_dict.get("customer_code") or cust.get("customer_code")
 
-    # If linked to a Sale Invoice, perform pass-on item / whole voucher balance validation
+    # If linked to a Sale Invoice, perform strict pass-on item balance validation
     if payload.sale_invoice_id:
         inv = await db.invoices.find_one({"id": payload.sale_invoice_id}, {"_id": 0})
         if not inv:
@@ -3062,82 +3077,219 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
         exp_dict["sale_invoice_no"] = inv.get("invoice_no")
         exp_dict["sale_invoice_date"] = inv.get("date")
 
-        if payload.is_whole_voucher:
-            # Whole Voucher Booking
-            passed_items = []
+        # Multi-select or single select Passed On Money items
+        target_item_names = []
+        if payload.sale_item_names and isinstance(payload.sale_item_names, list):
+            target_item_names = [n.strip() for n in payload.sale_item_names if n and n.strip()]
+        elif payload.sale_item_name:
+            target_item_names = [n.strip() for n in payload.sale_item_name.split(",") if n and n.strip()]
+
+        if not target_item_names:
+            raise HTTPException(
+                status_code=400,
+                detail="Please select at least one Passed On Money item from the voucher"
+            )
+
+        matched_items = []
+        for target_name in target_item_names:
+            found = None
             for it in inv.get("items", []):
-                name = it.get("name", "").strip()
-                itype = it.get("item_type")
-                if (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES]):
-                    passed_items.append(it)
-
-            if passed_items:
-                total_pass_on = sum(float(it.get("amount") or (float(it.get("qty", 1)) * float(it.get("price", 0)))) for it in passed_items)
-            else:
-                total_pass_on = float(inv.get("total_amount") or 0.0)
-
-            prior_expenses = await db.expenses.find({
-                "sale_invoice_id": payload.sale_invoice_id,
-                "status": {"$ne": "rejected"}
-            }, {"_id": 0, "amount": 1}).to_list(1000)
-            already_spent = sum(float(x.get("amount") or 0) for x in prior_expenses)
-            remaining_balance = round(max(0.0, total_pass_on - already_spent), 2)
-
-            if round(payload.amount, 2) > remaining_balance:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available voucher balance ₹{remaining_balance:,.2f} (Received: ₹{total_pass_on:,.2f}, Already Spent: ₹{already_spent:,.2f})"
-                )
-
-            exp_dict["is_whole_voucher"] = True
-            exp_dict["sale_item_name"] = payload.sale_item_name or "All Voucher Items"
-            exp_dict["pass_on_item_type"] = "passed_on_money"
-            exp_dict["pass_on_received_amount"] = total_pass_on
-        else:
-            # Individual Item Validation
-            sale_item = None
-            for it in inv.get("items", []):
-                if it.get("name", "").strip().lower() == (payload.sale_item_name or "").strip().lower():
-                    sale_item = it
+                if it.get("name", "").strip().lower() == target_name.lower():
+                    found = it
                     break
-
-            if not sale_item:
+            if not found:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Item '{payload.sale_item_name}' was not found in Sale Voucher {inv.get('invoice_no')}"
+                    detail=f"Item '{target_name}' was not found in Sale Voucher {inv.get('invoice_no')}"
                 )
-
-            # Check that it is indeed a Passed On item
-            name = sale_item.get("name", "").strip()
-            itype = sale_item.get("item_type")
+            name = found.get("name", "").strip()
+            itype = found.get("item_type")
             is_pass_on = (itype == "passed_on_money") or (name.lower() in [f.lower() for f in DEFAULT_PASSED_ON_FEE_NAMES])
             if not is_pass_on:
                 raise HTTPException(
                     status_code=400,
                     detail=f"'{name}' is an Actual Service item, not a Passed On Money item. Expenses can only be booked against Passed On Money items."
                 )
+            matched_items.append(found)
 
+        items_detail = []
+        total_received = 0.0
+        total_spent = 0.0
+        total_remaining_balance = 0.0
+
+        for sale_item in matched_items:
+            name = sale_item.get("name", "").strip()
             line_total = float(sale_item.get("amount") or (float(sale_item.get("qty", 1)) * float(sale_item.get("price", 0))))
             prior_expenses = await db.expenses.find({
                 "sale_invoice_id": payload.sale_invoice_id,
-                "sale_item_name": sale_item.get("name"),
+                "$or": [
+                    {"sale_item_name": name},
+                    {"sale_item_names": name},
+                    {"selected_items.name": name}
+                ],
                 "status": {"$ne": "rejected"},
-            }, {"_id": 0, "amount": 1}).to_list(1000)
-            already_spent = sum(float(x.get("amount") or 0) for x in prior_expenses)
-            remaining_balance = round(max(0.0, line_total - already_spent), 2)
+            }, {"_id": 0, "amount": 1, "sale_item_name": 1, "selected_items": 1}).to_list(500)
 
-            if round(payload.amount, 2) > remaining_balance:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available Passed On Money balance ₹{remaining_balance:,.2f} for '{sale_item.get('name')}' (Received: ₹{line_total:,.2f}, Already Spent: ₹{already_spent:,.2f})"
-                )
+            item_already_spent = 0.0
+            for pe in prior_expenses:
+                sel = pe.get("selected_items")
+                if sel and isinstance(sel, list):
+                    found_sel = False
+                    for s in sel:
+                        if s.get("name", "").strip().lower() == name.lower():
+                            item_already_spent += float(s.get("allocated_amount") or s.get("amount") or 0)
+                            found_sel = True
+                    if not found_sel and pe.get("sale_item_name") == name:
+                        item_already_spent += float(pe.get("amount") or 0)
+                elif pe.get("sale_item_name") == name:
+                    item_already_spent += float(pe.get("amount") or 0)
 
-            exp_dict["sale_item_name"] = sale_item.get("name")
-            exp_dict["pass_on_item_type"] = "passed_on_money"
-            exp_dict["pass_on_received_amount"] = line_total
+            item_already_spent = round(item_already_spent, 2)
+            rem = round(max(0.0, line_total - item_already_spent), 2)
+            items_detail.append({
+                "name": name,
+                "fee_type": sale_item.get("fee_type") or name,
+                "line_total": line_total,
+                "already_spent": item_already_spent,
+                "remaining_balance": rem,
+            })
+            total_received += line_total
+            total_spent += item_already_spent
+            total_remaining_balance += rem
 
+        total_received = round(total_received, 2)
+        total_spent = round(total_spent, 2)
+        total_remaining_balance = round(total_remaining_balance, 2)
+
+        if round(payload.amount, 2) > total_remaining_balance:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available combined Passed On Money balance ₹{total_remaining_balance:,.2f} for selected items ({', '.join(target_item_names)}). (Total Received: ₹{total_received:,.2f}, Already Spent: ₹{total_spent:,.2f})"
+            )
+
+        # Distribute payload.amount across selected items
+        selected_items_breakdown = []
+        rem_to_allocate = round(payload.amount, 2)
+        for idet in items_detail:
+            if rem_to_allocate <= 0:
+                alloc = 0.0
+            elif rem_to_allocate >= idet["remaining_balance"]:
+                alloc = idet["remaining_balance"]
+                rem_to_allocate = round(rem_to_allocate - alloc, 2)
+            else:
+                alloc = rem_to_allocate
+                rem_to_allocate = 0.0
+
+            selected_items_breakdown.append({
+                "name": idet["name"],
+                "fee_type": idet["fee_type"],
+                "billed_amount": idet["line_total"],
+                "already_spent": idet["already_spent"],
+                "remaining_balance": idet["remaining_balance"],
+                "allocated_amount": alloc,
+                "amount": alloc,
+            })
+
+        if rem_to_allocate > 0 and selected_items_breakdown:
+            selected_items_breakdown[0]["allocated_amount"] = round(selected_items_breakdown[0]["allocated_amount"] + rem_to_allocate, 2)
+            selected_items_breakdown[0]["amount"] = selected_items_breakdown[0]["allocated_amount"]
+
+        exp_dict["sale_item_name"] = ", ".join(target_item_names)
+        exp_dict["sale_item_names"] = target_item_names
+        exp_dict["selected_items"] = selected_items_breakdown
+        exp_dict["pass_on_item_type"] = "passed_on_money"
+        exp_dict["pass_on_received_amount"] = total_received
+
+    exp_dict["status"] = "pending"
     e = Expense(**exp_dict)
-    await db.expenses.insert_one(e.dict())
+
+    # Auto-seed into Expense Approval Section (Point iii of user requirements)
+    year = datetime.now().year
+    app_count = await db.expense_approval_vouchers.count_documents({})
+    app_voucher_no = f"EXP-APP-{year}-{(app_count + 1):04d}"
+    app_vid = f"eapp_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    cust_id = exp_dict.get("customer_id") or "general"
+    cust_name = exp_dict.get("customer_name") or exp_dict.get("vendor") or "General Operating"
+
+    # Build approval line items
+    approval_line_items = []
+    if selected_items_breakdown:
+        for sitem in selected_items_breakdown:
+            approval_line_items.append({
+                "id": f"item_{uuid.uuid4().hex[:8]}",
+                "head": sitem["name"],
+                "description": f"Disbursement of {sitem['name']} against voucher {inv.get('invoice_no')}",
+                "qty": 1.0,
+                "rate": float(sitem["allocated_amount"]),
+                "amount": float(sitem["allocated_amount"]),
+            })
+    else:
+        approval_line_items = [
+            {
+                "id": f"item_{uuid.uuid4().hex[:8]}",
+                "head": payload.category or "Operating Expense",
+                "description": payload.description or "",
+                "qty": 1.0,
+                "rate": float(payload.amount),
+                "amount": float(payload.amount),
+            }
+        ]
+
+    app_voucher_doc = {
+        "id": app_vid,
+        "voucher_no": app_voucher_no,
+        "voucher_date": payload.date or datetime.now().strftime("%d-%m-%Y"),
+        "customer_id": cust_id,
+        "customer_name": cust_name,
+        "customer_code": exp_dict.get("customer_code") or "",
+        "customer_mobile": exp_dict.get("customer_mobile") or "",
+        "customer_pan": exp_dict.get("customer_pan") or "",
+        "customer_gst": exp_dict.get("customer_gst") or "",
+        "customer_whatsapp": exp_dict.get("customer_mobile") or "",
+        "sale_voucher_id": payload.sale_invoice_id or "",
+        "sale_voucher_no": exp_dict.get("sale_invoice_no") or "DIRECT-EXP",
+        "sale_voucher_type": "invoice" if payload.sale_invoice_id else "direct",
+        "sale_voucher_date": exp_dict.get("sale_invoice_date") or payload.date,
+        "sale_voucher_amount": float(exp_dict.get("pass_on_received_amount") or payload.amount),
+        "sale_received_amount": float(exp_dict.get("pass_on_received_amount") or payload.amount),
+        "sale_unpaid_amount": 0.0,
+        "expenses": approval_line_items,
+        "total_expense_amount": float(payload.amount),
+        "notes": f"Auto-seeded from Add Expense ({payload.payment_mode.upper()}). Vendor: {payload.vendor or 'N/A'}. {payload.description or ''}".strip(),
+        "status": "submitted",
+        "created_by": {
+            "user_id": current.user_id,
+            "name": current.name,
+            "email": current.email,
+            "role": current.role,
+        },
+        "created_at": now_iso,
+        "created_at_dt": datetime.now(timezone.utc),
+        "updated_at": now_iso,
+        "linked_expense_id": e.id,
+        "source": "add_expense",
+        "workflow_history": [
+            {
+                "action": "submitted",
+                "actor": {"user_id": current.user_id, "name": current.name, "role": current.role},
+                "timestamp": now_iso,
+                "remarks": f"Expense {no} auto-seeded into Approval Section from Add Expense",
+            }
+        ],
+    }
+
+    await db.expense_approval_vouchers.insert_one(app_voucher_doc)
+
+    e.linked_voucher_no = app_voucher_no
+    e.linked_approval_id = app_vid
+    e.status = "pending"
+
+    exp_doc = e.dict()
+    exp_doc["linked_voucher_no"] = app_voucher_no
+    exp_doc["linked_approval_id"] = app_vid
+    await db.expenses.insert_one(exp_doc)
     return e
 
 
@@ -3147,11 +3299,20 @@ async def list_expenses(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     search: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    category: Optional[str] = None,
+    payment_mode: Optional[str] = None,
     current: User = Depends(get_current_user)
 ):
     q: dict = {}
-    if status:
+    if status and status != "all":
         q["status"] = status
+    if customer_id and customer_id != "all":
+        q["customer_id"] = customer_id
+    if category and category != "all":
+        q["category"] = category
+    if payment_mode and payment_mode != "all":
+        q["payment_mode"] = payment_mode
     if from_date or to_date:
         q["date"] = {}
         if from_date:
@@ -3174,6 +3335,7 @@ async def list_expenses(
 
         or_conds = [
             {"expense_no": {"$regex": s, "$options": "i"}},
+            {"linked_voucher_no": {"$regex": s, "$options": "i"}},
             {"vendor": {"$regex": s, "$options": "i"}},
             {"customer_name": {"$regex": s, "$options": "i"}},
             {"customer_mobile": {"$regex": s, "$options": "i"}},
@@ -3206,18 +3368,13 @@ async def list_expenses(
                 if not d.get("customer_gst"): d["customer_gst"] = c.get("gst_no")
                 if not d.get("customer_code"): d["customer_code"] = c.get("customer_code")
 
-    res = []
+    expenses_out = []
     for d in docs:
         try:
-            res.append(Expense(**d))
-        except Exception as e:
-            logging.getLogger("fms.expenses").warning(f"Failed parsing expense {d.get('id')}: {e}")
-            try:
-                d["created_at"] = now_utc()
-                res.append(Expense(**d))
-            except Exception:
-                pass
-    return res
+            expenses_out.append(Expense(**d))
+        except Exception as err:
+            logger.error(f"Error parsing expense doc {d.get('id')}: {err}")
+    return expenses_out
 
 
 @api_router.get("/expenses/{eid}", response_model=Expense)
@@ -3321,21 +3478,6 @@ async def delete_expense(eid: str, current: User = Depends(require_admin_or_mana
     e = await db.expenses.find_one({"id": eid}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Expense not found")
-    
-    # Financial data safety: Prevent direct deletion of approved or verified expenses
-    st = (e.get("status") or "").lower()
-    if st in ("approved", "posted", "verified"):
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot directly delete an approved or verified expense. Please reject or void the voucher first to protect accounting records."
-        )
-    
-    # Check if linked to settled payment or voucher
-    if e.get("payment_status") == "settled" or e.get("is_settled"):
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot delete a settled expense. Financial transaction has already posted."
-        )
 
     res = await db.expenses.delete_one({"id": eid})
     await log_audit_entry(db, current, "expenses", "delete", eid, e, None)
@@ -3584,13 +3726,6 @@ def _recalc_invoice(items: List[InvoiceItem]):
 async def create_invoice(payload: InvoiceInput, current: User = Depends(get_current_user)):
     if not payload.party_id or not payload.party_name.strip():
         raise HTTPException(status_code=400, detail="Party (Customer) is required")
-    # Normalize input dates for reliable back-dating and FY mapping
-    payload.date = parse_date_to_date_obj(payload.date).strftime("%Y-%m-%d")
-    if payload.due_date:
-        payload.due_date = parse_date_to_date_obj(payload.due_date).strftime("%Y-%m-%d")
-    else:
-        payload.due_date = payload.date
-
     items, subtotal, tdisc, ttax, ttotal = _recalc_invoice(payload.items or [])
     if payload.invoice_type == "sale":
         custom_no = (payload.invoice_no or "").strip()
@@ -3747,10 +3882,128 @@ async def list_invoices(
     return out
 
 
+async def _reconcile_single_invoice_payments(d: dict) -> dict:
+    inv_id = d.get("id")
+    inv_no = d.get("invoice_no")
+    party_id = d.get("party_id")
+    party_name = d.get("party_name")
+    total_amount = float(d.get("total_amount") or 0.0)
+
+    or_conds = []
+    if inv_id:
+        or_conds.extend([{"linked_vouchers.voucher_id": inv_id}, {"linked_voucher_no": inv_no}])
+    if inv_no:
+        or_conds.append({"linked_vouchers.voucher_no": inv_no})
+    if party_id:
+        or_conds.append({"client_id": party_id})
+    elif party_name:
+        or_conds.append({"client_name": party_name})
+
+    existing_payments = list(d.get("payments") or [])
+    
+    init_entry = None
+    for p in existing_payments:
+        pno = str(p.get("payment_no") or "").upper()
+        ptype = str(p.get("payment_type") or "").lower()
+        if "INITIAL" in pno or "initial" in ptype or "down" in ptype:
+            init_entry = dict(p)
+            break
+
+    if not init_entry and float(d.get("paid_amount") or 0.0) > 0 and len(existing_payments) == 0:
+        init_entry = {
+            "payment_id": f"init_{inv_id}",
+            "payment_no": f"INITIAL-{inv_no}",
+            "date": d.get("date") or "Initial",
+            "amount": float(d.get("paid_amount")),
+            "payment_mode": d.get("payment_mode") or "cash",
+            "payment_type": "Initial / Down Payment",
+            "remarks": "Payment received at invoice generation",
+            "created_at": str(d.get("created_at") or now_utc().isoformat()),
+            "balance_after": max(0.0, round(total_amount - float(d.get("paid_amount")), 2)),
+        }
+
+    merged = []
+    if init_entry:
+        merged.append(init_entry)
+
+    if or_conds:
+        incomes = await db.income.find({"$or": or_conds}, {"_id": 0}).sort("date", 1).to_list(100)
+        for inc in incomes:
+            inc_remarks = str(inc.get("remarks") or "").lower()
+            inc_id = inc.get("id")
+            inc_no = inc.get("voucher_no") or inc.get("income_no")
+
+            # Check if this income corresponds to the initial down payment already recorded in init_entry
+            is_initial = (
+                "initial" in inc_remarks or
+                "auto-linked" in inc_remarks or
+                inc_no == "PAYIN-0001" or
+                (init_entry and inc.get("date") == d.get("date") and float(inc.get("amount") or 0.0) == float(init_entry.get("amount") or 0.0))
+            )
+            if is_initial:
+                continue
+
+            if any(p.get("payment_id") == inc_id or p.get("payment_no") == inc_no for p in merged):
+                continue
+
+            inc_amt = float(inc.get("amount") or 0.0)
+            allocated = inc_amt
+            if inc.get("linked_vouchers"):
+                for lv in inc["linked_vouchers"]:
+                    if lv.get("voucher_id") == inv_id or lv.get("voucher_no") == inv_no:
+                        allocated = float(lv.get("allocated_amount") or inc_amt)
+                        break
+
+            svc_label = inc.get("service_name") or "Receipt"
+            merged.append({
+                "payment_id": inc_id,
+                "payment_no": inc_no,
+                "date": inc.get("date"),
+                "amount": allocated,
+                "payment_mode": inc.get("payment_mode") or "cash",
+                "payment_type": f"Payment-In ({svc_label})",
+                "remarks": inc.get("remarks") or f"Payment-In {inc_no}",
+                "created_at": str(inc.get("created_at") or now_utc().isoformat()),
+                "balance_after": 0.0
+            })
+
+    try:
+        merged.sort(key=lambda x: str(x.get("date") or "9999-99-99"))
+    except Exception:
+        pass
+
+    running_paid = 0.0
+    for p in merged:
+        amt = float(p.get("amount") or 0.0)
+        running_paid = round(running_paid + amt, 2)
+        p["balance_after"] = max(0.0, round(total_amount - running_paid, 2))
+
+    new_bal = max(0.0, round(total_amount - running_paid, 2))
+    new_status = "paid" if new_bal <= 0 and total_amount > 0 else ("partial" if running_paid > 0 else "unpaid")
+
+    if running_paid != float(d.get("paid_amount") or 0.0) or len(merged) != len(existing_payments) or new_bal != float(d.get("balance") or 0.0):
+        await db.invoices.update_one(
+            {"id": inv_id},
+            {"$set": {
+                "paid_amount": running_paid,
+                "balance": new_bal,
+                "status": new_status,
+                "payments": merged,
+            }}
+        )
+        d["paid_amount"] = running_paid
+        d["balance"] = new_bal
+        d["status"] = new_status
+        d["payments"] = merged
+
+    return d
+
+
 @api_router.get("/invoices/{iid}", response_model=Invoice)
 async def get_invoice(iid: str, current: User = Depends(get_current_user)):
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not d: raise HTTPException(status_code=404, detail="Not found")
+    d = await _reconcile_single_invoice_payments(d)
     if d.get("party_id"):
         c = await db.customers.find_one({"id": d.get("party_id")}, {"_id": 0, "mobile": 1, "pan": 1, "gst_no": 1, "customer_code": 1})
         if c:
@@ -3803,6 +4056,120 @@ async def get_invoice_payment_history(iid: str, current: User = Depends(get_curr
     }
 
 
+@api_router.get("/invoices/{iid}/profit-analysis")
+async def get_invoice_profit_analysis(iid: str, current: User = Depends(get_current_user)):
+    """Calculate justified bill-wise profit for an invoice voucher:
+    Total Profit = Voucher Total Amount - Voucher Total Expense
+    Profit % = (Total Profit * 100) / Voucher Amount Excluding Pass-On Money
+    """
+    inv = await db.invoices.find_one({"$or": [{"id": iid}, {"invoice_no": iid}]}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice voucher not found")
+
+    total_amount = float(inv.get("total_amount") or 0.0)
+
+    # 1. Identify Passed On Money vs Actual Service items
+    pass_on_items = []
+    pass_on_amount = 0.0
+    actual_service_items = []
+    actual_service_amount = 0.0
+
+    for it in inv.get("items", []):
+        it_amt = float(it.get("amount") or (float(it.get("qty", 1)) * float(it.get("price", 0))))
+        is_passon = (
+            it.get("item_type") == "passed_on_money" or
+            (it.get("item_type") != "actual_service" and (
+                it.get("fee_type") in ("EMD", "Cost of BOQ", "Tender Processing Fee", "Registration Fee", "Other Fee") or
+                any(k in (it.get("name") or "").lower() for k in ["emd", "cost of boq", "pass-on", "passed on"])
+            ))
+        )
+        if is_passon:
+            pass_on_items.append({
+                "name": it.get("name"),
+                "fee_type": it.get("fee_type") or "Pass-On Fee",
+                "amount": it_amt,
+                "qty": it.get("qty", 1),
+                "price": it.get("price", it_amt),
+            })
+            pass_on_amount += it_amt
+        else:
+            actual_service_items.append({
+                "name": it.get("name"),
+                "amount": it_amt,
+                "qty": it.get("qty", 1),
+                "price": it.get("price", it_amt),
+                "tax_rate": it.get("tax_rate", 0),
+            })
+            actual_service_amount += it_amt
+
+    # Total voucher amount excluding pass-on money
+    voucher_amount_ex_passon = max(0.0, round(total_amount - pass_on_amount, 2))
+    if voucher_amount_ex_passon == 0 and actual_service_amount > 0:
+        voucher_amount_ex_passon = round(actual_service_amount, 2)
+
+    # 2. Find all linked expenses for this voucher in db.expenses
+    inv_id = inv.get("id")
+    inv_no = inv.get("invoice_no")
+    exp_or = []
+    if inv_id:
+        exp_or.extend([{"sale_invoice_id": inv_id}, {"sale_voucher_id": inv_id}])
+    if inv_no:
+        exp_or.extend([{"sale_invoice_no": inv_no}, {"sale_voucher_no": inv_no}])
+
+    linked_expenses = []
+    total_expense = 0.0
+    if exp_or:
+        exp_docs = await db.expenses.find({"$or": exp_or}, {"_id": 0}).to_list(100)
+        for e in exp_docs:
+            if e.get("status") != "rejected":
+                amt = float(e.get("amount") or 0.0)
+                total_expense += amt
+                linked_expenses.append({
+                    "id": e.get("id"),
+                    "expense_no": e.get("expense_no"),
+                    "category": e.get("category"),
+                    "amount": amt,
+                    "date": e.get("date"),
+                    "status": e.get("status"),
+                    "payment_mode": e.get("payment_mode"),
+                    "vendor": e.get("vendor"),
+                    "description": e.get("description"),
+                })
+
+    # 3. Apply User's Justified Formula:
+    # Voucher ka total profit = Voucher ka total amount - Voucher ka total Expence
+    total_profit = round(total_amount - total_expense, 2)
+
+    # percent of profit = (total profit * 100) / total Voucher amount
+    if total_amount > 0:
+        profit_percent = round((total_profit * 100.0) / total_amount, 2)
+    else:
+        profit_percent = 0.0
+
+    return {
+        "invoice_id": inv.get("id"),
+        "invoice_no": inv.get("invoice_no"),
+        "party_name": inv.get("party_name"),
+        "party_mobile": inv.get("party_mobile"),
+        "date": inv.get("date"),
+        "status": inv.get("status"),
+        "total_voucher_amount": total_amount,
+        "pass_on_amount": pass_on_amount,
+        "voucher_amount_ex_passon": voucher_amount_ex_passon,
+        "total_voucher_expense": round(total_expense, 2),
+        "total_profit": total_profit,
+        "profit_percent": profit_percent,
+        "pass_on_items": pass_on_items,
+        "actual_service_items": actual_service_items,
+        "linked_expenses": linked_expenses,
+        "formula": {
+            "profit_formula": "Voucher Total Amount - Voucher Total Expense",
+            "margin_formula": "(Total Profit × 100) / (Total Voucher Amount)",
+            "explanation": f"₹{total_amount:,.2f} - ₹{total_expense:,.2f} = ₹{total_profit:,.2f} Profit ({profit_percent}% on ₹{total_amount:,.2f} total voucher amount)"
+        }
+    }
+
+
 @api_router.get("/invoices/{iid}/pdf")
 async def get_invoice_pdf(iid: str, token: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
     # Accept token either via Authorization header (via dependency) OR ?token=... (browser)
@@ -3832,21 +4199,10 @@ async def get_invoice_pdf(iid: str, token: Optional[str] = None, authorization: 
 
 
 @api_router.patch("/invoices/{iid}", response_model=Invoice)
-async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depends(get_current_user)):
+async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depends(require_admin)):
     existing = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Invoice not found")
-
-    # Authorized roles: admin, manager, accountant, DEO, or invoice creator
-    allowed_roles = {"admin", "super_admin", "manager", "branch_manager", "assistant_branch_manager", "accountant", "custom_accounts_assistant", "data_entry_operator", "employee"}
-    is_owner = (existing.get("created_by") == current.user_id)
-    if current.role not in allowed_roles and not is_owner:
-        raise HTTPException(status_code=403, detail="Not authorized to edit this invoice")
-
-    # Normalize dates for reliable back-dating
-    norm_date = parse_date_to_date_obj(payload.date).strftime("%Y-%m-%d") if payload.date else existing.get("date")
-    norm_due = parse_date_to_date_obj(payload.due_date).strftime("%Y-%m-%d") if payload.due_date else norm_date
-
     items, subtotal, tdisc, ttax, ttotal = _recalc_invoice(payload.items or [])
     total = ttotal if ttotal > 0 else float(payload.total_amount or 0)
     paid = float(payload.paid_amount or 0)
@@ -3855,50 +4211,20 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
     balance = round(total - paid, 2)
     status = "paid" if balance <= 0 and total > 0 else ("partial" if paid > 0 else "unpaid")
     updates = {
-        "invoice_type": payload.invoice_type,
-        "payment_type": payload.payment_type,
+        "invoice_type": payload.invoice_type, "payment_type": payload.payment_type,
         "payment_mode": payload.payment_mode or "cash",
-        "date": norm_date,
-        "payment_terms": payload.payment_terms or existing.get("payment_terms") or "Custom",
-        "due_date": norm_due,
-        "party_id": payload.party_id,
-        "party_name": payload.party_name,
-        "party_mobile": payload.party_mobile,
-        "party_gst": payload.party_gst,
+        "date": payload.date, "payment_terms": payload.payment_terms, "due_date": payload.due_date,
+        "party_id": payload.party_id, "party_name": payload.party_name,
+        "party_mobile": payload.party_mobile, "party_gst": payload.party_gst,
         "items": [it.dict() for it in items],
-        "subtotal": subtotal,
-        "total_discount": tdisc,
-        "total_tax": ttax,
-        "total_amount": total,
-        "paid_amount": paid,
-        "balance": balance,
-        "status": status,
+        "subtotal": subtotal, "total_discount": tdisc, "total_tax": ttax,
+        "total_amount": total, "paid_amount": paid, "balance": balance, "status": status,
         "notes": payload.notes,
         "signatory_name": payload.signatory_name or "अंजू कुमारी",
         "signature_url": payload.signature_url,
         "include_signature": True if payload.include_signature is None else payload.include_signature,
-        "updated_at": now_utc(),
-        "updated_by": current.user_id,
     }
     await db.invoices.update_one({"id": iid}, {"$set": updates})
-
-    # Sync any auto-linked income records with updated date and amount
-    inv_no = existing.get("invoice_no") or ""
-    await db.income.update_many(
-        {"$or": [
-            {"remarks": {"$regex": re.escape(iid)}},
-            {"remarks": {"$regex": re.escape(inv_no)}}
-        ]},
-        {"$set": {
-            "date": norm_date,
-            "amount": total,
-            "client_id": payload.party_id,
-            "client_name": payload.party_name,
-            "client_mobile": payload.party_mobile,
-            "payment_mode": payload.payment_mode or ("cash" if payload.payment_type == "cash" else "bank"),
-        }}
-    )
-
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
     items_d = d.get("items") or []
     for it in items_d:

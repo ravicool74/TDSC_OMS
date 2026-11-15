@@ -840,7 +840,13 @@ export default function AccountingReportsHub() {
                     <View key={idx} style={[styles.kpiCard, { borderLeftColor: kpi.color || BLUE }]}>
                       <Text style={styles.kpiLbl}>{kpi.label}</Text>
                       <Text style={[styles.kpiVal, { color: kpi.color || '#0F172A' }]}>
-                        {kpi.label.toLowerCase().includes('count') || kpi.label.toLowerCase().includes('entries') ? kpi.value : inr(kpi.value)}
+                        {kpi.label.toLowerCase().includes('count') ||
+                        kpi.label.toLowerCase().includes('entries') ||
+                        kpi.label.toLowerCase().includes('margin') ||
+                        kpi.label.toLowerCase().includes('percent') ||
+                        String(kpi.value).includes('%')
+                          ? kpi.value
+                          : inr(kpi.value)}
                       </Text>
                     </View>
                   ))}
