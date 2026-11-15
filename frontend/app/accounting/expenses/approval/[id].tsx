@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   TextInput,
   Linking,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -20,11 +21,26 @@ import { notify, confirm } from '@/src/dialog';
 import { useAuth } from '@/src/AuthContext';
 import { ScreenLoader } from '@/src/ui';
 
+const EXPENSE_HEADS = [
+  'Tender Fee',
+  'EMD / Security Deposit',
+  'Processing Charge',
+  'Travel & Fuel',
+  'Notary / Affidavit',
+  'Printing & Stationery',
+  'Site Visit',
+  'Document Legalization',
+  'Portal Registration Fee',
+  'Labour & Delivery',
+  'Other Operational Expense',
+];
+
 export default function ExpenseApprovalDetailScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
   const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
 
   const [voucher, setVoucher] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
@@ -37,6 +53,13 @@ export default function ExpenseApprovalDetailScreen() {
   });
   const [remarks, setRemarks] = useState('');
   const [modalErr, setModalErr] = useState<string | null>(null);
+
+  // Edit Voucher Modal
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editItems, setEditItems] = useState<Array<{ id: string; head: string; description: string; qty: string; rate: string; amount: number }>>([]);
+  const [editNotes, setEditNotes] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editErr, setEditErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -66,24 +89,25 @@ export default function ExpenseApprovalDetailScreen() {
     }
   };
 
-  const isCreator = user?.id === voucher?.created_by?.user_id;
-  const isSuperAdmin = user?.role === 'super_admin';
-  const isApproverRole = user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager';
-  const canApprove = isApproverRole && (!isCreator || isSuperAdmin);
+  const currentUserId = (user as any)?.id || (user as any)?.user_id;
+  const isCreator = currentUserId === voucher?.created_by?.user_id;
+  const isAdminRole = user?.role === 'admin' || user?.role === 'super_admin';
+  const isApproverRole = isAdminRole || user?.role === 'manager' || user?.role === 'accountant';
+  const canApprove = isApproverRole && (isAdminRole || !isCreator);
 
   const handleApprove = async () => {
     if (!voucher) return;
     const ok = await confirm(
-      'Approve Expense Voucher?',
-      `Confirm approval for voucher ${voucher.voucher_no} of amount ₹${Number(voucher.total_expense_amount || 0).toLocaleString('en-IN')}. This will post to the accounting ledger.`,
-      { confirmText: 'Approve Voucher', destructive: false }
+      'Approve Expense?',
+      `Confirm approval for expense voucher ${voucher.voucher_no} of amount ₹${Number(voucher.total_expense_amount || 0).toLocaleString('en-IN')}. This will post to the accounting ledger and sync with All Expenses.`,
+      { confirmText: 'Approve Expense', destructive: false }
     );
     if (!ok) return;
 
     setActing(true);
     try {
       await api.expenseApprovalAction(voucher.id, 'approve', 'Approved by authorized personnel');
-      notify('Approved', `Voucher ${voucher.voucher_no} approved ✓`);
+      notify('Approved', `Expense Voucher ${voucher.voucher_no} approved ✓`);
       await load();
     } catch (e: any) {
       notify('Error', e?.message || 'Approval failed');
@@ -129,6 +153,152 @@ export default function ExpenseApprovalDetailScreen() {
       setActing(false);
     }
   };
+
+  const handleReopen = async () => {
+    if (!voucher) return;
+    const ok = await confirm(
+      'Reopen Expense Voucher?',
+      `Reopening voucher ${voucher.voucher_no} will change its status back to Submitted and automatically remove any posted ledger expense. Do you want to proceed?`,
+      { confirmText: 'Reopen Voucher', destructive: false }
+    );
+    if (!ok) return;
+
+    setActing(true);
+    try {
+      await api.reopenExpenseApproval(voucher.id, 'Reopened by Admin for correction / review');
+      notify('Reopened', `Voucher ${voucher.voucher_no} is now reopened to Submitted`);
+      await load();
+    } catch (e: any) {
+      notify('Error', e?.message || 'Failed to reopen voucher');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!voucher) return;
+    const ok = await confirm(
+      'Delete Expense Voucher?',
+      `Are you sure you want to permanently delete voucher ${voucher.voucher_no}? Any linked expense posted in the accounting ledger will also be removed. This cannot be undone.`,
+      { confirmText: 'Delete Permanently', destructive: true }
+    );
+    if (!ok) return;
+
+    setActing(true);
+    try {
+      await api.deleteExpenseApproval(voucher.id);
+      notify('Deleted', `Voucher ${voucher.voucher_no} deleted successfully`);
+      router.back();
+    } catch (e: any) {
+      notify('Error', e?.message || 'Failed to delete voucher');
+      setActing(false);
+    }
+  };
+
+  const openEditModal = () => {
+    if (!voucher) return;
+    setEditItems(
+      (voucher.expenses || []).map((it: any, idx: number) => ({
+        id: it.id || String(idx + 1),
+        head: it.head || 'Tender Fee',
+        description: it.description || '',
+        qty: String(it.qty ?? 1),
+        rate: String(it.rate ?? 0),
+        amount: Number(it.amount ?? 0),
+      }))
+    );
+    setEditNotes(voucher.notes || '');
+    setEditErr(null);
+    setEditModalOpen(true);
+  };
+
+  const updateEditItem = (itemId: string, field: 'head' | 'description' | 'qty' | 'rate', val: string) => {
+    setEditItems(prev =>
+      prev.map(it => {
+        if (it.id !== itemId) return it;
+        const updated = { ...it, [field]: val };
+        const q = parseFloat(field === 'qty' ? val : it.qty) || 0;
+        const r = parseFloat(field === 'rate' ? val : it.rate) || 0;
+        updated.amount = Math.round(q * r * 100) / 100;
+        return updated;
+      })
+    );
+  };
+
+  const addEditItem = () => {
+    setEditItems(prev => [
+      ...prev,
+      { id: Date.now().toString(), head: 'Processing Charge', description: '', qty: '1', rate: '', amount: 0 },
+    ]);
+  };
+
+  const removeEditItem = (itemId: string) => {
+    if (editItems.length <= 1) return;
+    setEditItems(prev => prev.filter(it => it.id !== itemId));
+  };
+
+  const handleSaveEdit = async () => {
+    setEditErr(null);
+    const total = editItems.reduce((acc, it) => acc + (it.amount || 0), 0);
+    if (total <= 0) {
+      setEditErr('Total expense must be greater than zero.');
+      return;
+    }
+    const recAmt = Number(voucher.sale_received_amount || 0);
+    if (total > recAmt) {
+      setEditErr(`Expense cannot be greater than received amount (₹${recAmt.toLocaleString('en-IN')})`);
+      return;
+    }
+    for (const it of editItems) {
+      if (!it.head.trim()) {
+        setEditErr('All line items must have a category head.');
+        return;
+      }
+    }
+
+    setSavingEdit(true);
+    try {
+      const payload = {
+        customer_id: voucher.customer_id,
+        customer_name: voucher.customer_name,
+        customer_code: voucher.customer_code,
+        customer_mobile: voucher.customer_mobile,
+        customer_pan: voucher.customer_pan,
+        customer_whatsapp: voucher.customer_whatsapp,
+        sale_voucher_id: voucher.sale_voucher_id,
+        sale_voucher_no: voucher.sale_voucher_no,
+        sale_voucher_type: voucher.sale_voucher_type,
+        sale_voucher_date: voucher.sale_voucher_date,
+        sale_voucher_amount: voucher.sale_voucher_amount,
+        sale_received_amount: voucher.sale_received_amount,
+        sale_unpaid_amount: voucher.sale_unpaid_amount,
+        expenses: editItems.map(it => ({
+          id: it.id,
+          head: it.head.trim(),
+          description: it.description.trim(),
+          qty: parseFloat(it.qty) || 1,
+          rate: parseFloat(it.rate) || 0,
+          amount: it.amount,
+        })),
+        notes: editNotes.trim(),
+        status: voucher.status,
+      };
+      await api.updateExpenseApproval(voucher.id, payload);
+      notify('Saved', 'Voucher updated successfully ✓');
+      setEditModalOpen(false);
+      await load();
+    } catch (e: any) {
+      setEditErr(e?.message || 'Failed to update voucher');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  useEffect(() => {
+    if (voucher && (edit === 'true' || edit === '1')) {
+      openEditModal();
+    }
+  }, [voucher?.id, edit]);
 
   if (loading || !voucher) {
     return <ScreenLoader />;
@@ -202,8 +372,43 @@ export default function ExpenseApprovalDetailScreen() {
 
           <Pressable onPress={printPdf} style={styles.toolbarBtn} testID="print-voucher-btn">
             <Ionicons name="print-outline" size={16} color="#334155" />
-            <Text style={[styles.toolbarBtnTxt, { color: '#334155' }]}>Print PDF</Text>
+            <Text style={[styles.toolbarBtnTxt, { color: '#334155' }]}>PDF</Text>
           </Pressable>
+
+          {isAdmin || status === 'draft' || status === 'returned' ? (
+            <Pressable
+              onPress={openEditModal}
+              style={[styles.toolbarBtn, { backgroundColor: '#F0FDFA', borderColor: '#99F6E4' }]}
+              testID="edit-voucher-btn"
+            >
+              <Ionicons name="create-outline" size={16} color="#0D9488" />
+              <Text style={[styles.toolbarBtnTxt, { color: '#0D9488' }]}>Edit</Text>
+            </Pressable>
+          ) : null}
+
+          {isAdmin && (status === 'approved' || status === 'rejected' || status === 'verified') ? (
+            <Pressable
+              onPress={handleReopen}
+              style={[styles.toolbarBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+              disabled={acting}
+              testID="reopen-voucher-btn"
+            >
+              <Ionicons name="reload-outline" size={16} color="#2563EB" />
+              <Text style={[styles.toolbarBtnTxt, { color: '#2563EB' }]}>Reopen</Text>
+            </Pressable>
+          ) : null}
+
+          {isAdmin ? (
+            <Pressable
+              onPress={handleDelete}
+              style={[styles.toolbarBtn, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}
+              disabled={acting}
+              testID="delete-voucher-btn"
+            >
+              <Ionicons name="trash-outline" size={16} color="#DC2626" />
+              <Text style={[styles.toolbarBtnTxt, { color: '#DC2626' }]}>Delete</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {/* Section 1: Contractor Information */}
@@ -311,7 +516,7 @@ export default function ExpenseApprovalDetailScreen() {
           <View style={styles.approvalPanel}>
             <Text style={styles.panelTitle}>Approver Actions</Text>
 
-            {isCreator && !isSuperAdmin ? (
+            {isCreator && !isAdminRole ? (
               <View style={styles.selfApprovalWarning}>
                 <Ionicons name="information-circle" size={18} color="#B45309" />
                 <Text style={styles.selfApprovalWarningTxt}>
@@ -321,7 +526,7 @@ export default function ExpenseApprovalDetailScreen() {
             ) : null}
 
             <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
-              {canApprove && (status === 'submitted' || status === 'verified') ? (
+              {canApprove && (status === 'submitted' || status === 'verified' || status === 'returned') ? (
                 <Pressable
                   onPress={handleApprove}
                   style={[styles.btnApprove, acting && { opacity: 0.6 }]}
@@ -329,7 +534,7 @@ export default function ExpenseApprovalDetailScreen() {
                   testID="action-approve-btn"
                 >
                   <Ionicons name="checkmark-circle" size={16} color="#FFF" />
-                  <Text style={styles.btnApproveTxt}>Approve Voucher</Text>
+                  <Text style={styles.btnApproveTxt}>Approve Expense</Text>
                 </Pressable>
               ) : null}
 
@@ -369,6 +574,57 @@ export default function ExpenseApprovalDetailScreen() {
                 </Pressable>
               ) : null}
             </View>
+
+            {isAdmin ? (
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
+                <Pressable onPress={openEditModal} style={[styles.btnVerify, { backgroundColor: '#F0FDFA', borderColor: '#99F6E4' }]}>
+                  <Ionicons name="create-outline" size={16} color="#0D9488" />
+                  <Text style={[styles.btnVerifyTxt, { color: '#0D9488' }]}>Edit Voucher</Text>
+                </Pressable>
+                <Pressable onPress={handleDelete} style={[styles.btnReject, acting && { opacity: 0.6 }]} disabled={acting}>
+                  <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+                  <Text style={styles.btnRejectTxt}>Delete Voucher</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* Admin Action Panel for approved / rejected */}
+        {status === 'approved' || status === 'rejected' ? (
+          <View style={styles.approvalPanel}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={styles.panelTitle}>
+                {status === 'approved' ? '✓ Voucher Approved & Posted' : '✕ Voucher Rejected'}
+              </Text>
+              {isAdmin ? (
+                <View style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: colors.brandPrimary }}>ADMIN LEVEL CONTROLS</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text style={{ fontSize: 12, color: colors.muted }}>
+              {status === 'approved'
+                ? 'This voucher is currently approved and posted into the accounting ledger. As an Administrator, you can edit details, reopen it to Submitted status (which automatically removes/reverses the ledger expense), or delete it.'
+                : 'This voucher was rejected. As an Administrator, you can edit its details, reopen it to Submitted status for review, or delete it.'}
+            </Text>
+
+            {isAdmin ? (
+              <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                <Pressable onPress={openEditModal} style={[styles.btnVerify, { backgroundColor: '#F0FDFA', borderColor: '#99F6E4' }]}>
+                  <Ionicons name="create-outline" size={16} color="#0D9488" />
+                  <Text style={[styles.btnVerifyTxt, { color: '#0D9488' }]}>Edit Voucher</Text>
+                </Pressable>
+                <Pressable onPress={handleReopen} style={[styles.btnVerify, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} disabled={acting}>
+                  <Ionicons name="reload-outline" size={16} color="#2563EB" />
+                  <Text style={[styles.btnVerifyTxt, { color: '#2563EB' }]}>Reopen Voucher</Text>
+                </Pressable>
+                <Pressable onPress={handleDelete} style={[styles.btnReject, acting && { opacity: 0.6 }]} disabled={acting}>
+                  <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+                  <Text style={styles.btnRejectTxt}>Delete Voucher</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         ) : null}
       </ScrollView>
@@ -429,6 +685,204 @@ export default function ExpenseApprovalDetailScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Edit Voucher Modal (Admin / Submitter) */}
+      <Modal
+        visible={editModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalCard, { maxWidth: 640, maxHeight: '90%' }]} testID="edit-voucher-modal">
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="create" size={18} color={colors.brandPrimary} />
+                </View>
+                <View>
+                  <Text style={styles.modalTitle}>Edit Voucher {voucher.voucher_no}</Text>
+                  <Text style={{ fontSize: 11, color: colors.muted }}>Modify Line Items & Notes (Admin)</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setEditModalOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: 14 }}>
+              {/* Pass-On Constraint Info */}
+              <View style={{ backgroundColor: '#F8FAFC', padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', gap: 4 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 12, color: colors.muted }}>Linked Sale Voucher:</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: colors.onSurface }}>{voucher.sale_voucher_no}</Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 12, color: colors.muted }}>Sale Received Amount (Max Limit):</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: '#15803D' }}>
+                    ₹ {recAmt.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Line Items List */}
+              <Text style={{ fontSize: font.sm, fontWeight: '800', color: colors.onSurface }}>Itemized Expense Lines</Text>
+              
+              {editItems.map((item, idx) => (
+                <View key={item.id || idx} style={styles.editItemBox}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: colors.brandPrimary }}>Line #{idx + 1}</Text>
+                    {editItems.length > 1 ? (
+                      <Pressable onPress={() => removeEditItem(item.id)} hitSlop={8} style={{ padding: 4 }}>
+                        <Ionicons name="trash-outline" size={16} color={colors.error} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  {/* Category Head Selection */}
+                  <View style={{ gap: 4 }}>
+                    <Text style={styles.fieldLbl}>Expense Head / Category</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 2 }}>
+                      {EXPENSE_HEADS.map(h => {
+                        const sel = item.head === h;
+                        return (
+                          <Pressable
+                            key={h}
+                            onPress={() => updateEditItem(item.id, 'head', h)}
+                            style={[styles.headPill, sel && styles.headPillSel]}
+                          >
+                            <Text style={[styles.headPillTxt, sel && styles.headPillTxtSel]}>{h}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                    {!EXPENSE_HEADS.includes(item.head) ? (
+                      <TextInput
+                        value={item.head}
+                        onChangeText={(val) => updateEditItem(item.id, 'head', val)}
+                        placeholder="Custom Expense Head"
+                        placeholderTextColor={colors.muted}
+                        style={styles.textInputSm}
+                      />
+                    ) : null}
+                  </View>
+
+                  {/* Description */}
+                  <View style={{ gap: 4 }}>
+                    <Text style={styles.fieldLbl}>Description / Particulars (Optional)</Text>
+                    <TextInput
+                      value={item.description}
+                      onChangeText={(val) => updateEditItem(item.id, 'description', val)}
+                      placeholder="Details of expense..."
+                      placeholderTextColor={colors.muted}
+                      style={styles.textInputSm}
+                    />
+                  </View>
+
+                  {/* Qty, Rate, Amount */}
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text style={styles.fieldLbl}>Quantity</Text>
+                      <TextInput
+                        value={item.qty}
+                        onChangeText={(val) => updateEditItem(item.id, 'qty', val)}
+                        keyboardType="numeric"
+                        placeholder="1"
+                        placeholderTextColor={colors.muted}
+                        style={styles.textInputSm}
+                      />
+                    </View>
+                    <View style={{ flex: 1.5, gap: 4 }}>
+                      <Text style={styles.fieldLbl}>Rate (₹)</Text>
+                      <TextInput
+                        value={item.rate}
+                        onChangeText={(val) => updateEditItem(item.id, 'rate', val)}
+                        keyboardType="numeric"
+                        placeholder="0.00"
+                        placeholderTextColor={colors.muted}
+                        style={styles.textInputSm}
+                      />
+                    </View>
+                    <View style={{ flex: 1.5, gap: 4 }}>
+                      <Text style={styles.fieldLbl}>Amount (₹)</Text>
+                      <View style={[styles.textInputSm, { backgroundColor: '#F1F5F9', justifyContent: 'center' }]}>
+                        <Text style={{ fontWeight: '800', color: colors.onSurface }}>
+                          ₹ {item.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              ))}
+
+              <Pressable onPress={addEditItem} style={styles.addEditItemBtn}>
+                <Ionicons name="add-circle-outline" size={16} color={colors.brandPrimary} />
+                <Text style={styles.addEditItemBtnTxt}>+ Add Line Item</Text>
+              </Pressable>
+
+              {/* Total Summary & Pass-on check */}
+              {(() => {
+                const editTot = editItems.reduce((acc, it) => acc + (it.amount || 0), 0);
+                const exceeds = editTot > recAmt;
+                return (
+                  <View style={[styles.editSummaryBox, exceeds && { borderColor: '#FCA5A5', backgroundColor: '#FEF2F2' }]}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 13, fontWeight: '800', color: colors.onSurface }}>New Total Amount:</Text>
+                      <Text style={{ fontSize: 16, fontWeight: '900', color: exceeds ? colors.error : colors.brandPrimary }}>
+                        ₹ {editTot.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </Text>
+                    </View>
+                    {exceeds ? (
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: colors.error, marginTop: 4 }}>
+                        ✕ Pass-On Rule Violation: Total expense exceeds received amount (₹{recAmt.toLocaleString('en-IN')})
+                      </Text>
+                    ) : (
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#15803D', marginTop: 4 }}>
+                        ✓ Pass-On Rule Compliant
+                      </Text>
+                    )}
+                  </View>
+                );
+              })()}
+
+              {/* Notes */}
+              <View style={{ gap: 4 }}>
+                <Text style={styles.fieldLbl}>Submitter / Auditor Notes</Text>
+                <TextInput
+                  value={editNotes}
+                  onChangeText={setEditNotes}
+                  placeholder="Add explanation or reason for modification..."
+                  placeholderTextColor={colors.muted}
+                  multiline
+                  style={[styles.textInputSm, { height: 70, textAlignVertical: 'top' }]}
+                />
+              </View>
+
+              {editErr ? <Text style={styles.modalErrTxt}>{editErr}</Text> : null}
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Pressable onPress={() => setEditModalOpen(false)} style={styles.cancelBtn} disabled={savingEdit}>
+                <Text style={styles.cancelBtnTxt}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSaveEdit}
+                style={[styles.confirmBtn, { backgroundColor: colors.brandPrimary }, savingEdit && { opacity: 0.6 }]}
+                disabled={savingEdit}
+              >
+                {savingEdit ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.confirmBtnTxt}>Save Changes</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -710,4 +1164,73 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   confirmBtnTxt: { color: '#FFF', fontWeight: '800', fontSize: font.sm },
+
+  // Edit Modal Styles
+  editItemBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    gap: 8,
+  },
+  fieldLbl: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.muted,
+  },
+  headPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  headPillSel: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandPrimary,
+  },
+  headPillTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  headPillTxtSel: {
+    color: '#FFF',
+  },
+  textInputSm: {
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    fontSize: font.sm,
+    color: colors.onSurface,
+  },
+  addEditItemBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    backgroundColor: '#EFF6FF',
+    borderStyle: 'dashed',
+  },
+  addEditItemBtnTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.brandPrimary,
+  },
+  editSummaryBox: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: radius.md,
+    padding: 10,
+  },
 });

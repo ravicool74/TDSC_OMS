@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from expense_approval_pdf import generate_expense_approval_pdf
 
 def now_utc_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%d-%m-%Y %I:%M:%S %p")
+    return datetime.now(timezone.utc).isoformat()
 
 def clean_doc(d: Any) -> Any:
     if isinstance(d, dict):
@@ -57,11 +57,19 @@ class ExpenseApprovalInput(BaseModel):
 
 
 class ApproverActionInput(BaseModel):
-    action: str  # 'approve', 'verify', 'reject', 'return'
+    action: str  # 'approve', 'verify', 'reject', 'return', 'reopen'
     remarks: Optional[str] = None
 
 
 class WorkflowConfigInput(BaseModel):
+    workflow_mode: str = "multi_stage"  # "single_stage" (Submitted -> Approved) or "multi_stage" (Submitted -> Verified -> Approved)
+    stages_count: int = 2  # 1 or 2
+    stage_1_name: str = "Verification Stage"
+    stage_1_roles: List[str] = ["admin", "super_admin", "manager", "accountant"]
+    stage_1_users: List[dict] = []  # Specific employees for Stage 1: [{"user_id": "...", "name": "...", "role": "..."}]
+    stage_2_name: str = "Final Approval"
+    stage_2_roles: List[str] = ["admin", "super_admin"]
+    stage_2_users: List[dict] = []  # Specific employees for Stage 2: [{"user_id": "...", "name": "...", "role": "..."}]
     enabled_stages: List[str] = ["submitted", "approved"]
     allow_verification_stage: bool = True
     approver_roles: List[str] = ["admin", "super_admin", "manager"]
@@ -76,7 +84,15 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         if not cfg:
             cfg = {
                 "id": "default_workflow",
-                "enabled_stages": ["submitted", "approved"],
+                "workflow_mode": "multi_stage",
+                "stages_count": 2,
+                "stage_1_name": "Verification Stage",
+                "stage_1_roles": ["admin", "super_admin", "manager", "accountant"],
+                "stage_1_users": [],
+                "stage_2_name": "Final Approval",
+                "stage_2_roles": ["admin", "super_admin"],
+                "stage_2_users": [],
+                "enabled_stages": ["submitted", "verified", "approved"],
                 "allow_verification_stage": True,
                 "approver_roles": ["admin", "super_admin", "manager"],
                 "allow_self_approval": False,
@@ -89,6 +105,26 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         year = datetime.now().year
         count = await db.expense_approval_vouchers.count_documents({})
         return f"EXP-APP-{year}-{(count + 1):04d}"
+
+    @router.get("/approver-candidates")
+    async def list_approver_candidates(current: Any = Depends(get_current_user)):
+        """List active employees across the organisation for workflow assignment."""
+        users = await db.users.find(
+            {"status": {"$ne": "inactive"}},
+            {"_id": 0, "user_id": 1, "id": 1, "name": 1, "email": 1, "role": 1, "department": 1, "designation": 1}
+        ).sort("name", 1).to_list(500)
+        results = []
+        for u in users:
+            uid = u.get("user_id") or u.get("id")
+            results.append({
+                "user_id": uid,
+                "name": u.get("name") or u.get("email") or uid,
+                "email": u.get("email") or "",
+                "role": u.get("role") or "employee",
+                "department": u.get("department") or "",
+                "designation": u.get("designation") or "",
+            })
+        return clean_doc(results)
 
     @router.get("/config")
     async def get_config(current: Any = Depends(get_current_user)):
@@ -317,8 +353,9 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         if not existing:
             raise HTTPException(status_code=404, detail="Voucher not found")
 
-        if existing["status"] not in ("draft", "returned"):
-            raise HTTPException(status_code=400, detail=f"Cannot edit voucher with status '{existing['status']}'")
+        is_admin = getattr(current, "role", "") in ("admin", "super_admin")
+        if not is_admin and existing["status"] not in ("draft", "returned"):
+            raise HTTPException(status_code=400, detail=f"Cannot edit voucher with status '{existing['status']}'. Only Admins can modify active vouchers.")
 
         # Line items
         processed_items = []
@@ -361,19 +398,43 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             )
 
         now_str = now_utc_iso()
+        target_status = payload.status if payload.status else existing.get("status", "submitted")
         updates = {
             "expenses": processed_items,
             "total_expense_amount": tot_expense,
             "notes": (payload.notes or "").strip(),
-            "status": payload.status or "submitted",
+            "status": target_status,
             "updated_at": now_str,
         }
 
+        # If already approved, also synchronize the posted expense record
+        if existing.get("status") == "approved":
+            primary_head = processed_items[0]["head"] if processed_items else "Pass-on Expense"
+            await db.expenses.update_many(
+                {
+                    "$or": [
+                        {"id": existing.get("linked_expense_id")},
+                        {"expense_no": f"EXP-{existing['voucher_no']}"},
+                        {"linked_voucher_no": existing.get("voucher_no")}
+                    ]
+                },
+                {
+                    "$set": {
+                        "amount": tot_expense,
+                        "category": primary_head,
+                        "notes": f"Generated from approved Expense Approval Voucher {existing['voucher_no']}. {(payload.notes or '').strip()}",
+                        "updated_at": now_str,
+                    }
+                }
+            )
+
+        action_name = "edited_by_admin" if is_admin else ("resubmitted" if target_status == "submitted" else "edited")
+        remarks_msg = f"Voucher updated by {current.name} (Admin)" if is_admin else ("Voucher updated and resubmitted" if target_status == "submitted" else "Voucher updated")
         history_entry = {
-            "action": "resubmitted" if payload.status == "submitted" else "edited",
+            "action": action_name,
             "actor": {"user_id": get_user_id(current), "name": current.name, "role": current.role},
             "timestamp": now_str,
-            "remarks": "Voucher updated and resubmitted" if payload.status == "submitted" else "Voucher updated",
+            "remarks": remarks_msg,
         }
 
         await db.expense_approval_vouchers.update_one(
@@ -393,47 +454,76 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         payload: ApproverActionInput,
         current: Any = Depends(get_current_user)
     ):
-        """Perform approver action: approve, verify, reject, return."""
+        """Perform approver action: approve, verify, reject, return, reopen according to configured single/multi-stage workflow."""
         voucher = await db.expense_approval_vouchers.find_one({"$or": [{"id": vid}, {"voucher_no": vid}]}, {"_id": 0})
         if not voucher:
             raise HTTPException(status_code=404, detail="Expense approval voucher not found")
 
         cfg = await _get_workflow_config()
-        approver_roles = cfg.get("approver_roles") or ["admin", "super_admin", "manager"]
-
-        # Check role permission
-        if current.role not in approver_roles:
-            raise HTTPException(status_code=403, detail="You do not have permission to act as an approver.")
-
-        # Self-approval check
-        creator_id = voucher.get("created_by", {}).get("user_id")
-        if not cfg.get("allow_self_approval", False) and get_user_id(current) == creator_id and current.role != "super_admin":
-            raise HTTPException(status_code=403, detail="Self-approval is not permitted. Another authorized approver must approve this voucher.")
+        workflow_mode = cfg.get("workflow_mode", "multi_stage")
+        is_admin = getattr(current, "role", "") in ("admin", "super_admin")
+        uid = get_user_id(current)
 
         action = payload.action.lower()
         now_str = now_utc_iso()
         remarks = (payload.remarks or "").strip()
 
+        # Self-approval check: only non-admins are restricted if allow_self_approval is False
+        creator_id = voucher.get("created_by", {}).get("user_id")
+        if action != "reopen" and not cfg.get("allow_self_approval", False) and uid == creator_id and not is_admin:
+            raise HTTPException(status_code=403, detail="Self-approval is not permitted. Another authorized approver must approve this voucher.")
+
         if action in ("reject", "return") and not remarks:
             raise HTTPException(status_code=400, detail=f"Mandatory remarks / reason required for action '{action}'.")
 
+        # Stage-specific approver check
+        stage_1_roles = cfg.get("stage_1_roles") or ["admin", "super_admin", "manager", "accountant"]
+        stage_1_user_ids = [u.get("user_id") for u in cfg.get("stage_1_users", []) if u.get("user_id")]
+        stage_2_roles = cfg.get("stage_2_roles") or ["admin", "super_admin"]
+        stage_2_user_ids = [u.get("user_id") for u in cfg.get("stage_2_users", []) if u.get("user_id")]
+
         next_status = ""
-        if action == "approve":
-            next_status = "approved"
-        elif action == "verify":
+        if action == "verify":
+            can_verify = is_admin or (current.role in stage_1_roles) or (uid in stage_1_user_ids)
+            if not can_verify:
+                raise HTTPException(status_code=403, detail="You do not have permission to verify vouchers at Stage 1.")
             next_status = "verified"
+
+        elif action == "approve":
+            # If multi-stage, must be verified first unless caller is admin or single_stage
+            if workflow_mode == "multi_stage" and cfg.get("allow_verification_stage", True):
+                if voucher.get("status") == "submitted" and not is_admin:
+                    raise HTTPException(status_code=400, detail="This voucher requires Stage 1 Verification before Final Approval. Please verify first.")
+
+            can_approve = is_admin or (current.role in stage_2_roles) or (uid in stage_2_user_ids)
+            if not can_approve:
+                raise HTTPException(status_code=403, detail="You do not have permission for Final Approval at Stage 2.")
+            next_status = "approved"
+
         elif action == "reject":
+            can_reject = is_admin or (current.role in stage_1_roles) or (current.role in stage_2_roles) or (uid in stage_1_user_ids) or (uid in stage_2_user_ids)
+            if not can_reject:
+                raise HTTPException(status_code=403, detail="You do not have permission to reject this voucher.")
             next_status = "rejected"
+
         elif action == "return":
+            can_return = is_admin or (current.role in stage_1_roles) or (current.role in stage_2_roles) or (uid in stage_1_user_ids) or (uid in stage_2_user_ids)
+            if not can_return:
+                raise HTTPException(status_code=403, detail="You do not have permission to return this voucher.")
             next_status = "returned"
+
+        elif action == "reopen":
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="Only Admins can reopen an expense voucher.")
+            next_status = "submitted"
         else:
             raise HTTPException(status_code=400, detail=f"Invalid action '{action}'")
 
         history_event = {
-            "action": next_status,
-            "actor": {"user_id": get_user_id(current), "name": current.name, "role": current.role},
+            "action": "reopened" if action == "reopen" else next_status,
+            "actor": {"user_id": uid, "name": current.name, "role": current.role},
             "timestamp": now_str,
-            "remarks": remarks or f"Action {action} performed",
+            "remarks": remarks or (f"Voucher reopened by {current.name} (Admin)" if action == "reopen" else f"Action {action} performed"),
         }
 
         updates = {
@@ -441,28 +531,74 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             "updated_at": now_str,
         }
 
-        # If approved, post to general ledger / expenses collection for accounting integration
-        if next_status == "approved":
-            exp_id = f"exp_{uuid.uuid4().hex[:12]}"
-            primary_head = voucher["expenses"][0]["head"] if voucher.get("expenses") else "Pass-on Expense"
-            expense_record = {
-                "id": exp_id,
-                "expense_no": f"EXP-{voucher['voucher_no']}",
-                "date": voucher.get("voucher_date") or datetime.now().strftime("%Y-%m-%d"),
-                "category": primary_head,
-                "amount": voucher.get("total_expense_amount") or 0,
-                "payment_mode": "bank_transfer",
-                "customer_id": voucher.get("customer_id"),
-                "customer_name": voucher.get("customer_name"),
-                "linked_voucher_no": voucher.get("voucher_no"),
-                "sale_voucher_no": voucher.get("sale_voucher_no"),
-                "status": "approved",
-                "created_by": get_user_id(current),
-                "created_at": now_str,
-                "notes": f"Generated from approved Expense Approval Voucher {voucher['voucher_no']}. {remarks}",
-            }
-            await db.expenses.insert_one(expense_record)
-            updates["linked_expense_id"] = exp_id
+        # If reopen, remove or unapprove linked expense in accounting ledger
+        if action == "reopen":
+            if voucher.get("source") == "add_expense" and voucher.get("linked_expense_id"):
+                await db.expenses.update_one(
+                    {"id": voucher["linked_expense_id"]},
+                    {"$set": {"status": "pending", "updated_at": now_str}}
+                )
+            else:
+                await db.expenses.delete_many({
+                    "$or": [
+                        {"id": voucher.get("linked_expense_id")},
+                        {"expense_no": f"EXP-{voucher['voucher_no']}"},
+                        {"linked_voucher_no": voucher.get("voucher_no")}
+                    ]
+                })
+                updates["linked_expense_id"] = None
+
+        elif next_status == "rejected":
+            if voucher.get("linked_expense_id"):
+                await db.expenses.update_one(
+                    {"id": voucher["linked_expense_id"]},
+                    {"$set": {"status": "rejected", "updated_at": now_str}}
+                )
+
+        # If approved, post or activate in general ledger / expenses collection for accounting integration
+        elif next_status == "approved":
+            linked_eid = voucher.get("linked_expense_id")
+            existing_exp = await db.expenses.find_one({"id": linked_eid}, {"_id": 0}) if linked_eid else None
+
+            if existing_exp:
+                # Update existing expense to approved
+                await db.expenses.update_one(
+                    {"id": linked_eid},
+                    {"$set": {
+                        "status": "approved",
+                        "approved_by": current.name,
+                        "approved_at": now_str,
+                        "amount": voucher.get("total_expense_amount") or existing_exp.get("amount", 0),
+                        "notes": f"Approved via Workflow (Voucher: {voucher['voucher_no']}). {remarks}".strip(),
+                        "updated_at": now_str,
+                    }}
+                )
+                updates["linked_expense_id"] = linked_eid
+            else:
+                # Auto-seed a new approved expense into db.expenses
+                exp_id = f"exp_{uuid.uuid4().hex[:12]}"
+                primary_head = voucher["expenses"][0]["head"] if voucher.get("expenses") else "Pass-on Expense"
+                expense_record = {
+                    "id": exp_id,
+                    "expense_no": f"EXP-{voucher['voucher_no']}",
+                    "date": voucher.get("voucher_date") or datetime.now().strftime("%Y-%m-%d"),
+                    "category": primary_head,
+                    "amount": voucher.get("total_expense_amount") or 0,
+                    "payment_mode": "bank_transfer",
+                    "customer_id": voucher.get("customer_id"),
+                    "customer_name": voucher.get("customer_name"),
+                    "linked_voucher_no": voucher.get("voucher_no"),
+                    "linked_approval_id": voucher.get("id"),
+                    "sale_voucher_no": voucher.get("sale_voucher_no"),
+                    "status": "approved",
+                    "approved_by": current.name,
+                    "approved_at": now_str,
+                    "created_by": uid,
+                    "created_at": now_str,
+                    "notes": f"Generated from approved Expense Approval Voucher {voucher['voucher_no']}. {remarks}".strip(),
+                }
+                await db.expenses.insert_one(expense_record)
+                updates["linked_expense_id"] = exp_id
 
         await db.expense_approval_vouchers.update_one(
             {"id": voucher["id"]},
@@ -474,6 +610,36 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             await log_audit(db, current, "expense_approval", action, voucher["voucher_no"], voucher, updated)
 
         return clean_doc(updated)
+
+    @router.delete("/{vid}")
+    async def delete_expense_approval(vid: str, current: Any = Depends(get_current_user)):
+        """Delete expense approval voucher (Admin only). Also removes linked expense in general ledger."""
+        if getattr(current, "role", "") not in ("admin", "super_admin"):
+            raise HTTPException(status_code=403, detail="Only Admins have permission to delete expense approval vouchers.")
+
+        existing = await db.expense_approval_vouchers.find_one(
+            {"$or": [{"id": vid}, {"voucher_no": vid}]},
+            {"_id": 0}
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Expense approval voucher not found.")
+
+        # Remove any linked expense posted to accounting ledger
+        await db.expenses.delete_many({
+            "$or": [
+                {"id": existing.get("linked_expense_id")},
+                {"expense_no": f"EXP-{existing['voucher_no']}"},
+                {"linked_voucher_no": existing.get("voucher_no")}
+            ]
+        })
+
+        # Delete the voucher document
+        await db.expense_approval_vouchers.delete_one({"id": existing["id"]})
+
+        if log_audit:
+            await log_audit(db, current, "expense_approval", "delete", existing.get("voucher_no"), existing, None)
+
+        return {"message": "Expense approval voucher deleted successfully", "id": existing["id"]}
 
     @router.get("/{vid}/pdf")
     async def get_expense_approval_pdf(

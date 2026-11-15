@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo } from 'react';
+import React, { useCallback, useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { api } from '@/src/api';
-import { Card, EmptyState, ScreenLoader, StatusBadge } from '@/src/ui';
+import { EmptyState, ScreenLoader, StatusBadge } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
 import { notify, confirm } from '@/src/dialog';
@@ -42,17 +42,72 @@ const EXPENSE_CATEGORIES = [
   'Other Expenses',
 ];
 
+const DATE_PRESETS = [
+  { key: 'all', label: 'All Time' },
+  { key: 'today', label: 'Today' },
+  { key: 'this_week', label: 'This Week' },
+  { key: 'this_month', label: 'This Month' },
+  { key: 'custom', label: 'Custom Range' },
+];
+
+const SORT_OPTIONS = [
+  { key: 'date_desc', label: 'Date: Newest First', icon: 'calendar' },
+  { key: 'date_asc', label: 'Date: Oldest First', icon: 'calendar-outline' },
+  { key: 'amount_desc', label: 'Amount: High to Low', icon: 'trending-down' },
+  { key: 'amount_asc', label: 'Amount: Low to High', icon: 'trending-up' },
+];
+
+const getTodayStr = () => new Date().toISOString().slice(0, 10);
+const getThisMonthStartStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+};
+const getThisWeekStartStr = () => {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(d.setDate(diff));
+  return monday.toISOString().slice(0, 10);
+};
+
 export default function ExpensesList() {
   const router = useRouter();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
   const isManager = user?.role === 'manager';
+  const canDelete = isAdmin || isManager || user?.role === 'accountant';
 
   const [list, setList] = useState<any[] | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
   const [printingId, setPrintingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Edit / Update Modal State
+  // Status Tab
+  const [statusTab, setStatusTab] = useState<'approved' | 'all' | 'pending' | 'rejected'>('all');
+
+  // Search & Filters
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('all');
+  const [filterCustomerSearch, setFilterCustomerSearch] = useState('');
+  const [datePreset, setDatePreset] = useState<string>('all');
+  const [customFromDate, setCustomFromDate] = useState('');
+  const [customToDate, setCustomToDate] = useState('');
+  const [filterItemText, setFilterItemText] = useState('');
+  const [filterVoucherText, setFilterVoucherText] = useState('');
+  const [filterNameText, setFilterNameText] = useState('');
+  const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('all');
+  const [minAmount, setMinAmount] = useState('');
+  const [maxAmount, setMaxAmount] = useState('');
+  const [sortBy, setSortBy] = useState<string>('date_desc');
+
+  // Modals
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [showSortModal, setShowSortModal] = useState(false);
+  const [viewingExp, setViewingExp] = useState<any | null>(null);
+
+  // Edit Form State
   const [editingExp, setEditingExp] = useState<any | null>(null);
   const [editForm, setEditForm] = useState<{
     amount: string;
@@ -78,9 +133,259 @@ export default function ExpensesList() {
     customer_gst: '',
   });
   const [saving, setSaving] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const canDelete = isAdmin || isManager || user?.role === 'accountant';
 
+  // Load Data
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [expData, custList] = await Promise.all([
+        api.get<any[]>('/expenses'),
+        api.get<any[]>('/customers').catch(() => []),
+      ]);
+      setList(Array.isArray(expData) ? expData : []);
+      setCustomers(Array.isArray(custList) ? custList : []);
+    } catch (err: any) {
+      console.error('Failed to load expenses', err);
+      setList([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  // Active filters count
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (selectedCategory !== 'all') count++;
+    if (selectedCustomerId !== 'all') count++;
+    if (datePreset !== 'all') count++;
+    if (filterItemText.trim()) count++;
+    if (filterVoucherText.trim()) count++;
+    if (filterNameText.trim()) count++;
+    if (selectedPaymentMode !== 'all') count++;
+    if (minAmount.trim()) count++;
+    if (maxAmount.trim()) count++;
+    return count;
+  }, [
+    selectedCategory,
+    selectedCustomerId,
+    datePreset,
+    filterItemText,
+    filterVoucherText,
+    filterNameText,
+    selectedPaymentMode,
+    minAmount,
+    maxAmount,
+  ]);
+
+  const resetAllFilters = () => {
+    setSelectedCategory('all');
+    setSelectedCustomerId('all');
+    setDatePreset('all');
+    setCustomFromDate('');
+    setCustomToDate('');
+    setFilterItemText('');
+    setFilterVoucherText('');
+    setFilterNameText('');
+    setSelectedPaymentMode('all');
+    setMinAmount('');
+    setMaxAmount('');
+    setSearchQuery('');
+  };
+
+  // Stats Counters
+  const stats = useMemo(() => {
+    if (!list) return { approvedAmt: 0, approvedCount: 0, pendingAmt: 0, pendingCount: 0, totalAmt: 0, totalCount: 0 };
+    let approvedAmt = 0;
+    let approvedCount = 0;
+    let pendingAmt = 0;
+    let pendingCount = 0;
+    let totalAmt = 0;
+
+    list.forEach((e) => {
+      const amt = Number(e.amount || 0);
+      totalAmt += amt;
+      if (e.status === 'approved') {
+        approvedAmt += amt;
+        approvedCount++;
+      } else if (e.status === 'pending' || e.status === 'submitted' || e.status === 'verified') {
+        pendingAmt += amt;
+        pendingCount++;
+      }
+    });
+
+    return {
+      approvedAmt,
+      approvedCount,
+      pendingAmt,
+      pendingCount,
+      totalAmt,
+      totalCount: list.length,
+    };
+  }, [list]);
+
+  // Combined Multi-Criteria Filtering & Sorting
+  const filteredList = useMemo(() => {
+    if (!list) return null;
+
+    const q = searchQuery.trim().toLowerCase();
+    const itemFilter = filterItemText.trim().toLowerCase();
+    const voucherFilter = filterVoucherText.trim().toLowerCase();
+    const nameFilter = filterNameText.trim().toLowerCase();
+    const minNum = parseFloat(minAmount);
+    const maxNum = parseFloat(maxAmount);
+    const today = getTodayStr();
+    const thisWeek = getThisWeekStartStr();
+    const thisMonth = getThisMonthStartStr();
+
+    let res = list.filter((exp) => {
+      // 1. Status Tab Filter
+      if (statusTab === 'approved' && exp.status !== 'approved') return false;
+      if (statusTab === 'pending' && !(exp.status === 'pending' || exp.status === 'submitted' || exp.status === 'verified')) return false;
+      if (statusTab === 'rejected' && exp.status !== 'rejected') return false;
+
+      // 2. Category Filter
+      if (selectedCategory !== 'all' && exp.category !== selectedCategory) return false;
+
+      // 3. Customer Filter
+      if (selectedCustomerId !== 'all') {
+        const matchesId = exp.customer_id === selectedCustomerId;
+        const custObj = customers.find((c) => c.id === selectedCustomerId);
+        const matchesName = custObj && String(exp.customer_name || '').toLowerCase() === custObj.name?.toLowerCase();
+        if (!matchesId && !matchesName) return false;
+      }
+
+      // 4. Payment Mode Filter
+      if (selectedPaymentMode !== 'all' && exp.payment_mode !== selectedPaymentMode) return false;
+
+      // 5. Amount Filter (Min - Max)
+      const amt = Number(exp.amount || 0);
+      if (!isNaN(minNum) && amt < minNum) return false;
+      if (!isNaN(maxNum) && amt > maxNum) return false;
+
+      // 6. Date Filter
+      const expDate = String(exp.date || '');
+      if (datePreset === 'today' && expDate !== today) return false;
+      if (datePreset === 'this_week' && expDate < thisWeek) return false;
+      if (datePreset === 'this_month' && expDate < thisMonth) return false;
+      if (datePreset === 'custom') {
+        if (customFromDate && expDate < customFromDate) return false;
+        if (customToDate && expDate > customToDate) return false;
+      }
+
+      // 7. Item Wise Filter
+      if (itemFilter) {
+        const saleItem = String(exp.sale_item_name || '').toLowerCase();
+        const desc = String(exp.description || '').toLowerCase();
+        const cat = String(exp.category || '').toLowerCase();
+        if (!saleItem.includes(itemFilter) && !desc.includes(itemFilter) && !cat.includes(itemFilter)) {
+          return false;
+        }
+      }
+
+      // 8. Voucher Wise Filter
+      if (voucherFilter) {
+        const expNo = String(exp.expense_no || '').toLowerCase();
+        const linkedVoucher = String(exp.linked_voucher_no || '').toLowerCase();
+        const saleInvoice = String(exp.sale_invoice_no || '').toLowerCase();
+        if (!expNo.includes(voucherFilter) && !linkedVoucher.includes(voucherFilter) && !saleInvoice.includes(voucherFilter)) {
+          return false;
+        }
+      }
+
+      // 9. Name Wise Filter (Vendor, Customer, Submitter, Approver)
+      if (nameFilter) {
+        const vendor = String(exp.vendor || '').toLowerCase();
+        const custName = String(exp.customer_name || '').toLowerCase();
+        const approver = String(exp.approved_by || '').toLowerCase();
+        const creator = String(exp.created_by_name || exp.created_by || '').toLowerCase();
+        if (!vendor.includes(nameFilter) && !custName.includes(nameFilter) && !approver.includes(nameFilter) && !creator.includes(nameFilter)) {
+          return false;
+        }
+      }
+
+      // 10. Global Instant Search Query across all fields
+      if (q) {
+        const expNo = String(exp.expense_no || '').toLowerCase();
+        const linkedVoucher = String(exp.linked_voucher_no || '').toLowerCase();
+        const vendor = String(exp.vendor || '').toLowerCase();
+        const custName = String(exp.customer_name || '').toLowerCase();
+        const mobile = String(exp.customer_mobile || '').toLowerCase();
+        const pan = String(exp.customer_pan || '').toLowerCase();
+        const gst = String(exp.customer_gst || '').toLowerCase();
+        const code = String(exp.customer_code || '').toLowerCase();
+        const cat = String(exp.category || '').toLowerCase();
+        const desc = String(exp.description || '').toLowerCase();
+        const saleNo = String(exp.sale_invoice_no || '').toLowerCase();
+        const saleItem = String(exp.sale_item_name || '').toLowerCase();
+        const date = String(exp.date || '').toLowerCase();
+        const mode = String(exp.payment_mode || '').toLowerCase();
+        const amtStr = String(exp.amount || '').toLowerCase();
+        const approver = String(exp.approved_by || '').toLowerCase();
+
+        const matched =
+          expNo.includes(q) ||
+          linkedVoucher.includes(q) ||
+          vendor.includes(q) ||
+          custName.includes(q) ||
+          mobile.includes(q) ||
+          pan.includes(q) ||
+          gst.includes(q) ||
+          code.includes(q) ||
+          cat.includes(q) ||
+          desc.includes(q) ||
+          saleNo.includes(q) ||
+          saleItem.includes(q) ||
+          date.includes(q) ||
+          mode.includes(q) ||
+          amtStr.includes(q) ||
+          approver.includes(q);
+
+        if (!matched) return false;
+      }
+
+      return true;
+    });
+
+    // Apply Sorting
+    res.sort((a, b) => {
+      if (sortBy === 'date_desc') return String(b.date || '').localeCompare(String(a.date || ''));
+      if (sortBy === 'date_asc') return String(a.date || '').localeCompare(String(b.date || ''));
+      if (sortBy === 'amount_desc') return Number(b.amount || 0) - Number(a.amount || 0);
+      if (sortBy === 'amount_asc') return Number(a.amount || 0) - Number(b.amount || 0);
+      return 0;
+    });
+
+    return res;
+  }, [
+    list,
+    statusTab,
+    selectedCategory,
+    selectedCustomerId,
+    selectedPaymentMode,
+    minAmount,
+    maxAmount,
+    datePreset,
+    customFromDate,
+    customToDate,
+    filterItemText,
+    filterVoucherText,
+    filterNameText,
+    searchQuery,
+    sortBy,
+    customers,
+  ]);
+
+  // Delete Action
   const handleDeleteExpense = async (item: any) => {
     const ok = await confirm(
       'Delete Expense?',
@@ -95,69 +400,13 @@ export default function ExpensesList() {
       notify('Deleted', `Expense ${item.expense_no || ''} deleted successfully.`);
       await load();
     } catch (e: any) {
-      Alert.alert('Delete Failed', e?.message || 'Could not delete expense');
+      notify('Delete Failed', e?.message || 'Could not delete expense');
     } finally {
       setDeletingId(null);
     }
   };
 
-  const load = useCallback(async () => {
-    try {
-      setList(await api.get<any[]>('/expenses'));
-    } catch {
-      setList([]);
-    }
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
-
-  // Multi-criteria filter matching:
-  // "EXP NO."; Name; Mobile No.; Pan no. ; GST NO. ; etc.
-  const filteredList = useMemo(() => {
-    if (!list) return null;
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return list;
-
-    return list.filter((exp) => {
-      const expNo = String(exp.expense_no || '').toLowerCase();
-      const vendor = String(exp.vendor || '').toLowerCase();
-      const custName = String(exp.customer_name || '').toLowerCase();
-      const mobile = String(exp.customer_mobile || '').toLowerCase();
-      const pan = String(exp.customer_pan || '').toLowerCase();
-      const gst = String(exp.customer_gst || '').toLowerCase();
-      const code = String(exp.customer_code || '').toLowerCase();
-      const cat = String(exp.category || '').toLowerCase();
-      const desc = String(exp.description || '').toLowerCase();
-      const saleNo = String(exp.sale_invoice_no || '').toLowerCase();
-      const saleItem = String(exp.sale_item_name || '').toLowerCase();
-      const date = String(exp.date || '').toLowerCase();
-      const mode = String(exp.payment_mode || '').toLowerCase();
-      const amt = String(exp.amount || '').toLowerCase();
-
-      return (
-        expNo.includes(q) ||
-        vendor.includes(q) ||
-        custName.includes(q) ||
-        mobile.includes(q) ||
-        pan.includes(q) ||
-        gst.includes(q) ||
-        code.includes(q) ||
-        cat.includes(q) ||
-        desc.includes(q) ||
-        saleNo.includes(q) ||
-        saleItem.includes(q) ||
-        date.includes(q) ||
-        mode.includes(q) ||
-        amt.includes(q)
-      );
-    });
-  }, [list, searchQuery]);
-
-  // Print voucher PDF
+  // Print PDF
   const handlePrint = async (item: any) => {
     try {
       setPrintingId(item.id);
@@ -191,7 +440,7 @@ export default function ExpensesList() {
     });
   };
 
-  // Save / Update Expense
+  // Save Edit
   const saveEdit = async () => {
     if (!editingExp) return;
     const numAmt = parseFloat(editForm.amount);
@@ -233,288 +482,951 @@ export default function ExpensesList() {
     }
   };
 
-  const decide = async (id: string, action: 'verify' | 'approve' | 'reject') => {
-    try {
-      await api.post(`/expenses/${id}/decision`, { action });
-      await load();
-    } catch (e: any) {
-      notify('Action Failed', e?.message || 'Unable to update status');
-    }
-  };
+  const selectedCustomerObj = customers.find((c) => c.id === selectedCustomerId);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#F4F6FB' }} testID="expenses-list">
       <ScreenHeader
-        title="Expenses"
+        title="All Expenses"
         right={
           <Pressable
             onPress={() => router.push('/accounting/expenses/new' as any)}
             style={styles.addBtn}
             testID="new-expense-btn"
           >
-            <Ionicons name="add" size={22} color="#FFF" />
+            <Ionicons name="add" size={24} color="#FFF" />
           </Pressable>
         }
       />
 
-      {/* Search Expences Section */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={18} color="#64748B" style={{ marginLeft: 4 }} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder='Search Expences (EXP NO., Name, Mobile, PAN, GST...)'
-            placeholderTextColor="#94A3B8"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            returnKeyType="search"
-            autoCapitalize="none"
-            autoCorrect={false}
-            testID="search-exp-input"
-          />
-          {searchQuery ? (
-            <Pressable onPress={() => setSearchQuery('')} hitSlop={10} style={styles.clearBtn} testID="clear-search-btn">
-              <Ionicons name="close-circle" size={18} color="#94A3B8" />
-            </Pressable>
-          ) : null}
+      {/* Stats Summary Banner */}
+      <View style={styles.statsBanner}>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>APPROVED OUTFLOW</Text>
+          <Text style={[styles.statValue, { color: '#059669' }]}>{inr(stats.approvedAmt)}</Text>
+          <Text style={styles.statSub}>{stats.approvedCount} Approved</Text>
         </View>
-
-        {/* Criteria helper tags */}
-        <View style={styles.criteriaRow}>
-          <Text style={styles.criteriaLbl}>Criteria:</Text>
-          <View style={styles.chip}><Text style={styles.chipTxt}>EXP NO.</Text></View>
-          <View style={styles.chip}><Text style={styles.chipTxt}>Name</Text></View>
-          <View style={styles.chip}><Text style={styles.chipTxt}>Mobile No.</Text></View>
-          <View style={styles.chip}><Text style={styles.chipTxt}>Pan no.</Text></View>
-          <View style={styles.chip}><Text style={styles.chipTxt}>GST NO.</Text></View>
-          <View style={styles.chip}><Text style={styles.chipTxt}>Category</Text></View>
+        <View style={styles.statDivider} />
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>PENDING APPROVAL</Text>
+          <Text style={[styles.statValue, { color: '#D97706' }]}>{inr(stats.pendingAmt)}</Text>
+          <Text style={styles.statSub}>{stats.pendingCount} In Workflow</Text>
         </View>
-
-        {/* Active search result indicator */}
-        {searchQuery.trim() ? (
-          <View style={styles.resultBar}>
-            <Text style={styles.resultTxt}>
-              Found <Text style={{ fontWeight: '800', color: '#0F172A' }}>{filteredList?.length || 0}</Text> of {list?.length || 0} expenses
-            </Text>
-            <Pressable onPress={() => setSearchQuery('')}>
-              <Text style={styles.resetLink}>Clear</Text>
-            </Pressable>
-          </View>
-        ) : null}
+        <View style={styles.statDivider} />
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>TOTAL OUTFLOW</Text>
+          <Text style={[styles.statValue, { color: '#0F172A' }]}>{inr(stats.totalAmt)}</Text>
+          <Text style={styles.statSub}>{stats.totalCount} Vouchers</Text>
+        </View>
       </View>
 
-      {/* Expense List Content */}
-      {list === null ? (
+      {/* Status Segmented Tabs */}
+      <View style={styles.tabBar}>
+        <Pressable
+          onPress={() => setStatusTab('all')}
+          style={[styles.tabItem, statusTab === 'all' && styles.tabItemActive]}
+        >
+          <Text style={[styles.tabItemTxt, statusTab === 'all' && styles.tabItemTxtActive]}>
+            All ({list?.length || 0})
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setStatusTab('approved')}
+          style={[styles.tabItem, statusTab === 'approved' && styles.tabItemActive]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <View style={[styles.statusDot, { backgroundColor: '#059669' }]} />
+            <Text style={[styles.tabItemTxt, statusTab === 'approved' && styles.tabItemTxtActive]}>
+              Approved ({stats.approvedCount})
+            </Text>
+          </View>
+        </Pressable>
+        <Pressable
+          onPress={() => setStatusTab('pending')}
+          style={[styles.tabItem, statusTab === 'pending' && styles.tabItemActive]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <View style={[styles.statusDot, { backgroundColor: '#D97706' }]} />
+            <Text style={[styles.tabItemTxt, statusTab === 'pending' && styles.tabItemTxtActive]}>
+              Pending ({stats.pendingCount})
+            </Text>
+          </View>
+        </Pressable>
+        <Pressable
+          onPress={() => setStatusTab('rejected')}
+          style={[styles.tabItem, statusTab === 'rejected' && styles.tabItemActive]}
+        >
+          <Text style={[styles.tabItemTxt, statusTab === 'rejected' && styles.tabItemTxtActive]}>
+            Rejected
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Main Search & Control Bar */}
+      <View style={styles.searchSection}>
+        <View style={styles.searchRow}>
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={18} color="#64748B" style={{ marginLeft: 4 }} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search EXP, Voucher, Customer, Vendor, Mobile, PAN..."
+              placeholderTextColor="#94A3B8"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+              testID="search-exp-input"
+            />
+            {searchQuery ? (
+              <Pressable onPress={() => setSearchQuery('')} hitSlop={10} style={styles.clearBtn}>
+                <Ionicons name="close-circle" size={18} color="#94A3B8" />
+              </Pressable>
+            ) : null}
+          </View>
+
+          {/* Filters Modal Trigger */}
+          <Pressable
+            onPress={() => setShowFilterModal(true)}
+            style={[styles.filterBtn, activeFilterCount > 0 && styles.filterBtnActive]}
+          >
+            <Ionicons
+              name="options-outline"
+              size={18}
+              color={activeFilterCount > 0 ? '#FFF' : '#334155'}
+            />
+            <Text
+              style={[
+                styles.filterBtnTxt,
+                activeFilterCount > 0 && { color: '#FFF', fontWeight: '800' },
+              ]}
+            >
+              Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </Text>
+          </Pressable>
+
+          {/* Sort Button Trigger */}
+          <Pressable onPress={() => setShowSortModal(true)} style={styles.sortBtn}>
+            <Ionicons name="swap-vertical" size={18} color="#334155" />
+          </Pressable>
+        </View>
+
+        {/* Horizontal Category Quick-Pills */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+          <View style={styles.categoryScrollInner}>
+            <Pressable
+              onPress={() => setSelectedCategory('all')}
+              style={[styles.catPillItem, selectedCategory === 'all' && styles.catPillItemActive]}
+            >
+              <Text
+                style={[
+                  styles.catPillItemTxt,
+                  selectedCategory === 'all' && styles.catPillItemTxtActive,
+                ]}
+              >
+                All Categories
+              </Text>
+            </Pressable>
+            {EXPENSE_CATEGORIES.map((c) => (
+              <Pressable
+                key={c}
+                onPress={() => setSelectedCategory(selectedCategory === c ? 'all' : c)}
+                style={[styles.catPillItem, selectedCategory === c && styles.catPillItemActive]}
+              >
+                <Text
+                  style={[
+                    styles.catPillItemTxt,
+                    selectedCategory === c && styles.catPillItemTxtActive,
+                  ]}
+                >
+                  {c}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </ScrollView>
+
+        {/* Active Filter Chips Bar */}
+        {(activeFilterCount > 0 || searchQuery.trim()) && (
+          <View style={styles.activeFiltersRow}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.activeFiltersLabel}>Active:</Text>
+                {searchQuery ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>"{searchQuery}"</Text>
+                    <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {selectedCategory !== 'all' ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>Cat: {selectedCategory}</Text>
+                    <Pressable onPress={() => setSelectedCategory('all')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {selectedCustomerObj ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>Cust: {selectedCustomerObj.name}</Text>
+                    <Pressable onPress={() => setSelectedCustomerId('all')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {datePreset !== 'all' ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>
+                      Date: {DATE_PRESETS.find((p) => p.key === datePreset)?.label}
+                    </Text>
+                    <Pressable onPress={() => setDatePreset('all')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {filterItemText ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>Item: {filterItemText}</Text>
+                    <Pressable onPress={() => setFilterItemText('')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {filterVoucherText ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>Voucher: {filterVoucherText}</Text>
+                    <Pressable onPress={() => setFilterVoucherText('')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {filterNameText ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>Name: {filterNameText}</Text>
+                    <Pressable onPress={() => setFilterNameText('')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {minAmount || maxAmount ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>
+                      ₹{minAmount || '0'} - ₹{maxAmount || '∞'}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        setMinAmount('');
+                        setMaxAmount('');
+                      }}
+                      hitSlop={6}
+                    >
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                {selectedPaymentMode !== 'all' ? (
+                  <View style={styles.activeChip}>
+                    <Text style={styles.activeChipTxt}>Mode: {selectedPaymentMode.toUpperCase()}</Text>
+                    <Pressable onPress={() => setSelectedPaymentMode('all')} hitSlop={6}>
+                      <Ionicons name="close" size={13} color="#0284C7" />
+                    </Pressable>
+                  </View>
+                ) : null}
+                <Pressable onPress={resetAllFilters} style={styles.resetAllBtn}>
+                  <Text style={styles.resetAllBtnTxt}>Reset All</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        )}
+      </View>
+
+      {/* Content List */}
+      {list === null || loading ? (
         <ScreenLoader />
       ) : list.length === 0 ? (
         <EmptyState
           testID="expenses-empty"
           icon="wallet-outline"
-          title="No expenses"
-          subtitle="Track outflows and operating costs"
+          title="No expenses created yet"
+          subtitle="Track outflows, create claims, and manage workflow approvals."
           actionLabel="Add Expense"
           onAction={() => router.push('/accounting/expenses/new' as any)}
         />
       ) : filteredList && filteredList.length === 0 ? (
         <View style={styles.noMatchCard}>
-          <Ionicons name="search-outline" size={42} color="#94A3B8" />
-          <Text style={styles.noMatchTitle}>No expenses match "{searchQuery}"</Text>
+          <Ionicons name="search-outline" size={44} color="#94A3B8" />
+          <Text style={styles.noMatchTitle}>No matching expenses found</Text>
           <Text style={styles.noMatchSub}>
-            Try searching by EXP NO., Payee/Customer Name, Mobile No., PAN No., GSTIN, or Category.
+            Try clearing active filters or searching with a different term (EXP No., Vendor, Customer,
+            Amount, Date).
           </Text>
-          <Pressable onPress={() => setSearchQuery('')} style={styles.clearSearchBtn}>
-            <Ionicons name="close" size={16} color="#FFF" />
-            <Text style={styles.clearSearchBtnTxt}>Reset Search</Text>
+          <Pressable onPress={resetAllFilters} style={styles.clearSearchBtn}>
+            <Ionicons name="refresh" size={16} color="#FFF" />
+            <Text style={styles.clearSearchBtnTxt}>Reset All Filters</Text>
           </Pressable>
         </View>
       ) : (
         <FlatList
           data={filteredList}
           keyExtractor={(i) => i.id}
-          contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 90 }}
-          renderItem={({ item }) => (
-            <View style={styles.expCard} testID={`exp-card-${item.id}`}>
-              {/* Card Top: EXP NO, Date, Attachments, Status, Amount */}
-              <View style={styles.cardHeader}>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <Text style={styles.expNo}>{item.expense_no || 'EXP'}</Text>
-                    <Text style={styles.dateTxt}>• {item.date}</Text>
-                    {(item.attachments?.length || 0) > 0 ? (
-                      <View style={styles.attachChip}>
-                        <Ionicons name="attach" size={12} color={colors.brandPrimary} />
-                        <Text style={styles.attachTxt}>{item.attachments.length}</Text>
+          contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 100 }}
+          renderItem={({ item }) => {
+            const isPending =
+              item.status === 'pending' || item.status === 'submitted' || item.status === 'verified';
+            const linkedVoucher = item.linked_voucher_no;
+
+            return (
+              <View style={styles.expCard} testID={`exp-card-${item.id}`}>
+                {/* Header Row */}
+                <View style={styles.cardHeader}>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <Text style={styles.expNo}>{item.expense_no || 'EXP'}</Text>
+                      <Text style={styles.dateTxt}>• {item.date}</Text>
+                      {item.linked_voucher_no ? (
+                        <Pressable
+                          onPress={() =>
+                            router.push(
+                              `/accounting/expenses/approval/${item.linked_approval_id || item.linked_voucher_no}` as any
+                            )
+                          }
+                          style={styles.linkedVoucherChip}
+                        >
+                          <Ionicons name="git-network-outline" size={11} color="#6366F1" />
+                          <Text style={styles.linkedVoucherChipTxt}>{item.linked_voucher_no}</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Text style={styles.categoryTitle}>{item.category}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                    <Text style={styles.amtTxt}>{inr(item.amount)}</Text>
+                    <StatusBadge status={item.status} />
+                  </View>
+                </View>
+
+                {/* Paid To & Mode */}
+                <View style={styles.vendorRow}>
+                  <Ionicons name="business-outline" size={14} color="#64748B" />
+                  <Text style={styles.vendorTxt}>
+                    Paid To: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{item.vendor || 'N/A'}</Text>
+                  </Text>
+                  <View style={styles.modeBadge}>
+                    <Text style={styles.modeBadgeTxt}>{String(item.payment_mode || 'cash').toUpperCase()}</Text>
+                  </View>
+                </View>
+
+                {/* Customer & Sale Metadata Badges */}
+                {(item.customer_name ||
+                  item.customer_mobile ||
+                  item.customer_pan ||
+                  item.customer_gst ||
+                  item.sale_invoice_no) && (
+                  <View style={styles.custMetaContainer}>
+                    {item.customer_name ? (
+                      <View style={styles.metaBadge}>
+                        <Ionicons name="person-outline" size={12} color="#0284C7" />
+                        <Text style={styles.metaBadgeTxt} numberOfLines={1}>
+                          {item.customer_name}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {item.customer_mobile ? (
+                      <View style={styles.metaBadge}>
+                        <Ionicons name="call-outline" size={12} color="#059669" />
+                        <Text style={styles.metaBadgeTxt}>{item.customer_mobile}</Text>
+                      </View>
+                    ) : null}
+                    {item.customer_pan ? (
+                      <View style={[styles.metaBadge, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
+                        <Text style={[styles.metaBadgeTxt, { color: '#B45309', fontWeight: '800' }]}>
+                          PAN: {item.customer_pan}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {item.customer_gst ? (
+                      <View style={[styles.metaBadge, { backgroundColor: '#F3E8FF', borderColor: '#E9D5FF' }]}>
+                        <Text style={[styles.metaBadgeTxt, { color: '#7E22CE', fontWeight: '800' }]}>
+                          GST: {item.customer_gst}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {item.sale_invoice_no ? (
+                      <View style={[styles.metaBadge, { backgroundColor: '#E0E7FF', borderColor: '#C7D2FE' }]}>
+                        <Ionicons name="receipt-outline" size={12} color="#3730A3" />
+                        <Text style={[styles.metaBadgeTxt, { color: '#3730A3', fontWeight: '800' }]}>
+                          Sale: {item.sale_invoice_no} {item.sale_item_name ? `(${item.sale_item_name})` : ''}
+                        </Text>
                       </View>
                     ) : null}
                   </View>
-                  <Text style={styles.categoryTitle}>{item.category}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                  <Text style={styles.amtTxt}>{inr(item.amount)}</Text>
-                  <StatusBadge status={item.status} />
-                </View>
-              </View>
+                )}
 
-              {/* Vendor & Mode */}
-              <View style={styles.vendorRow}>
-                <Ionicons name="business-outline" size={14} color="#64748B" />
-                <Text style={styles.vendorTxt}>
-                  Paid To: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{item.vendor || 'N/A'}</Text>
-                </Text>
-                <View style={styles.modeBadge}>
-                  <Text style={styles.modeBadgeTxt}>{String(item.payment_mode || 'cash').toUpperCase()}</Text>
-                </View>
-              </View>
+                {/* Description */}
+                {item.description ? (
+                  <Text style={styles.descTxt} numberOfLines={2}>
+                    {item.description}
+                  </Text>
+                ) : null}
 
-              {/* Customer / Job Metadata Badges (Name, Mobile, PAN, GST, Linked Invoice) */}
-              {(item.customer_name || item.customer_mobile || item.customer_pan || item.customer_gst || item.sale_invoice_no) ? (
-                <View style={styles.custMetaContainer}>
-                  {item.customer_name ? (
-                    <View style={styles.metaBadge}>
-                      <Ionicons name="person-outline" size={12} color="#0284C7" />
-                      <Text style={styles.metaBadgeTxt} numberOfLines={1}>{item.customer_name}</Text>
-                    </View>
-                  ) : null}
-                  {item.customer_mobile ? (
-                    <View style={styles.metaBadge}>
-                      <Ionicons name="call-outline" size={12} color="#059669" />
-                      <Text style={styles.metaBadgeTxt}>Mob: {item.customer_mobile}</Text>
-                    </View>
-                  ) : null}
-                  {item.customer_pan ? (
-                    <View style={[styles.metaBadge, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
-                      <Text style={[styles.metaBadgeTxt, { color: '#B45309', fontWeight: '800' }]}>PAN: {item.customer_pan}</Text>
-                    </View>
-                  ) : null}
-                  {item.customer_gst ? (
-                    <View style={[styles.metaBadge, { backgroundColor: '#F3E8FF', borderColor: '#E9D5FF' }]}>
-                      <Text style={[styles.metaBadgeTxt, { color: '#7E22CE', fontWeight: '800' }]}>GST: {item.customer_gst}</Text>
-                    </View>
-                  ) : null}
-                  {item.sale_invoice_no ? (
-                    <View style={[styles.metaBadge, { backgroundColor: '#E0E7FF', borderColor: '#C7D2FE' }]}>
-                      <Ionicons name="document-text-outline" size={12} color="#3730A3" />
-                      <Text style={[styles.metaBadgeTxt, { color: '#3730A3', fontWeight: '800' }]}>
-                        Sale: {item.sale_invoice_no} {item.sale_item_name ? `(${item.sale_item_name})` : ''}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-
-              {/* Narration / Description */}
-              {item.description ? (
-                <Text style={styles.descTxt} numberOfLines={2}>
-                  {item.description}
-                </Text>
-              ) : null}
-
-              {/* Action Buttons Row: Search, Edit, Update, Save, Print */}
-              <View style={styles.cardActionsRow}>
-                {/* Print Button */}
-                <Pressable
-                  onPress={() => handlePrint(item)}
-                  style={styles.actionBtnPrint}
-                  testID={`print-exp-${item.id}`}
-                >
-                  {printingId === item.id ? (
-                    <ActivityIndicator size="small" color="#0369A1" />
-                  ) : (
-                    <>
-                      <Ionicons name="print-outline" size={15} color="#0369A1" />
-                      <Text style={styles.actionBtnPrintTxt}>Print</Text>
-                    </>
-                  )}
-                </Pressable>
-
-                {/* Edit & Update Button */}
-                <Pressable
-                  onPress={() => openEdit(item)}
-                  style={styles.actionBtnEdit}
-                  testID={`edit-exp-${item.id}`}
-                >
-                  <Ionicons name="create-outline" size={15} color="#4338CA" />
-                  <Text style={styles.actionBtnEditTxt}>Edit</Text>
-                </Pressable>
-
-                {/* View Details Button */}
-                <Pressable
-                  onPress={() => router.push(`/accounting/expenses/${item.id}` as any)}
-                  style={styles.actionBtnView}
-                  testID={`view-exp-${item.id}`}
-                >
-                  <Ionicons name="eye-outline" size={15} color="#475569" />
-                  <Text style={styles.actionBtnViewTxt}>View</Text>
-                </Pressable>
-
-                {/* Delete Button */}
-                {canDelete ? (
+                {/* Pending Approval Alert Bar */}
+                {isPending && linkedVoucher ? (
                   <Pressable
-                    onPress={() => handleDeleteExpense(item)}
-                    style={styles.actionBtnDelete}
-                    testID={`delete-exp-${item.id}`}
-                    disabled={deletingId === item.id}
+                    onPress={() =>
+                      router.push(
+                        `/accounting/expenses/approval/${item.linked_approval_id || item.linked_voucher_no}` as any
+                      )
+                    }
+                    style={styles.pendingBar}
                   >
-                    {deletingId === item.id ? (
-                      <ActivityIndicator size="small" color="#DC2626" />
+                    <Ionicons name="time-outline" size={16} color="#D97706" />
+                    <Text style={styles.pendingBarTxt}>
+                      Workflow Approval in progress ({linkedVoucher}) • Tap to verify / approve
+                    </Text>
+                    <Ionicons name="arrow-forward" size={14} color="#D97706" />
+                  </Pressable>
+                ) : null}
+
+                {/* Actions Row */}
+                <View style={styles.cardActionsRow}>
+                  {/* Print */}
+                  <Pressable
+                    onPress={() => handlePrint(item)}
+                    style={styles.actionBtnPrint}
+                    testID={`print-exp-${item.id}`}
+                  >
+                    {printingId === item.id ? (
+                      <ActivityIndicator size="small" color="#0369A1" />
                     ) : (
                       <>
-                        <Ionicons name="trash-outline" size={15} color="#DC2626" />
-                        <Text style={styles.actionBtnDeleteTxt}>Delete</Text>
+                        <Ionicons name="print-outline" size={15} color="#0369A1" />
+                        <Text style={styles.actionBtnPrintTxt}>Print</Text>
                       </>
                     )}
                   </Pressable>
-                ) : null}
-              </View>
 
-              {/* Pending / Verification Workflow Actions for Admin & Manager */}
-              {item.status === 'pending' && (isAdmin || isManager) ? (
-                <View style={styles.workflowRow}>
+                  {/* View Full Details */}
                   <Pressable
-                    onPress={() => decide(item.id, 'reject')}
-                    testID={`reject-${item.id}`}
-                    style={[styles.wfBtn, { backgroundColor: '#FEE2E2' }]}
+                    onPress={() => setViewingExp(item)}
+                    style={styles.actionBtnView}
+                    testID={`view-exp-${item.id}`}
                   >
-                    <Text style={{ color: '#DC2626', fontWeight: '800', fontSize: font.sm }}>Reject</Text>
+                    <Ionicons name="eye-outline" size={15} color="#475569" />
+                    <Text style={styles.actionBtnViewTxt}>View</Text>
                   </Pressable>
+
+                  {/* Edit */}
                   <Pressable
-                    onPress={() => decide(item.id, 'verify')}
-                    testID={`verify-${item.id}`}
-                    style={[styles.wfBtn, { backgroundColor: '#FEF3C7' }]}
+                    onPress={() => openEdit(item)}
+                    style={styles.actionBtnEdit}
+                    testID={`edit-exp-${item.id}`}
                   >
-                    <Text style={{ color: '#B45309', fontWeight: '800', fontSize: font.sm }}>Verify</Text>
+                    <Ionicons name="create-outline" size={15} color="#4338CA" />
+                    <Text style={styles.actionBtnEditTxt}>Edit</Text>
                   </Pressable>
-                  {isAdmin ? (
+
+                  {/* Delete */}
+                  {canDelete && (
                     <Pressable
-                      onPress={() => decide(item.id, 'approve')}
-                      testID={`approve-${item.id}`}
-                      style={[styles.wfBtn, { backgroundColor: '#059669' }]}
+                      onPress={() => handleDeleteExpense(item)}
+                      style={styles.actionBtnDelete}
+                      testID={`delete-exp-${item.id}`}
+                      disabled={deletingId === item.id}
                     >
-                      <Text style={{ color: '#FFF', fontWeight: '800', fontSize: font.sm }}>Approve</Text>
+                      {deletingId === item.id ? (
+                        <ActivityIndicator size="small" color="#DC2626" />
+                      ) : (
+                        <>
+                          <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                          <Text style={styles.actionBtnDeleteTxt}>Delete</Text>
+                        </>
+                      )}
                     </Pressable>
-                  ) : null}
+                  )}
                 </View>
-              ) : null}
-
-              {item.status === 'verified' && isAdmin ? (
-                <View style={styles.workflowRow}>
-                  <Pressable
-                    onPress={() => decide(item.id, 'approve')}
-                    testID={`approve-${item.id}`}
-                    style={[styles.wfBtn, { backgroundColor: '#059669', flex: 1 }]}
-                  >
-                    <Text style={{ color: '#FFF', fontWeight: '800', fontSize: font.sm, textAlign: 'center' }}>
-                      Approve Voucher
-                    </Text>
-                  </Pressable>
-                </View>
-              ) : null}
-            </View>
-          )}
+              </View>
+            );
+          }}
         />
       )}
 
-      {/* ================= EDIT & UPDATE EXPENSE MODAL ================= */}
+      {/* ================= VIEW DETAILS MODAL ================= */}
+      <Modal
+        visible={!!viewingExp}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setViewingExp(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Expense Voucher Details</Text>
+                <Text style={styles.modalSubtitle}>{viewingExp?.expense_no || 'EXP'}</Text>
+              </View>
+              <Pressable onPress={() => setViewingExp(null)} style={styles.modalCloseBtn} hitSlop={8}>
+                <Ionicons name="close" size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            {viewingExp && (
+              <ScrollView style={{ maxHeight: 480 }} showsVerticalScrollIndicator={false}>
+                <View style={{ gap: 12, paddingVertical: 4 }}>
+                  {/* Amount & Status Hero Card */}
+                  <View style={styles.viewHeroCard}>
+                    <View>
+                      <Text style={styles.viewHeroLabel}>TOTAL AMOUNT</Text>
+                      <Text style={styles.viewHeroAmount}>{inr(viewingExp.amount)}</Text>
+                      <Text style={styles.viewHeroDate}>Voucher Date: {viewingExp.date}</Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                      <StatusBadge status={viewingExp.status} />
+                      <View style={styles.modeBadge}>
+                        <Text style={styles.modeBadgeTxt}>
+                          {String(viewingExp.payment_mode || 'cash').toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Category & Vendor */}
+                  <View style={styles.detailBlock}>
+                    <Text style={styles.detailBlockTitle}>EXPENSE PARTICULARS</Text>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Category:</Text>
+                      <Text style={styles.detailValueBold}>{viewingExp.category}</Text>
+                    </View>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Paid To (Vendor):</Text>
+                      <Text style={styles.detailValueBold}>{viewingExp.vendor || 'N/A'}</Text>
+                    </View>
+                    {viewingExp.description ? (
+                      <View style={{ marginTop: 4 }}>
+                        <Text style={styles.detailLabel}>Narration / Remarks:</Text>
+                        <Text style={styles.detailDescBox}>{viewingExp.description}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  {/* Customer Information (if available) */}
+                  {(viewingExp.customer_name || viewingExp.customer_mobile || viewingExp.customer_pan) && (
+                    <View style={styles.detailBlock}>
+                      <Text style={styles.detailBlockTitle}>CUSTOMER / CLIENT DETAILS</Text>
+                      {viewingExp.customer_name ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Customer Name:</Text>
+                          <Text style={styles.detailValueBold}>{viewingExp.customer_name}</Text>
+                        </View>
+                      ) : null}
+                      {viewingExp.customer_mobile ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Mobile No:</Text>
+                          <Text style={styles.detailValue}>{viewingExp.customer_mobile}</Text>
+                        </View>
+                      ) : null}
+                      {viewingExp.customer_pan ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>PAN No:</Text>
+                          <Text style={[styles.detailValue, { fontWeight: '800', color: '#B45309' }]}>
+                            {viewingExp.customer_pan}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {viewingExp.customer_gst ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>GSTIN:</Text>
+                          <Text style={[styles.detailValue, { fontWeight: '800', color: '#7E22CE' }]}>
+                            {viewingExp.customer_gst}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {viewingExp.sale_invoice_no ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Linked Sale Invoice:</Text>
+                          <Text style={[styles.detailValueBold, { color: '#3730A3' }]}>
+                            {viewingExp.sale_invoice_no} {viewingExp.sale_item_name ? `(${viewingExp.sale_item_name})` : ''}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
+
+                  {/* Workflow & Approval Information */}
+                  {viewingExp.linked_voucher_no ? (
+                    <View style={[styles.detailBlock, { backgroundColor: '#F0F9FF', borderColor: '#BAE6FD' }]}>
+                      <Text style={[styles.detailBlockTitle, { color: '#0369A1' }]}>
+                        WORKFLOW APPROVAL INTEGRATION
+                      </Text>
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Approval Voucher:</Text>
+                        <Text style={[styles.detailValueBold, { color: '#0284C7' }]}>
+                          {viewingExp.linked_voucher_no}
+                        </Text>
+                      </View>
+                      {viewingExp.approved_by ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Approved By:</Text>
+                          <Text style={styles.detailValueBold}>{viewingExp.approved_by}</Text>
+                        </View>
+                      ) : null}
+                      {viewingExp.approved_at ? (
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Approved At:</Text>
+                          <Text style={styles.detailValue}>{viewingExp.approved_at}</Text>
+                        </View>
+                      ) : null}
+
+                      <Pressable
+                        onPress={() => {
+                          const target = viewingExp.linked_approval_id || viewingExp.linked_voucher_no;
+                          setViewingExp(null);
+                          router.push(`/accounting/expenses/approval/${target}` as any);
+                        }}
+                        style={styles.viewWorkflowBtn}
+                      >
+                        <Ionicons name="git-network-outline" size={16} color="#FFF" />
+                        <Text style={styles.viewWorkflowBtnTxt}>Open Workflow Approval Voucher</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              </ScrollView>
+            )}
+
+            <View style={styles.modalFooter}>
+              <Pressable
+                onPress={() => {
+                  const itm = viewingExp;
+                  setViewingExp(null);
+                  handlePrint(itm);
+                }}
+                style={styles.detailModalPrintBtn}
+              >
+                <Ionicons name="print-outline" size={18} color="#0369A1" />
+                <Text style={{ color: '#0369A1', fontWeight: '800', fontSize: font.sm }}>Print PDF</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  const itm = viewingExp;
+                  setViewingExp(null);
+                  openEdit(itm);
+                }}
+                style={styles.detailModalEditBtn}
+              >
+                <Ionicons name="create-outline" size={18} color="#FFF" />
+                <Text style={{ color: '#FFF', fontWeight: '800', fontSize: font.sm }}>Edit Expense</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ================= CUSTOM FILTERS MODAL ================= */}
+      <Modal
+        visible={showFilterModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowFilterModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Filter Expenses</Text>
+                <Text style={styles.modalSubtitle}>Customize criteria & presets</Text>
+              </View>
+              <Pressable onPress={() => setShowFilterModal(false)} style={styles.modalCloseBtn} hitSlop={8}>
+                <Ionicons name="close" size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <ScrollView style={{ maxHeight: 480 }} showsVerticalScrollIndicator={false}>
+              <View style={{ gap: 14, paddingVertical: 6 }}>
+                {/* 1. Date Presets & Custom Range */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Date Range</Text>
+                  <View style={styles.presetRow}>
+                    {DATE_PRESETS.map((p) => (
+                      <Pressable
+                        key={p.key}
+                        onPress={() => setDatePreset(p.key)}
+                        style={[styles.presetChip, datePreset === p.key && styles.presetChipActive]}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipTxt,
+                            datePreset === p.key && styles.presetChipTxtActive,
+                          ]}
+                        >
+                          {p.label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  {datePreset === 'custom' && (
+                    <View style={[styles.formRow, { marginTop: 8 }]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.formSubLabel}>From Date (YYYY-MM-DD)</Text>
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="2026-01-01"
+                          value={customFromDate}
+                          onChangeText={setCustomFromDate}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.formSubLabel}>To Date (YYYY-MM-DD)</Text>
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="2026-12-31"
+                          value={customToDate}
+                          onChangeText={setCustomToDate}
+                        />
+                      </View>
+                    </View>
+                  )}
+                </View>
+
+                {/* 2. Customer Wise Filter */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Customer / Client</Text>
+                  <TextInput
+                    style={[styles.formInput, { marginBottom: 6 }]}
+                    placeholder="Search customer name..."
+                    value={filterCustomerSearch}
+                    onChangeText={setFilterCustomerSearch}
+                  />
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                      <Pressable
+                        onPress={() => setSelectedCustomerId('all')}
+                        style={[
+                          styles.customerPill,
+                          selectedCustomerId === 'all' && styles.customerPillActive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.customerPillTxt,
+                            selectedCustomerId === 'all' && styles.customerPillTxtActive,
+                          ]}
+                        >
+                          All Customers
+                        </Text>
+                      </Pressable>
+                      {customers
+                        .filter(
+                          (c) =>
+                            !filterCustomerSearch ||
+                            c.name?.toLowerCase().includes(filterCustomerSearch.toLowerCase())
+                        )
+                        .slice(0, 15)
+                        .map((c) => (
+                          <Pressable
+                            key={c.id}
+                            onPress={() =>
+                              setSelectedCustomerId(selectedCustomerId === c.id ? 'all' : c.id)
+                            }
+                            style={[
+                              styles.customerPill,
+                              selectedCustomerId === c.id && styles.customerPillActive,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.customerPillTxt,
+                                selectedCustomerId === c.id && styles.customerPillTxtActive,
+                              ]}
+                            >
+                              {c.name}
+                            </Text>
+                          </Pressable>
+                        ))}
+                    </View>
+                  </ScrollView>
+                </View>
+
+                {/* 3. Amount Wise Filter */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Amount Range (₹)</Text>
+                  <View style={styles.formRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.formSubLabel}>Min Amount (₹)</Text>
+                      <TextInput
+                        style={styles.formInput}
+                        placeholder="0.00"
+                        keyboardType="numeric"
+                        value={minAmount}
+                        onChangeText={setMinAmount}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.formSubLabel}>Max Amount (₹)</Text>
+                      <TextInput
+                        style={styles.formInput}
+                        placeholder="Unlimited"
+                        keyboardType="numeric"
+                        value={maxAmount}
+                        onChangeText={setMaxAmount}
+                      />
+                    </View>
+                  </View>
+                </View>
+
+                {/* 4. Voucher Wise Filter */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Voucher / Reference No</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    placeholder="e.g. EXP-2026, EXP-APP, INV-1002..."
+                    value={filterVoucherText}
+                    onChangeText={setFilterVoucherText}
+                  />
+                </View>
+
+                {/* 5. Item / Particulars Wise Filter */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Item Name / Description</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    placeholder="e.g. Rent, Hardware, Diesel, Service..."
+                    value={filterItemText}
+                    onChangeText={setFilterItemText}
+                  />
+                </View>
+
+                {/* 6. Name Wise Filter (Vendor, Customer, Submitter) */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Person / Party Name</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    placeholder="Vendor, Submitter, Approver..."
+                    value={filterNameText}
+                    onChangeText={setFilterNameText}
+                  />
+                </View>
+
+                {/* 7. Payment Mode Filter */}
+                <View>
+                  <Text style={styles.filterSectionLabel}>Payment Mode</Text>
+                  <View style={styles.modeSelector}>
+                    <Pressable
+                      onPress={() => setSelectedPaymentMode('all')}
+                      style={[
+                        styles.modeChoice,
+                        selectedPaymentMode === 'all' && styles.modeChoiceActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.modeChoiceTxt,
+                          selectedPaymentMode === 'all' && styles.modeChoiceTxtActive,
+                        ]}
+                      >
+                        ALL
+                      </Text>
+                    </Pressable>
+                    {PAYMENT_MODES.map((m) => (
+                      <Pressable
+                        key={m}
+                        onPress={() => setSelectedPaymentMode(m)}
+                        style={[
+                          styles.modeChoice,
+                          selectedPaymentMode === m && styles.modeChoiceActive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.modeChoiceTxt,
+                            selectedPaymentMode === m && styles.modeChoiceTxtActive,
+                          ]}
+                        >
+                          {m.toUpperCase()}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Pressable
+                onPress={() => {
+                  resetAllFilters();
+                  setShowFilterModal(false);
+                }}
+                style={styles.cancelBtn}
+              >
+                <Text style={styles.cancelBtnTxt}>Reset All</Text>
+              </Pressable>
+
+              <Pressable onPress={() => setShowFilterModal(false)} style={styles.saveBtn}>
+                <Ionicons name="checkmark" size={18} color="#FFF" />
+                <Text style={styles.saveBtnTxt}>Apply Filters</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ================= SORT MODAL ================= */}
+      <Modal
+        visible={showSortModal}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setShowSortModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxWidth: 380 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Sort Expenses</Text>
+              <Pressable onPress={() => setShowSortModal(false)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <View style={{ gap: 8, paddingVertical: 8 }}>
+              {SORT_OPTIONS.map((opt) => (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => {
+                    setSortBy(opt.key);
+                    setShowSortModal(false);
+                  }}
+                  style={[styles.sortOptionRow, sortBy === opt.key && styles.sortOptionRowActive]}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Ionicons
+                      name={opt.icon as any}
+                      size={20}
+                      color={sortBy === opt.key ? colors.brandPrimary : '#64748B'}
+                    />
+                    <Text
+                      style={[
+                        styles.sortOptionTxt,
+                        sortBy === opt.key && styles.sortOptionTxtActive,
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </View>
+                  {sortBy === opt.key && (
+                    <Ionicons name="checkmark-circle" size={20} color={colors.brandPrimary} />
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ================= EDIT MODAL ================= */}
       <Modal
         visible={!!editingExp}
         animationType="slide"
@@ -523,7 +1435,6 @@ export default function ExpensesList() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent} testID="edit-expense-modal">
-            {/* Modal Header */}
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.modalTitle}>Edit Expense Voucher</Text>
@@ -539,7 +1450,6 @@ export default function ExpensesList() {
               </Pressable>
             </View>
 
-            {/* Modal Form Scroll */}
             <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
               <View style={styles.formSection}>
                 {/* Amount & Date */}
@@ -612,12 +1522,11 @@ export default function ExpensesList() {
                       <Pressable
                         key={c}
                         onPress={() => setEditForm((p) => ({ ...p, category: c }))}
-                        style={[
-                          styles.catPill,
-                          editForm.category === c && styles.catPillActive,
-                        ]}
+                        style={[styles.catPill, editForm.category === c && styles.catPillActive]}
                       >
-                        <Text style={[styles.catPillTxt, editForm.category === c && styles.catPillTxtActive]}>
+                        <Text
+                          style={[styles.catPillTxt, editForm.category === c && styles.catPillTxtActive]}
+                        >
                           {c}
                         </Text>
                       </Pressable>
@@ -690,7 +1599,7 @@ export default function ExpensesList() {
                   </View>
                 </View>
 
-                {/* Narration / Description */}
+                {/* Narration */}
                 <View>
                   <Text style={styles.formLabel}>Narration / Description</Text>
                   <TextInput
@@ -706,7 +1615,6 @@ export default function ExpensesList() {
               </View>
             </ScrollView>
 
-            {/* Modal Actions */}
             <View style={styles.modalFooter}>
               <Pressable
                 onPress={() => setEditingExp(null)}
@@ -749,17 +1657,99 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  /* Search Section */
+  /* Stats Banner */
+  statsBanner: {
+    flexDirection: 'row',
+    backgroundColor: '#FFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    paddingVertical: 10,
+    paddingHorizontal: spacing.md,
+  },
+  statBox: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  statDivider: {
+    width: 1,
+    height: '80%',
+    backgroundColor: '#E2E8F0',
+    alignSelf: 'center',
+  },
+  statLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#64748B',
+    letterSpacing: 0.5,
+  },
+  statValue: {
+    fontSize: 15,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  statSub: {
+    fontSize: 10,
+    color: '#94A3B8',
+    fontWeight: '600',
+    marginTop: 1,
+  },
+
+  /* Segmented Status Tab Bar */
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    padding: 3,
+    marginHorizontal: spacing.md,
+    marginTop: 8,
+    borderRadius: radius.md,
+  },
+  tabItem: {
+    flex: 1,
+    paddingVertical: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+  },
+  tabItemActive: {
+    backgroundColor: '#FFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  tabItemTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  tabItemTxtActive: {
+    color: colors.brandPrimary,
+    fontWeight: '900',
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+
+  /* Search & Controls */
   searchSection: {
     backgroundColor: '#FFF',
     paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
+    paddingTop: 8,
+    paddingBottom: 6,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
-    gap: 6,
+    gap: 8,
+    marginTop: 6,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   searchBox: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#F8FAFC',
@@ -767,59 +1757,118 @@ const styles = StyleSheet.create({
     borderColor: '#CBD5E1',
     borderRadius: radius.md,
     paddingHorizontal: 10,
-    height: 44,
+    height: 42,
   },
   searchInput: {
     flex: 1,
     fontSize: font.sm,
     color: '#0F172A',
-    marginLeft: 8,
+    marginLeft: 6,
     paddingVertical: 0,
   },
   clearBtn: {
     padding: 4,
   },
-  criteriaRow: {
+  filterBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-    paddingVertical: 2,
-  },
-  criteriaLbl: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#64748B',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  chip: {
-    backgroundColor: '#EEF2F6',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 4,
+    gap: 5,
+    backgroundColor: '#F1F5F9',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: '#CBD5E1',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    height: 42,
   },
-  chipTxt: {
-    fontSize: 10,
+  filterBtnActive: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandPrimary,
+  },
+  filterBtnTxt: {
+    fontSize: font.sm,
     fontWeight: '700',
     color: '#334155',
   },
-  resultBar: {
+  sortBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  /* Horizontal Category Scroll */
+  categoryScroll: {
+    marginVertical: 2,
+  },
+  categoryScrollInner: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  catPillItem: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  catPillItemActive: {
+    backgroundColor: '#EEF2FF',
+    borderColor: '#6366F1',
+  },
+  catPillItemTxt: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  catPillItemTxtActive: {
+    color: '#4338CA',
+    fontWeight: '800',
+  },
+
+  /* Active Filters Chips Bar */
+  activeFiltersRow: {
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  activeFiltersLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#64748B',
+    textTransform: 'uppercase',
+  },
+  activeChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 2,
+    gap: 4,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
-  resultTxt: {
-    fontSize: font.sm,
-    color: '#64748B',
-  },
-  resetLink: {
-    fontSize: font.sm,
+  activeChipTxt: {
+    fontSize: 10,
     fontWeight: '700',
-    color: colors.brandPrimary,
+    color: '#0369A1',
+  },
+  resetAllBtn: {
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  resetAllBtnTxt: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#DC2626',
   },
 
   /* No match */
@@ -889,6 +1938,22 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: font.sm,
   },
+  linkedVoucherChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+  },
+  linkedVoucherChipTxt: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#4F46E5',
+  },
   categoryTitle: {
     fontSize: font.base,
     fontWeight: '800',
@@ -899,20 +1964,6 @@ const styles = StyleSheet.create({
     fontSize: font.lg,
     fontWeight: '900',
     color: '#DC2626',
-  },
-  attachChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  attachTxt: {
-    color: colors.brandPrimary,
-    fontSize: 10,
-    fontWeight: '800',
   },
   vendorRow: {
     flexDirection: 'row',
@@ -968,8 +2019,25 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     lineHeight: 18,
   },
+  pendingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  pendingBarTxt: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#B45309',
+  },
 
-  /* Card Actions: Search, Edit, Update, Save, Print */
+  /* Card Actions */
   cardActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -984,7 +2052,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
     backgroundColor: '#F0F9FF',
     borderWidth: 1,
     borderColor: '#BAE6FD',
@@ -996,12 +2064,29 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: font.sm,
   },
-  actionBtnEdit: {
-    flex: 1,
+  actionBtnView: {
+    flex: 0.9,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 4,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingVertical: 7,
+    borderRadius: radius.md,
+  },
+  actionBtnViewTxt: {
+    color: '#475569',
+    fontWeight: '700',
+    fontSize: font.sm,
+  },
+  actionBtnEdit: {
+    flex: 0.9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
     backgroundColor: '#EEF2FF',
     borderWidth: 1,
     borderColor: '#C7D2FE',
@@ -1013,29 +2098,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: font.sm,
   },
-  actionBtnView: {
-    flex: 0.8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingVertical: 7,
-    borderRadius: radius.md,
-  },
-  actionBtnViewTxt: {
-    color: '#475569',
-    fontWeight: '700',
-    fontSize: font.sm,
-  },
   actionBtnDelete: {
-    flex: 1,
+    flex: 0.9,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
     backgroundColor: '#FEF2F2',
     borderWidth: 1,
     borderColor: '#FECACA',
@@ -1048,21 +2116,7 @@ const styles = StyleSheet.create({
     fontSize: font.sm,
   },
 
-  /* Workflow decision row */
-  workflowRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginTop: 4,
-  },
-  wfBtn: {
-    flex: 1,
-    paddingVertical: 7,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  /* Modal */
+  /* Modals Common */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
@@ -1109,6 +2163,243 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  modalFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    paddingTop: spacing.sm,
+  },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelBtnTxt: {
+    color: '#475569',
+    fontWeight: '700',
+    fontSize: font.sm,
+  },
+  saveBtn: {
+    flex: 2,
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveBtnTxt: {
+    color: '#FFF',
+    fontWeight: '800',
+    fontSize: font.sm,
+  },
+
+  /* View Details Modal Specifics */
+  viewHeroCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  viewHeroLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#64748B',
+    letterSpacing: 0.5,
+  },
+  viewHeroAmount: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#DC2626',
+    marginVertical: 2,
+  },
+  viewHeroDate: {
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  detailBlock: {
+    backgroundColor: '#FFF',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: spacing.md,
+    gap: 6,
+  },
+  detailBlockTitle: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#475569',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  detailLabel: {
+    fontSize: font.sm,
+    color: '#64748B',
+  },
+  detailValue: {
+    fontSize: font.sm,
+    color: '#1E293B',
+  },
+  detailValueBold: {
+    fontSize: font.sm,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  detailDescBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 8,
+    borderRadius: 6,
+    marginTop: 4,
+    fontSize: font.sm,
+    color: '#334155',
+    lineHeight: 18,
+  },
+  viewWorkflowBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#0284C7',
+    paddingVertical: 9,
+    borderRadius: radius.md,
+    marginTop: 8,
+  },
+  viewWorkflowBtnTxt: {
+    color: '#FFF',
+    fontWeight: '800',
+    fontSize: font.sm,
+  },
+  detailModalPrintBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    paddingVertical: 10,
+    borderRadius: radius.md,
+  },
+  detailModalEditBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: colors.brandPrimary,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+  },
+
+  /* Filters Modal Specifics */
+  filterSectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  presetChip: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  presetChipActive: {
+    backgroundColor: '#EEF2FF',
+    borderColor: '#6366F1',
+  },
+  presetChipTxt: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  presetChipTxtActive: {
+    color: '#4338CA',
+    fontWeight: '800',
+  },
+  customerPill: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  customerPillActive: {
+    backgroundColor: '#F0F9FF',
+    borderColor: '#0284C7',
+  },
+  customerPillTxt: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  customerPillTxtActive: {
+    color: '#0369A1',
+    fontWeight: '800',
+  },
+  formSubLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 3,
+  },
+
+  /* Sort Modal Specifics */
+  sortOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: radius.md,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  sortOptionRowActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#BFDBFE',
+  },
+  sortOptionTxt: {
+    fontSize: font.sm,
+    color: '#334155',
+    fontWeight: '600',
+  },
+  sortOptionTxtActive: {
+    color: colors.brandPrimary,
+    fontWeight: '800',
+  },
+
+  /* Forms Common */
   formSection: {
     gap: 10,
     paddingVertical: 4,
@@ -1199,41 +2490,5 @@ const styles = StyleSheet.create({
     color: '#334155',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-  },
-  modalFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    paddingTop: spacing.sm,
-  },
-  cancelBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: radius.md,
-    backgroundColor: '#F1F5F9',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelBtnTxt: {
-    color: '#475569',
-    fontWeight: '700',
-    fontSize: font.sm,
-  },
-  saveBtn: {
-    flex: 2,
-    flexDirection: 'row',
-    gap: 6,
-    paddingVertical: 10,
-    borderRadius: radius.md,
-    backgroundColor: colors.brandPrimary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  saveBtnTxt: {
-    color: '#FFF',
-    fontWeight: '800',
-    fontSize: font.sm,
   },
 });

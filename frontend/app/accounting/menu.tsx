@@ -49,10 +49,10 @@ const BUSINESS: Section[] = [
     title: 'EXPENSE',
     rows: [
       { icon: 'wallet', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Add Expense', route: '/accounting/expenses/new' },
-      { icon: 'list', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'All Expenses', route: '/accounting/expenses' },
-      { icon: 'checkmark-done-circle', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Expense Approval', route: '/accounting/expenses/approval' },
       { icon: 'add-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: 'New Expense Approval', route: '/accounting/expenses/approval/new' },
+      { icon: 'checkmark-done-circle', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Expense Approval', route: '/accounting/expenses/approval' },
       { icon: 'grid', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Categories & Items', route: '/accounting/items' },
+      { icon: 'list', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'All Expenses', route: '/accounting/expenses' },
     ],
   },
   {

@@ -225,14 +225,20 @@ export default function NewInvoice() {
           } catch { attachErrors++; }
         }
       }
-      // Also create an Income record so it flows into dashboard/reports when it's a regular Sale
-      if (!editId && actualInvoiceType === 'sale' && totals.total > 0) {
+      // Only create an Income record if payment was actually received at invoice generation
+      const actualPaidAtGen = paymentType === 'cash' ? totals.total : (Number(paidNum) || 0);
+      if (!editId && actualInvoiceType === 'sale' && actualPaidAtGen > 0) {
         try {
           await api.post('/income', {
             date, client_id: party.id, client_name: party.name, client_mobile: party.mobile || null,
             service_category: 'DSC Services', service_name: `Invoice ${inv.invoice_no || ''}`,
-            amount: totals.total, payment_mode: paymentType === 'cash' ? 'cash' : 'bank',
-            remarks: `Auto-linked to invoice ${inv.invoice_no || inv.id}`,
+            amount: actualPaidAtGen, payment_mode: paymentType === 'cash' ? 'cash' : (paymentMode || 'cash'),
+            remarks: `Initial down payment for invoice ${inv.invoice_no || inv.id}`,
+            linked_vouchers: [{
+              voucher_id: inv.id,
+              voucher_no: inv.invoice_no,
+              allocated_amount: actualPaidAtGen,
+            }],
           });
         } catch {}
       }
@@ -420,7 +426,7 @@ export default function NewInvoice() {
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
               >
                 <Ionicons name={includeSignature ? 'checkbox' : 'square-outline'} size={18} color={includeSignature ? colors.brandPrimary : colors.muted} />
-                <Text style={{ fontSize: 12, color: colors.text, fontWeight: '600' }}>Include on Voucher</Text>
+                <Text style={{ fontSize: 12, color: colors.onSurface, fontWeight: '600' }}>Include on Voucher</Text>
               </Pressable>
             </View>
             <TextInput

@@ -6,8 +6,9 @@ import * as ImagePicker from 'expo-image-picker';
 export function getBaseUrl(): string {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1') {
-      return `${window.location.protocol}//${host}:8000`;
+    const proto = window.location.protocol || 'http:';
+    if (host) {
+      return `${proto}//${host}:8000`;
     }
   }
   return (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
@@ -79,6 +80,7 @@ export const api = {
     const token = await tokenStore.get();
     return `${getBaseUrl()}/api/invoices/${iid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
+  getInvoiceProfitAnalysis: (iid: string) => request<any>(`/invoices/${iid}/profit-analysis`),
   incomePdfUrl: async (iid: string) => {
     const token = await tokenStore.get();
     return `${getBaseUrl()}/api/income/${iid}/pdf?token=${encodeURIComponent(token || '')}`;
@@ -127,6 +129,7 @@ export const api = {
   },
   getExpenseApproval: (id: string) => request<any>(`/expense-approvals/${id}`),
   getExpenseApprovalConfig: () => request<any>('/expense-approvals/config'),
+  getApproverCandidates: () => request<any[]>('/expense-approvals/approver-candidates'),
   updateExpenseApprovalConfig: (payload: any) =>
     request<any>('/expense-approvals/config', {
       method: 'PUT',
@@ -148,6 +151,15 @@ export const api = {
     request<any>(`/expense-approvals/${id}/action`, {
       method: 'POST',
       body: JSON.stringify({ action, remarks }),
+    }),
+  deleteExpenseApproval: (id: string) =>
+    request<any>(`/expense-approvals/${id}`, {
+      method: 'DELETE',
+    }),
+  reopenExpenseApproval: (id: string, remarks?: string) =>
+    request<any>(`/expense-approvals/${id}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'reopen', remarks: remarks || 'Reopened by Admin' }),
     }),
   put: <T>(p: string, body: any) => request<T>(p, { method: 'PUT', body: JSON.stringify(body) }),
   del: <T>(p: string) => request<T>(p, { method: 'DELETE' }),

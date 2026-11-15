@@ -20,15 +20,23 @@ import { colors, spacing, radius, font } from '@/src/theme';
 import { api } from '@/src/api';
 import { EmptyState, ScreenLoader } from '@/src/ui';
 import { useAuth } from '@/src/AuthContext';
-import { notify } from '@/src/dialog';
+import { notify, confirm } from '@/src/dialog';
 
 const TABS = [
   { id: 'all', label: 'All Vouchers' },
   { id: 'submitted', label: 'Pending Approval' },
+  { id: 'approved', label: 'Approved Expenses' },
   { id: 'verified', label: 'Verified' },
-  { id: 'approved', label: 'Approved' },
   { id: 'returned', label: 'Returned' },
   { id: 'rejected', label: 'Rejected' },
+];
+
+const AVAILABLE_ROLES = [
+  { key: 'accountant', label: 'Accountant' },
+  { key: 'manager', label: 'Manager' },
+  { key: 'branch_manager', label: 'Branch Manager' },
+  { key: 'admin', label: 'Admin' },
+  { key: 'super_admin', label: 'Super Admin' },
 ];
 
 export default function ExpenseApprovalListScreen() {
@@ -41,11 +49,18 @@ export default function ExpenseApprovalListScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
   const [q, setQ] = useState('');
+  const [approvingId, setApprovingId] = useState<string | null>(null);
 
   // Workflow Config Modal
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [config, setConfig] = useState<any>(null);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [candidates, setCandidates] = useState<any[]>([]);
+  const [candidateModal, setCandidateModal] = useState<{ open: boolean; stage: 1 | 2 | null }>({
+    open: false,
+    stage: null,
+  });
+  const [candidateQ, setCandidateQ] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -58,10 +73,49 @@ export default function ExpenseApprovalListScreen() {
 
   const loadConfig = useCallback(async () => {
     try {
-      const cfg = await api.getExpenseApprovalConfig();
-      setConfig(cfg);
+      const [cfg, users] = await Promise.all([
+        api.getExpenseApprovalConfig(),
+        api.getApproverCandidates().catch(() => []),
+      ]);
+      setConfig(cfg || {});
+      setCandidates(Array.isArray(users) ? users : []);
     } catch {}
   }, []);
+
+  const toggleRoleInStage = (stage: 1 | 2, roleKey: string) => {
+    setConfig((prev: any) => {
+      const field = stage === 1 ? 'stage_1_roles' : 'stage_2_roles';
+      const current = prev?.[field] || (stage === 1 ? ['accountant', 'manager', 'admin'] : ['admin', 'super_admin']);
+      const next = current.includes(roleKey)
+        ? current.filter((r: string) => r !== roleKey)
+        : [...current, roleKey];
+      return { ...prev, [field]: next };
+    });
+  };
+
+  const addEmployeeToStage = (stage: 1 | 2, emp: any) => {
+    setConfig((prev: any) => {
+      const field = stage === 1 ? 'stage_1_users' : 'stage_2_users';
+      const current: any[] = prev?.[field] || [];
+      if (current.some(u => u.user_id === emp.user_id)) return prev;
+      return {
+        ...prev,
+        [field]: [...current, { user_id: emp.user_id, name: emp.name, role: emp.role, department: emp.department }],
+      };
+    });
+    setCandidateModal({ open: false, stage: null });
+  };
+
+  const removeEmployeeFromStage = (stage: 1 | 2, userId: string) => {
+    setConfig((prev: any) => {
+      const field = stage === 1 ? 'stage_1_users' : 'stage_2_users';
+      const current: any[] = prev?.[field] || [];
+      return {
+        ...prev,
+        [field]: current.filter(u => u.user_id !== userId),
+      };
+    });
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -100,6 +154,59 @@ export default function ExpenseApprovalListScreen() {
       }
     } catch (e: any) {
       notify('Failed', e?.message || 'Could not open PDF voucher');
+    }
+  };
+
+  const handleCardDelete = async (v: any) => {
+    const ok = await confirm(
+      'Delete Expense Voucher?',
+      `Are you sure you want to delete voucher ${v.voucher_no}? Any linked expense posted in the accounting ledger will also be removed. This cannot be undone.`,
+      { confirmText: 'Delete Permanently', destructive: true }
+    );
+    if (!ok) return;
+    try {
+      await api.deleteExpenseApproval(v.id);
+      notify('Deleted', `Voucher ${v.voucher_no} deleted successfully`);
+      load();
+    } catch (e: any) {
+      notify('Error', e?.message || 'Failed to delete voucher');
+    }
+  };
+
+  const handleCardReopen = async (v: any) => {
+    const ok = await confirm(
+      'Reopen Expense Voucher?',
+      `Reopening voucher ${v.voucher_no} will change its status back to Submitted and automatically remove any posted ledger expense. Continue?`,
+      { confirmText: 'Reopen Voucher', destructive: false }
+    );
+    if (!ok) return;
+    try {
+      await api.reopenExpenseApproval(v.id, 'Reopened by Admin from Voucher List');
+      notify('Reopened', `Voucher ${v.voucher_no} is now reopened and set to Submitted`);
+      load();
+    } catch (e: any) {
+      notify('Error', e?.message || 'Failed to reopen voucher');
+    }
+  };
+
+  const handleQuickApprove = async (v: any) => {
+    const amtStr = Number(v.total_expense_amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    const ok = await confirm(
+      'Approve Expense?',
+      `Are you sure you want to approve Expense Voucher "${v.voucher_no}" for ₹${amtStr}? This will automatically post to the accounting ledger and seed into All Expenses.`,
+      { confirmText: 'Approve Expense', destructive: false }
+    );
+    if (!ok) return;
+
+    setApprovingId(v.id);
+    try {
+      await api.expenseApprovalAction(v.id, 'approve', 'Approved from Expense Approval screen');
+      notify('Approved', `Expense ${v.voucher_no} has been approved successfully ✓`);
+      await load();
+    } catch (e: any) {
+      notify('Approval Failed', e?.message || 'Could not approve expense');
+    } finally {
+      setApprovingId(null);
     }
   };
 
@@ -164,7 +271,16 @@ export default function ExpenseApprovalListScreen() {
           <Text style={styles.subTitle}>TDSC • Vyapar-Style Financial Suite Multi-Stage Approval</Text>
         </View>
 
-        <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <Pressable
+            onPress={() => router.push('/accounting/expenses' as any)}
+            style={styles.allExpShortcutBtn}
+            testID="nav-all-expenses-btn"
+          >
+            <Ionicons name="list" size={16} color={colors.brandPrimary} />
+            <Text style={styles.allExpShortcutBtnTxt}>All Expenses</Text>
+          </Pressable>
+
           {isAdmin ? (
             <Pressable
               onPress={() => setShowConfigModal(true)}
@@ -377,18 +493,85 @@ export default function ExpenseApprovalListScreen() {
 
                   {/* Action Buttons */}
                   <View style={styles.cardActions}>
+                    {(item.status === 'submitted' || item.status === 'verified') ? (
+                      <Pressable
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          handleQuickApprove(item);
+                        }}
+                        style={styles.btnCardApprove}
+                        disabled={approvingId === item.id}
+                        testID={`approval-card-approve-${item.id}`}
+                      >
+                        {approvingId === item.id ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <>
+                            <Ionicons name="checkmark-circle" size={14} color="#FFF" />
+                            <Text style={styles.btnCardApproveTxt}>Approve Expense</Text>
+                          </>
+                        )}
+                      </Pressable>
+                    ) : null}
+
+                    {item.status === 'approved' ? (
+                      <Pressable
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          router.push('/accounting/expenses' as any);
+                        }}
+                        style={styles.btnCardApproved}
+                      >
+                        <Ionicons name="checkmark-done-circle" size={14} color="#15803D" />
+                        <Text style={styles.btnCardApprovedTxt}>Approved Expense</Text>
+                      </Pressable>
+                    ) : null}
+
                     <Pressable
                       onPress={() => router.push(`/accounting/expenses/approval/${item.id}` as any)}
                       style={styles.btnDetails}
                     >
                       <Ionicons name="eye-outline" size={14} color={colors.brandPrimary} />
-                      <Text style={styles.btnDetailsTxt}>View & Approve</Text>
+                      <Text style={styles.btnDetailsTxt}>View Details</Text>
                     </Pressable>
 
                     <Pressable onPress={() => printVoucher(item)} style={styles.btnPrint}>
                       <Ionicons name="print-outline" size={14} color="#334155" />
-                      <Text style={styles.btnPrintTxt}>Voucher PDF</Text>
+                      <Text style={styles.btnPrintTxt}>PDF</Text>
                     </Pressable>
+
+                    {isAdmin ? (
+                      <>
+                        <Pressable
+                          onPress={() => router.push(`/accounting/expenses/approval/${item.id}?edit=true` as any)}
+                          style={styles.btnCardEdit}
+                          testID={`approval-card-edit-${item.id}`}
+                        >
+                          <Ionicons name="create-outline" size={14} color="#0D9488" />
+                          <Text style={styles.btnCardEditTxt}>Edit</Text>
+                        </Pressable>
+
+                        {item.status === 'approved' || item.status === 'rejected' || item.status === 'verified' ? (
+                          <Pressable
+                            onPress={() => handleCardReopen(item)}
+                            style={styles.btnCardReopen}
+                            testID={`approval-card-reopen-${item.id}`}
+                          >
+                            <Ionicons name="reload-outline" size={14} color="#2563EB" />
+                            <Text style={styles.btnCardReopenTxt}>Reopen</Text>
+                          </Pressable>
+                        ) : null}
+
+                        <Pressable
+                          onPress={() => handleCardDelete(item)}
+                          style={styles.btnCardDelete}
+                          testID={`approval-card-delete-${item.id}`}
+                        >
+                          <Ionicons name="trash-outline" size={14} color="#DC2626" />
+                          <Text style={styles.btnCardDeleteTxt}>Delete</Text>
+                        </Pressable>
+                      </>
+                    ) : null}
                   </View>
                 </View>
               </Pressable>
@@ -400,15 +583,15 @@ export default function ExpenseApprovalListScreen() {
       {/* Admin Workflow Config Modal */}
       <Modal visible={showConfigModal} animationType="slide" transparent onRequestClose={() => setShowConfigModal(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard} testID="workflow-config-modal">
+          <View style={[styles.modalCard, { maxWidth: 560, maxHeight: '90%' }]} testID="workflow-config-modal">
             <View style={styles.modalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <View style={styles.modalHeaderIcon}>
                   <Ionicons name="settings" size={18} color="#FFF" />
                 </View>
                 <View>
-                  <Text style={styles.modalTitle}>Workflow Configuration</Text>
-                  <Text style={styles.modalSub}>Stages & Self-Approval Policies</Text>
+                  <Text style={styles.modalTitle}>Workflow & Approval Setup</Text>
+                  <Text style={styles.modalSub}>Single / Multi-Stage & Designated Employees</Text>
                 </View>
               </View>
               <Pressable onPress={() => setShowConfigModal(false)} hitSlop={10}>
@@ -416,42 +599,207 @@ export default function ExpenseApprovalListScreen() {
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: 14 }}>
-              <Text style={styles.cfgSectionTitle}>Approval Stages</Text>
-              <Pressable
-                onPress={() => setConfig((p: any) => ({ ...p, allow_verification_stage: !p?.allow_verification_stage }))}
-                style={styles.cfgToggleRow}
-              >
-                <Ionicons
-                  name={config?.allow_verification_stage ? 'checkbox' : 'square-outline'}
-                  size={20}
-                  color={colors.brandPrimary}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cfgToggleTitle}>Enable Verification Stage</Text>
-                  <Text style={styles.cfgToggleSub}>Requires 2-level review: Submitted ➔ Verified ➔ Approved</Text>
-                </View>
-              </Pressable>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: 16 }}>
+              {/* 1. Workflow Mode: Single Stage vs Multi-Stage */}
+              <View style={{ gap: 8 }}>
+                <Text style={styles.cfgSectionTitle}>1. Approval Structure (Stage Count)</Text>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <Pressable
+                    onPress={() => setConfig((p: any) => ({
+                      ...p,
+                      workflow_mode: 'single_stage',
+                      stages_count: 1,
+                      allow_verification_stage: false,
+                    }))}
+                    style={[
+                      styles.modeSelectCard,
+                      config?.workflow_mode === 'single_stage' && styles.modeSelectCardActive,
+                    ]}
+                  >
+                    <Ionicons
+                      name="flash"
+                      size={20}
+                      color={config?.workflow_mode === 'single_stage' ? colors.brandPrimary : '#64748B'}
+                    />
+                    <Text style={[styles.modeSelectTitle, config?.workflow_mode === 'single_stage' && styles.modeSelectTitleActive]}>
+                      Single Stage
+                    </Text>
+                    <Text style={styles.modeSelectSub}>Submitted ➔ Final Approved. 1-step direct sign-off.</Text>
+                  </Pressable>
 
-              <Text style={styles.cfgSectionTitle}>Fraud Prevention & Controls</Text>
-              <Pressable
-                onPress={() => setConfig((p: any) => ({ ...p, allow_self_approval: !p?.allow_self_approval }))}
-                style={styles.cfgToggleRow}
-              >
-                <Ionicons
-                  name={config?.allow_self_approval ? 'checkbox' : 'square-outline'}
-                  size={20}
-                  color={colors.brandPrimary}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cfgToggleTitle}>Allow Self-Approval</Text>
-                  <Text style={styles.cfgToggleSub}>
-                    {config?.allow_self_approval
-                      ? 'Users can approve vouchers they created themselves'
-                      : 'RESTRICTED (Recommended): A different approver must sign off on submitted claims'}
-                  </Text>
+                  <Pressable
+                    onPress={() => setConfig((p: any) => ({
+                      ...p,
+                      workflow_mode: 'multi_stage',
+                      stages_count: 2,
+                      allow_verification_stage: true,
+                    }))}
+                    style={[
+                      styles.modeSelectCard,
+                      (config?.workflow_mode === 'multi_stage' || !config?.workflow_mode) && styles.modeSelectCardActive,
+                    ]}
+                  >
+                    <Ionicons
+                      name="shield-checkmark"
+                      size={20}
+                      color={(config?.workflow_mode === 'multi_stage' || !config?.workflow_mode) ? colors.brandPrimary : '#64748B'}
+                    />
+                    <Text style={[styles.modeSelectTitle, (config?.workflow_mode === 'multi_stage' || !config?.workflow_mode) && styles.modeSelectTitleActive]}>
+                      Multi-Stage (2-Tier)
+                    </Text>
+                    <Text style={styles.modeSelectSub}>Submitted ➔ Verified ➔ Approved. Robust controls.</Text>
+                  </Pressable>
                 </View>
-              </Pressable>
+              </View>
+
+              {/* 2. Fraud Prevention & Self-Approval */}
+              <View style={{ gap: 8 }}>
+                <Text style={styles.cfgSectionTitle}>2. Fraud Prevention & Self-Approval</Text>
+                <Pressable
+                  onPress={() => setConfig((p: any) => ({ ...p, allow_self_approval: !p?.allow_self_approval }))}
+                  style={styles.cfgToggleRow}
+                >
+                  <Ionicons
+                    name={config?.allow_self_approval ? 'checkbox' : 'square-outline'}
+                    size={20}
+                    color={colors.brandPrimary}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cfgToggleTitle}>Allow Self-Approval</Text>
+                    <Text style={styles.cfgToggleSub}>
+                      {config?.allow_self_approval
+                        ? 'Employees can approve vouchers created by themselves'
+                        : 'RESTRICTED (Recommended): Another designated manager/admin must approve'}
+                    </Text>
+                  </View>
+                </Pressable>
+              </View>
+
+              {/* 3. Stage 1 Configuration (if Multi-Stage) */}
+              {config?.workflow_mode !== 'single_stage' ? (
+                <View style={styles.stageBox}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <View style={[styles.stageBadge, { backgroundColor: '#EEF2FF' }]}>
+                        <Text style={{ fontSize: 11, fontWeight: '900', color: '#4338CA' }}>STAGE 1</Text>
+                      </View>
+                      <Text style={styles.stageTitle}>Verification / Accounts Check</Text>
+                    </View>
+                  </View>
+
+                  {/* Allowed Roles */}
+                  <View style={{ gap: 6, marginTop: 4 }}>
+                    <Text style={styles.subLbl}>Allowed Roles for Stage 1 Review:</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                      {AVAILABLE_ROLES.map(r => {
+                        const sel = (config?.stage_1_roles || ['accountant', 'manager', 'admin']).includes(r.key);
+                        return (
+                          <Pressable
+                            key={r.key}
+                            onPress={() => toggleRoleInStage(1, r.key)}
+                            style={[styles.rolePill, sel && styles.rolePillActive]}
+                          >
+                            <Ionicons name={sel ? "checkmark-circle" : "ellipse-outline"} size={13} color={sel ? "#FFF" : "#64748B"} />
+                            <Text style={[styles.rolePillTxt, sel && styles.rolePillTxtActive]}>{r.label}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {/* Specific Employees */}
+                  <View style={{ gap: 6, marginTop: 4 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={styles.subLbl}>Designated Employees for Stage 1:</Text>
+                      <Pressable
+                        onPress={() => { setCandidateQ(''); setCandidateModal({ open: true, stage: 1 }); }}
+                        style={styles.addEmpBtn}
+                      >
+                        <Ionicons name="person-add-outline" size={12} color={colors.brandPrimary} />
+                        <Text style={styles.addEmpBtnTxt}>+ Assign Employee</Text>
+                      </Pressable>
+                    </View>
+                    {(config?.stage_1_users || []).length === 0 ? (
+                      <Text style={styles.noEmpTxt}>No specific employee assigned (any user with allowed roles above can verify)</Text>
+                    ) : (
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                        {(config?.stage_1_users || []).map((u: any) => (
+                          <View key={u.user_id} style={styles.empChip}>
+                            <Ionicons name="person" size={11} color="#4338CA" />
+                            <Text style={styles.empChipTxt}>{u.name} ({u.role})</Text>
+                            <Pressable onPress={() => removeEmployeeFromStage(1, u.user_id)} hitSlop={6}>
+                              <Ionicons name="close-circle" size={14} color="#64748B" />
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                </View>
+              ) : null}
+
+              {/* 4. Stage 2 (or Final Stage) Configuration */}
+              <View style={styles.stageBox}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={[styles.stageBadge, { backgroundColor: '#DCFCE7' }]}>
+                      <Text style={{ fontSize: 11, fontWeight: '900', color: '#15803D' }}>
+                        {config?.workflow_mode === 'single_stage' ? 'FINAL' : 'STAGE 2'}
+                      </Text>
+                    </View>
+                    <Text style={styles.stageTitle}>Final Expenditure Approval</Text>
+                  </View>
+                </View>
+
+                {/* Allowed Roles */}
+                <View style={{ gap: 6, marginTop: 4 }}>
+                  <Text style={styles.subLbl}>Allowed Roles for Final Approval:</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                    {AVAILABLE_ROLES.map(r => {
+                      const sel = (config?.stage_2_roles || ['admin', 'super_admin']).includes(r.key);
+                      return (
+                        <Pressable
+                          key={r.key}
+                          onPress={() => toggleRoleInStage(2, r.key)}
+                          style={[styles.rolePill, sel && styles.rolePillActive]}
+                        >
+                          <Ionicons name={sel ? "checkmark-circle" : "ellipse-outline"} size={13} color={sel ? "#FFF" : "#64748B"} />
+                          <Text style={[styles.rolePillTxt, sel && styles.rolePillTxtActive]}>{r.label}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {/* Specific Employees */}
+                <View style={{ gap: 6, marginTop: 4 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.subLbl}>Designated Employees for Final Approval:</Text>
+                    <Pressable
+                      onPress={() => { setCandidateQ(''); setCandidateModal({ open: true, stage: 2 }); }}
+                      style={styles.addEmpBtn}
+                    >
+                      <Ionicons name="person-add-outline" size={12} color={colors.brandPrimary} />
+                      <Text style={styles.addEmpBtnTxt}>+ Assign Employee</Text>
+                    </Pressable>
+                  </View>
+                  {(config?.stage_2_users || []).length === 0 ? (
+                    <Text style={styles.noEmpTxt}>No specific employee assigned (any user with allowed roles above can approve)</Text>
+                  ) : (
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                      {(config?.stage_2_users || []).map((u: any) => (
+                        <View key={u.user_id} style={[styles.empChip, { backgroundColor: '#DCFCE7', borderColor: '#BBF7D0' }]}>
+                          <Ionicons name="person" size={11} color="#15803D" />
+                          <Text style={[styles.empChipTxt, { color: '#15803D' }]}>{u.name} ({u.role})</Text>
+                          <Pressable onPress={() => removeEmployeeFromStage(2, u.user_id)} hitSlop={6}>
+                            <Ionicons name="close-circle" size={14} color="#64748B" />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              </View>
             </ScrollView>
 
             <View style={styles.modalFooter}>
@@ -462,10 +810,77 @@ export default function ExpenseApprovalListScreen() {
                 {savingConfig ? (
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
-                  <Text style={styles.saveBtnTxt}>Save Settings</Text>
+                  <Text style={styles.saveBtnTxt}>Save Workflow Configuration</Text>
                 )}
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Employee Candidate Selection Modal */}
+      <Modal visible={candidateModal.open} animationType="fade" transparent onRequestClose={() => setCandidateModal({ open: false, stage: null })}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxWidth: 440, maxHeight: 520 }]} testID="assign-employee-modal">
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>
+                  Assign Employee to {candidateModal.stage === 1 ? 'Stage 1 (Verification)' : 'Stage 2 (Final Approval)'}
+                </Text>
+                <Text style={styles.modalSub}>Pick an active employee to authorize</Text>
+              </View>
+              <Pressable onPress={() => setCandidateModal({ open: false, stage: null })} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+
+            <View style={{ paddingHorizontal: spacing.lg, paddingTop: 10 }}>
+              <TextInput
+                value={candidateQ}
+                onChangeText={setCandidateQ}
+                placeholder="Search employee by name, email or role..."
+                placeholderTextColor={colors.muted}
+                style={styles.candidateSearchInput}
+              />
+            </View>
+
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: 6 }}>
+              {candidates
+                .filter(c => {
+                  const q = candidateQ.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    (c.name || '').toLowerCase().includes(q) ||
+                    (c.email || '').toLowerCase().includes(q) ||
+                    (c.role || '').toLowerCase().includes(q)
+                  );
+                })
+                .map(c => {
+                  const targetList: any[] = candidateModal.stage === 1 ? config?.stage_1_users || [] : config?.stage_2_users || [];
+                  const isAssigned = targetList.some(u => u.user_id === c.user_id);
+                  return (
+                    <Pressable
+                      key={c.user_id}
+                      onPress={() => {
+                        if (!isAssigned && candidateModal.stage) {
+                          addEmployeeToStage(candidateModal.stage, c);
+                        }
+                      }}
+                      style={[styles.candidateRow, isAssigned && { opacity: 0.5, backgroundColor: '#F1F5F9' }]}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.candidateName}>{c.name}</Text>
+                        <Text style={styles.candidateSub}>{c.role} • {c.email || c.department || ''}</Text>
+                      </View>
+                      <Ionicons
+                        name={isAssigned ? "checkmark-circle" : "add-circle-outline"}
+                        size={20}
+                        color={isAssigned ? "#15803D" : colors.brandPrimary}
+                      />
+                    </Pressable>
+                  );
+                })}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -633,13 +1048,63 @@ const styles = StyleSheet.create({
   prepTxt: { fontSize: 10, color: colors.muted },
   cardActions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
+    flexWrap: 'wrap',
     borderTopWidth: 1,
     borderTopColor: '#F1F5F9',
     paddingTop: 8,
   },
+  btnCardApprove: {
+    flex: 1.4,
+    minWidth: 125,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: '#059669',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    shadowColor: '#059669',
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  btnCardApproveTxt: { color: '#FFF', fontWeight: '900', fontSize: 12 },
+  btnCardApproved: {
+    flex: 1.4,
+    minWidth: 125,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#86EFAC',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  btnCardApprovedTxt: { color: '#15803D', fontWeight: '800', fontSize: 11 },
+  allExpShortcutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingHorizontal: 10,
+    height: 40,
+    borderRadius: radius.md,
+  },
+  allExpShortcutBtnTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.brandPrimary,
+  },
   btnDetails: {
-    flex: 1.3,
+    flex: 1.2,
+    minWidth: 110,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -650,16 +1115,55 @@ const styles = StyleSheet.create({
   },
   btnDetailsTxt: { color: colors.brandPrimary, fontWeight: '800', fontSize: 12 },
   btnPrint: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
     backgroundColor: '#F1F5F9',
     paddingVertical: 8,
+    paddingHorizontal: 10,
     borderRadius: 6,
   },
   btnPrintTxt: { color: '#334155', fontWeight: '800', fontSize: 12 },
+  btnCardEdit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  btnCardEditTxt: { color: '#0D9488', fontWeight: '800', fontSize: 12 },
+  btnCardReopen: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  btnCardReopenTxt: { color: '#2563EB', fontWeight: '800', fontSize: 12 },
+  btnCardDelete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  btnCardDeleteTxt: { color: '#DC2626', fontWeight: '800', fontSize: 12 },
 
   // Config Modal
   modalOverlay: {
@@ -735,4 +1239,147 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
   saveBtnTxt: { color: '#FFF', fontWeight: '800', fontSize: font.base },
+
+  // Mode Selection Styles
+  modeSelectCard: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.md,
+    padding: 12,
+    gap: 4,
+  },
+  modeSelectCardActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: colors.brandPrimary,
+  },
+  modeSelectTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#334155',
+  },
+  modeSelectTitleActive: {
+    color: colors.brandPrimary,
+  },
+  modeSelectSub: {
+    fontSize: 10,
+    color: colors.muted,
+    lineHeight: 14,
+  },
+
+  // Stage Box Styles
+  stageBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 12,
+    gap: 8,
+  },
+  stageBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  stageTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.onSurface,
+  },
+  subLbl: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.muted,
+  },
+  rolePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  rolePillActive: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandPrimary,
+  },
+  rolePillTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  rolePillTxtActive: {
+    color: '#FFF',
+  },
+  addEmpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 4,
+  },
+  addEmpBtnTxt: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.brandPrimary,
+  },
+  noEmpTxt: {
+    fontSize: 10,
+    fontStyle: 'italic',
+    color: colors.muted,
+  },
+  empChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  empChipTxt: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4338CA',
+  },
+
+  // Candidate Search Modal Styles
+  candidateSearchInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: font.sm,
+    color: colors.onSurface,
+  },
+  candidateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 10,
+    borderRadius: radius.md,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  candidateName: {
+    fontSize: font.sm,
+    fontWeight: '700',
+    color: colors.onSurface,
+  },
+  candidateSub: {
+    fontSize: 11,
+    color: colors.muted,
+    marginTop: 1,
+  },
 });

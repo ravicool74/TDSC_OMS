@@ -443,8 +443,22 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             }
 
         elif report_type == "bill_profit":
+            # Map all linked expenses from db.expenses for each sale voucher
+            inv_expenses_map = {}
+            for e in expenses:
+                if e.get("status") == "rejected": continue
+                amt = float(e.get("amount") or 0.0)
+                inv_id = e.get("sale_invoice_id") or e.get("sale_voucher_id")
+                inv_no = e.get("sale_invoice_no") or e.get("sale_voucher_no")
+                if inv_id:
+                    inv_expenses_map[inv_id] = inv_expenses_map.get(inv_id, 0.0) + amt
+                if inv_no:
+                    inv_expenses_map[inv_no] = inv_expenses_map.get(inv_no, 0.0) + amt
+
             rows = []
             tot_gross = 0.0
+            tot_passon = 0.0
+            tot_net_rev = 0.0
             tot_cost = 0.0
             tot_profit = 0.0
 
@@ -452,27 +466,58 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 d = s.get("date") or s.get("invoice_date")
                 if not in_date_range(d): continue
                 gross = float(s.get("total_amount") or 0)
-                # Cost is estimated at ~45% standard direct cost for digital signature/tender bidding
-                cost = round(gross * 0.45, 2)
+
+                # Calculate pass-on money for this voucher
+                passon = 0.0
+                for it in s.get("items", []):
+                    it_amt = float(it.get("amount") or (float(it.get("qty", 1)) * float(it.get("price", 0))))
+                    is_passon = (
+                        it.get("item_type") == "passed_on_money" or
+                        (it.get("item_type") != "actual_service" and (
+                            it.get("fee_type") in ("EMD", "Cost of BOQ", "Tender Processing Fee", "Registration Fee", "Other Fee") or
+                            any(k in (it.get("name") or "").lower() for k in ["emd", "cost of boq", "pass-on", "passed on"])
+                        ))
+                    )
+                    if is_passon:
+                        passon += it_amt
+
+                net_rev = max(0.0, round(gross - passon, 2))
+
+                # Real linked expense for this voucher
+                s_id = s.get("id")
+                s_no = s.get("invoice_no") or s.get("invoice_number")
+                cost = inv_expenses_map.get(s_id, 0.0) or (inv_expenses_map.get(s_no, 0.0) if s_no else 0.0)
+
+                # User logic:
+                # Voucher ka total amount - Voucher ka total Expence = Voucher ka total profit
                 profit = round(gross - cost, 2)
-                margin = round((profit / gross * 100), 1) if gross > 0 else 0
+
+                # percent of profit = (total profit * 100) / total Voucher amount
+                if gross > 0:
+                    margin = round((profit * 100.0) / gross, 1)
+                else:
+                    margin = 0.0
 
                 tot_gross += gross
+                tot_passon += passon
+                tot_net_rev += net_rev
                 tot_cost += cost
                 tot_profit += profit
 
                 rows.append({
-                    "invoice_no": s.get("invoice_number"),
+                    "invoice_no": s_no or "—",
                     "date": d,
                     "party_name": s.get("party_name"),
                     "gross_revenue": inr(gross),
+                    "passon_money": inr(passon),
+                    "revenue_ex_passon": inr(net_rev),
                     "estimated_cost": inr(cost),
                     "gross_profit": inr(profit),
                     "margin_pct": f"{margin}%",
                     "status": (s.get("status") or "unpaid").capitalize()
                 })
 
-            avg_margin = round((tot_profit / tot_gross * 100), 1) if tot_gross > 0 else 0
+            avg_margin = round((tot_profit * 100.0) / tot_gross, 1) if tot_gross > 0 else 0.0
 
             return {
                 "report_type": report_type,
@@ -480,7 +525,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "category": cat_name,
                 "kpis": [
                     {"label": "Total Billed Revenue", "value": inr(tot_gross), "numeric": tot_gross, "color": "#059669"},
-                    {"label": "Cost of Goods/Services", "value": inr(tot_cost), "numeric": tot_cost, "color": "#DC2626"},
+                    {"label": "Pass-On Money (0% GST)", "value": inr(tot_passon), "numeric": tot_passon, "color": "#F59E0B"},
+                    {"label": "Revenue (Excl. Pass-On)", "value": inr(tot_net_rev), "numeric": tot_net_rev, "color": "#0284C7"},
+                    {"label": "Voucher Expenses", "value": inr(tot_cost), "numeric": tot_cost, "color": "#DC2626"},
                     {"label": "Total Gross Profit", "value": inr(tot_profit), "numeric": tot_profit, "color": "#2563EB"},
                     {"label": "Average Profit Margin", "value": f"{avg_margin}%", "numeric": avg_margin, "color": "#10B981"},
                 ],
@@ -489,7 +536,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"key": "date", "label": "Date"},
                     {"key": "party_name", "label": "Party Name"},
                     {"key": "gross_revenue", "label": "Bill Amount"},
-                    {"key": "estimated_cost", "label": "Est. Cost"},
+                    {"key": "passon_money", "label": "Pass-On Money"},
+                    {"key": "revenue_ex_passon", "label": "Revenue (Excl. Pass-On)"},
+                    {"key": "estimated_cost", "label": "Voucher Expense"},
                     {"key": "gross_profit", "label": "Gross Profit"},
                     {"key": "margin_pct", "label": "Margin %"},
                     {"key": "status", "label": "Invoice Status"},
