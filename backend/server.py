@@ -165,7 +165,7 @@ async def get_app_version():
     return {
         "version": "1.3.5",
         "version_code": 10,
-        "apk_url": "https://tdscoms.onrender.com/download-apk",
+        "apk_url": "https://tdsc-oms-backend.onrender.com/download-apk",
         "fallback_apk_url": "https://frontend-rho-woad-43.vercel.app/TDSC-Office-Manager.apk",
         "release_notes": "• Financial Suite Real Mode: Zeroed demo vouchers, bank balances & cash in hand\n• Cheques & Loans: Full Add, Edit, Safe Delete with automatic balance reconciliation\n• Fixed Cash in Hand opening balance to 0.00\n• Web UX improvements and confirmation dialogs",
         "mandatory": False,

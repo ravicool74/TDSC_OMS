@@ -11,7 +11,7 @@ export function getBaseUrl(): string {
       return `${proto}//${host}:8000`;
     }
   }
-  return (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://tdscoms.onrender.com').replace(/\/+$/, '');
+  return (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://tdsc-oms-backend.onrender.com').replace(/\/+$/, '');
 }
 
 const TOKEN_KEY = 'triveni_session_token';
