@@ -7,11 +7,11 @@ export function getBaseUrl(): string {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     const host = window.location.hostname;
     const proto = window.location.protocol || 'http:';
-    if (host) {
+    if (host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.')) {
       return `${proto}//${host}:8000`;
     }
   }
-  return (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+  return (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://tdscoms.onrender.com').replace(/\/+$/, '');
 }
 
 const TOKEN_KEY = 'triveni_session_token';
