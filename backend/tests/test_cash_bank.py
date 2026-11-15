@@ -120,6 +120,19 @@ def test_cheques_lifecycle(admin_token):
     assert r.status_code == 200, r.text
     res = r.json()
     assert "cheques" in res
+    if res.get("total_count", 0) == 0:
+        new_chq = {
+            "cheque_no": "CHQ-TEST-001",
+            "cheque_date": "2026-10-01",
+            "customer_name": "Test Contractor Pvt Ltd",
+            "bank_name": "Punjab National Bank",
+            "amount": 25000.0,
+            "description": "Initial test cheque entry"
+        }
+        r_c = requests.post(f"{BASE_URL}/accounting/cash-bank/cheques", json=new_chq, headers=headers, timeout=10)
+        assert r_c.status_code == 200, r_c.text
+        r = requests.get(f"{BASE_URL}/accounting/cash-bank/cheques?status=all", headers=headers, timeout=10)
+        res = r.json()
     assert res["total_count"] >= 1
 
     # Check open cheques or deposit an open cheque if one exists

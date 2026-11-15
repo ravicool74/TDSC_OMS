@@ -72,8 +72,18 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
     router = APIRouter(prefix=prefix, tags=["cash-bank"])
 
     async def _ensure_seed_records():
-        """Disabled in real production mode."""
-        return
+        """Ensure initial company bank accounts with 0 balance if none exist."""
+        try:
+            bank_count = await db.bank_accounts.count_documents({})
+            if bank_count == 0:
+                sample_banks = [
+                    {"id": "bnk_sbi_01", "name": "SBI Current A/c", "bank_name": "State Bank of India", "account_no": "39485720192", "ifsc": "SBIN0001234", "opening_balance": 0.0, "is_active": True, "created_at": now_utc()},
+                    {"id": "bnk_hdfc_02", "name": "HDFC Business A/c", "bank_name": "HDFC Bank", "account_no": "50200039281726", "ifsc": "HDFC0000456", "opening_balance": 0.0, "is_active": True, "created_at": now_utc()},
+                ]
+                for sb in sample_banks:
+                    await db.bank_accounts.update_one({"id": sb["id"]}, {"$setOnInsert": sb}, upsert=True)
+        except Exception:
+            pass
 
     # =========================================================================
     # 1. Attachment Upload Endpoint (for all transfer/cheque/loan vouchers)

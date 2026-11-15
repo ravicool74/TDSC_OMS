@@ -18,9 +18,10 @@ from urllib.parse import quote
 import pytest
 import requests
 
-BASE_URL = os.environ.get("TEST_BASE_URL") \
+BASE_URL = os.environ.get("BASE_URL") \
+    or os.environ.get("TEST_BASE_URL") \
     or os.environ.get("EXPO_PUBLIC_BACKEND_URL") \
-    or "https://hr-tender-hub.preview.emergentagent.com"
+    or "http://127.0.0.1:8000"
 BASE_URL = BASE_URL.rstrip("/")
 
 ADMIN = {"email": os.environ["TEST_ADMIN_EMAIL"], "password": os.environ["TEST_ADMIN_PASSWORD"]}

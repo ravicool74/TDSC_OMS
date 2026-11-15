@@ -1571,13 +1571,19 @@ async def search_customers(q: str = "", limit: int = 25, current: User = Depends
         {"name": rx}, {"customer_code": rx}, {"mobile": rx}, {"whatsapp": rx},
         {"pan": rx}, {"aadhar": rx}, {"email": rx}, {"gst_no": rx}, {"contractor_reg_no": rx},
     ]
+    exact_match = None
     # If query is purely digits, also match zero-padded 8-digit form on customer_code
     if s.isdigit():
         padded = s.zfill(8)
         or_clauses.append({"customer_code": {"$regex": re.escape(padded), "$options": "i"}})
+        exact_code = f"TDSC-CUST-ID-{padded}"
+        exact_match = await db.customers.find_one({"customer_code": exact_code}, {"_id": 0})
     query = {"$or": or_clauses}
     docs = await db.customers.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    return [Customer(**d) for d in docs]
+    if exact_match:
+        docs = [d for d in docs if d.get("id") != exact_match.get("id")]
+        docs.insert(0, exact_match)
+    return [Customer(**d) for d in docs[:limit]]
 
 
 @api_router.get("/customers", response_model=List[Customer])
@@ -3036,6 +3042,7 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
     exp_dict["expense_no"] = no
     exp_dict["created_by"] = current.user_id
     exp_dict["created_by_name"] = current.name
+    selected_items_breakdown = []
 
     # Auto-fill customer details if customer_id is provided
     if payload.customer_id and not payload.sale_invoice_id:
@@ -3200,7 +3207,7 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
         exp_dict["pass_on_item_type"] = "passed_on_money"
         exp_dict["pass_on_received_amount"] = total_received
 
-    exp_dict["status"] = "pending"
+    exp_dict["status"] = payload.status or exp_dict.get("status") or "pending"
     e = Expense(**exp_dict)
 
     # Auto-seed into Expense Approval Section (Point iii of user requirements)
@@ -3220,7 +3227,7 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
             approval_line_items.append({
                 "id": f"item_{uuid.uuid4().hex[:8]}",
                 "head": sitem["name"],
-                "description": f"Disbursement of {sitem['name']} against voucher {inv.get('invoice_no')}",
+                "description": f"Disbursement of {sitem['name']} against voucher {exp_dict.get('sale_invoice_no') or ''}".strip(),
                 "qty": 1.0,
                 "rate": float(sitem["allocated_amount"]),
                 "amount": float(sitem["allocated_amount"]),
@@ -3284,7 +3291,7 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
 
     e.linked_voucher_no = app_voucher_no
     e.linked_approval_id = app_vid
-    e.status = "pending"
+    e.status = exp_dict.get("status") or "pending"
 
     exp_doc = e.dict()
     exp_doc["linked_voucher_no"] = app_voucher_no
@@ -3478,6 +3485,8 @@ async def delete_expense(eid: str, current: User = Depends(require_admin_or_mana
     e = await db.expenses.find_one({"id": eid}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Expense not found")
+    if e.get("status") in ("approved", "verified"):
+        raise HTTPException(status_code=400, detail="Cannot delete an approved or verified expense voucher. Financial records are locked.")
 
     res = await db.expenses.delete_one({"id": eid})
     await log_audit_entry(db, current, "expenses", "delete", eid, e, None)
@@ -3546,6 +3555,7 @@ def _slug(s: str) -> str:
 
 
 async def _match_service_setting(inv):
+    await _seed_default_service_settings()
     if inv.items:
         docs = await db.service_task_settings.find({}, {"_id": 0}).to_list(50)
         for it in inv.items:

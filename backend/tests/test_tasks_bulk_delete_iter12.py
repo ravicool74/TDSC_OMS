@@ -11,7 +11,7 @@ import os
 import pytest
 import requests
 
-BASE_URL = "https://hr-tender-hub.preview.emergentagent.com"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
 
 ADMIN = {"email": os.environ["TEST_ADMIN_EMAIL"], "password": os.environ["TEST_ADMIN_PASSWORD"]}
 MANAGER = {"email": os.environ["TEST_MANAGER_EMAIL"], "password": os.environ["TEST_MANAGER_PASSWORD"]}

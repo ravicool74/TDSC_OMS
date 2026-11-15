@@ -4,8 +4,8 @@ import { colors, spacing, radius, font } from './theme';
 
 export const FormInput: React.FC<{
   label: string; value: string; onChangeText: (v: string) => void;
-  placeholder?: string; keyboardType?: any; multiline?: boolean; testID?: string; secure?: boolean;
-}> = ({ label, value, onChangeText, placeholder, keyboardType, multiline, testID, secure }) => (
+  placeholder?: string; keyboardType?: any; multiline?: boolean; testID?: string; secure?: boolean; secureTextEntry?: boolean; autoCapitalize?: any;
+}> = ({ label, value, onChangeText, placeholder, keyboardType, multiline, testID, secure, secureTextEntry, autoCapitalize }) => (
   <View style={{ gap: 6 }}>
     <Text style={styles.label}>{label}</Text>
     <TextInput
@@ -15,7 +15,8 @@ export const FormInput: React.FC<{
       placeholder={placeholder}
       keyboardType={keyboardType}
       multiline={multiline}
-      secureTextEntry={secure}
+      secureTextEntry={secure ?? secureTextEntry}
+      autoCapitalize={autoCapitalize}
       style={[styles.input, multiline && { minHeight: 80, textAlignVertical: 'top' }]}
       placeholderTextColor={colors.muted}
     />

@@ -387,7 +387,7 @@ export default function IncomeDetail() {
         <AttachmentsSection
           attachments={inc.attachments || []}
           onChange={onAttachmentsChange}
-          voucherKind="incomes"
+          voucherKind="income"
           oid={inc.id}
           title="Receipt / Bank Slip Attachments"
         />

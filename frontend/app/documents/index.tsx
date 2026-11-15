@@ -579,7 +579,7 @@ export default function DocumentLibraryScreen() {
                           testID={`folder-perms-${item.id}`}
                           style={[styles.folderActionIconBtn, { backgroundColor: '#f0fdf4' }]}
                           onPress={() => openFolderPermissionsModal(item)}
-                          title="Manage Access Permissions"
+                          accessibilityLabel="Manage Access Permissions"
                         >
                           <Ionicons name="shield-checkmark" size={16} color="#16a34a" />
                         </Pressable>
@@ -588,7 +588,7 @@ export default function DocumentLibraryScreen() {
                         <Pressable
                           style={styles.folderActionIconBtn}
                           onPress={() => openRenameFolderModal(item)}
-                          title="Rename Folder"
+                          accessibilityLabel="Rename Folder"
                         >
                           <Ionicons name="pencil" size={16} color={colors.brandPrimary} />
                         </Pressable>
@@ -597,7 +597,7 @@ export default function DocumentLibraryScreen() {
                         <Pressable
                           style={styles.folderActionIconBtn}
                           onPress={() => handleDeleteFolder(item)}
-                          title="Delete Folder"
+                          accessibilityLabel="Delete Folder"
                         >
                           <Ionicons name="trash-outline" size={16} color={colors.error} />
                         </Pressable>
@@ -606,7 +606,7 @@ export default function DocumentLibraryScreen() {
                         testID={`folder-open-${item.id}`}
                         style={[styles.folderActionIconBtn, { backgroundColor: colors.brandPrimary + '15' }]}
                         onPress={() => handleOpenFolder(item)}
-                        title="Open Folder"
+                        accessibilityLabel="Open Folder"
                       >
                         <Ionicons name="arrow-forward" size={16} color={colors.brandPrimary} />
                       </Pressable>
@@ -759,7 +759,7 @@ export default function DocumentLibraryScreen() {
                           <Pressable
                             style={styles.fileAttachedChip}
                             onPress={() => handleOpenFile(item.file_path)}
-                            title="Preview / Download Document"
+                            accessibilityLabel="Preview / Download Document"
                           >
                             <Ionicons name="document-text" size={14} color={colors.brandPrimary} />
                             <Text style={styles.fileAttachedText} numberOfLines={1}>
@@ -770,7 +770,7 @@ export default function DocumentLibraryScreen() {
                             <Pressable
                               onPress={() => handlePickAndUploadFile(item.id)}
                               style={styles.replaceFileBtn}
-                              title="Replace File"
+                              accessibilityLabel="Replace File"
                             >
                               <Ionicons name="cloud-upload" size={14} color={colors.muted} />
                             </Pressable>
@@ -798,7 +798,7 @@ export default function DocumentLibraryScreen() {
                               testID={`row-perms-${item.id}`}
                               style={styles.permActionBtn}
                               onPress={() => openFilePermissionsModal(item)}
-                              title="User Permissions"
+                              accessibilityLabel="User Permissions"
                             >
                               <Ionicons name="shield-checkmark" size={13} color="#16a34a" />
                             </Pressable>
@@ -807,7 +807,7 @@ export default function DocumentLibraryScreen() {
                             <Pressable
                               style={styles.updateActionBtn}
                               onPress={() => handleUpdateRow(item.id)}
-                              title="Update (Save)"
+                              accessibilityLabel="Update (Save)"
                             >
                               <Ionicons name="checkmark" size={13} color="#fff" />
                               <Text style={styles.updateActionBtnText}>Update</Text>
@@ -816,7 +816,7 @@ export default function DocumentLibraryScreen() {
                             <Pressable
                               style={styles.editActionBtn}
                               onPress={() => handleStartEditRow(item)}
-                              title="Edit"
+                              accessibilityLabel="Edit"
                             >
                               <Ionicons name="pencil" size={13} color={colors.brandPrimary} />
                               <Text style={styles.editActionBtnText}>Edit</Text>
@@ -826,7 +826,7 @@ export default function DocumentLibraryScreen() {
                           <Pressable
                             style={styles.deleteActionBtn}
                             onPress={() => handleDeleteRow(item)}
-                            title="Delete"
+                            accessibilityLabel="Delete"
                           >
                             <Ionicons name="trash-outline" size={13} color={colors.error} />
                             <Text style={styles.deleteActionBtnText}>Delete</Text>
@@ -842,7 +842,7 @@ export default function DocumentLibraryScreen() {
                           testID={`add-row-below-${item.id}`}
                           style={[styles.plusRowBtn, isInsertingBelow && { opacity: 0.5 }]}
                           onPress={() => handleInsertRowBelow(item.id)}
-                          title="Click to insert new field below"
+                          accessibilityLabel="Click to insert new field below"
                         >
                           {isInsertingBelow ? (
                             <ActivityIndicator size="small" color="#fff" />

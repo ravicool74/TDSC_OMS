@@ -83,8 +83,9 @@ export const PrimaryButton: React.FC<{
   testID?: string;
   disabled?: boolean;
   style?: ViewStyle;
+  textStyle?: TextStyle;
   icon?: any;
-}> = ({ label, title, onPress, loading, testID, disabled, style, icon }) => {
+}> = ({ label, title, onPress, loading, testID, disabled, style, textStyle, icon }) => {
   const text = label || title || '';
   return (
     <Pressable
@@ -96,7 +97,7 @@ export const PrimaryButton: React.FC<{
       {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
         <>
           {icon ? <Ionicons name={icon} size={18} color={colors.onBrandPrimary} style={{ marginRight: 6 }} /> : null}
-          <Text style={styles.primaryBtnText}>{text}</Text>
+          <Text style={[styles.primaryBtnText, textStyle]}>{text}</Text>
         </>
       )}
     </Pressable>
@@ -110,9 +111,10 @@ export const SecondaryButton: React.FC<{
   testID?: string;
   icon?: any;
   style?: ViewStyle;
+  textStyle?: TextStyle;
   disabled?: boolean;
   loading?: boolean;
-}> = ({ label, title, onPress, testID, icon, style, disabled, loading }) => {
+}> = ({ label, title, onPress, testID, icon, style, textStyle, disabled, loading }) => {
   const text = label || title || '';
   return (
     <Pressable
@@ -122,7 +124,7 @@ export const SecondaryButton: React.FC<{
       style={({ pressed }) => [styles.secondaryBtn, (disabled || loading) && { opacity: 0.6 }, pressed && { opacity: 0.7 }, style]}
     >
       {icon ? <Ionicons name={icon} size={18} color={colors.brandPrimary} style={{ marginRight: 6 }} /> : null}
-      <Text style={styles.secondaryBtnText}>{text}</Text>
+      <Text style={[styles.secondaryBtnText, textStyle]}>{text}</Text>
     </Pressable>
   );
 };

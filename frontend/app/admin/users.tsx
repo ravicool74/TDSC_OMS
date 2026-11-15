@@ -243,7 +243,7 @@ export default function UserManagementScreen() {
   const handleBulkDelete = async () => {
     const ids = Object.keys(selected).filter(k => selected[k]);
     if (ids.length === 0) return;
-    if (ids.includes(user?.user_id)) {
+    if (user?.user_id && ids.includes(user.user_id)) {
       Alert.alert('Action Denied', 'You cannot delete your own logged-in account in a bulk action.');
       return;
     }
@@ -759,7 +759,7 @@ export default function UserManagementScreen() {
                   style={styles.selectEmployeeBanner}
                 >
                   <View style={styles.selectEmployeeIconWrap}>
-                    <Ionicons name="person-search" size={20} color="#FFF" />
+                    <Ionicons name="search" size={20} color="#FFF" />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.selectEmployeeBannerTitle}>
@@ -852,7 +852,7 @@ export default function UserManagementScreen() {
               <FormInput label="Full Name *" value={form.name} onChangeText={t => setForm(p => ({ ...p, name: t }))} placeholder="Employee / User Full Name" />
               <FormInput label="Email ID *" value={form.email} onChangeText={t => setForm(p => ({ ...p, email: t }))} keyboardType="email-address" placeholder="user@triveni.com" />
               <FormInput label="Username / User ID" value={form.username} onChangeText={t => setForm(p => ({ ...p, username: t }))} placeholder="Unique username or user ID (optional)" />
-              <FormInput label={form.user_id ? "Change Password (optional)" : "Password *"} value={form.password} onChangeText={t => setForm(p => ({ ...p, password: t }))} secureTextEntry placeholder="••••••••" />
+              <FormInput label={form.user_id ? "Change Password (optional)" : "Password *"} value={form.password || ''} onChangeText={t => setForm(p => ({ ...p, password: t }))} secureTextEntry placeholder="••••••••" />
               <FormInput label="Mobile Number" value={form.mobile} onChangeText={t => setForm(p => ({ ...p, mobile: t }))} keyboardType="phone-pad" placeholder="10-digit mobile" />
               <FormInput label="Address" value={form.address} onChangeText={t => setForm(p => ({ ...p, address: t }))} placeholder="Residential address" />
 

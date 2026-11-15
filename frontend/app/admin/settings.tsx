@@ -26,9 +26,9 @@ export default function SystemSettingsScreen() {
   const triggerBackup = async () => {
     setBackupBusy(true);
     try {
-      const res = await api.post('/system/backup', {});
+      const res = (await api.post('/system/backup', {})) as any;
       setLastBackup(res);
-      Alert.alert('Backup Complete', `Database snapshot saved (${res.total_records} records across ${Object.keys(res.collection_counts).length} collections).`);
+      Alert.alert('Backup Complete', `Database snapshot saved (${res?.total_records ?? 0} records across ${Object.keys(res?.collection_counts || {}).length} collections).`);
     } catch (e: any) {
       Alert.alert('Backup Failed', e?.message || 'Failed to generate snapshot');
     } finally {
