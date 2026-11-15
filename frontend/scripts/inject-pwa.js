@@ -29,3 +29,15 @@ if (fs.existsSync(indexPath)) {
     console.log('Successfully injected iOS Safari PWA tags into dist/index.html');
   }
 }
+
+// Copy APK from repo root into dist directory for direct downloads
+const rootApkPath = path.join(__dirname, '..', '..', 'TDSC-Office-Manager.apk');
+const distApkPath = path.join(__dirname, '..', 'dist', 'TDSC-Office-Manager.apk');
+if (fs.existsSync(rootApkPath)) {
+  try {
+    fs.copyFileSync(rootApkPath, distApkPath);
+    console.log('Successfully copied TDSC-Office-Manager.apk to dist directory');
+  } catch (err) {
+    console.warn('Could not copy APK to dist:', err.message);
+  }
+}
