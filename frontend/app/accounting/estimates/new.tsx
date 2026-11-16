@@ -37,9 +37,22 @@ export default function NewEstimate() {
   const [saving, setSaving] = useState(false);
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [estimateNo, setEstimateNo] = useState('');
+  const [isManual, setIsManual] = useState(false);
 
   useEffect(() => {
-    if (!editId) return;
+    if (!editId) {
+      (async () => {
+        try {
+          const nextRes = await api.get<any>('/accounting/estimates/next-no');
+          if (nextRes) {
+            if (nextRes.date_start_from) setDate(nextRes.date_start_from);
+            if (nextRes.voucher_mode) setIsManual(nextRes.voucher_mode === 'manual');
+            if (nextRes.next_no) setEstimateNo(nextRes.voucher_mode === 'manual' ? nextRes.next_no : `${nextRes.next_no} (preview)`);
+          }
+        } catch {}
+      })();
+      return;
+    }
     (async () => {
       setLoadingExisting(true);
       try {
@@ -150,6 +163,7 @@ export default function NewEstimate() {
     setSaving(true);
     try {
       const payload = {
+        estimate_no: isManual && estimateNo && !estimateNo.includes('preview') ? estimateNo.trim() : undefined,
         date,
         customer_id: party.id,
         items: items.map(it => ({
@@ -193,6 +207,17 @@ export default function NewEstimate() {
         {/* Basic Meta */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Customer & Date</Text>
+          <View style={{ marginTop: spacing.sm }}>
+            <Text style={styles.lbl}>{isManual ? "Quotation No. (Manual Entry)" : "Quotation No. (Auto)"}</Text>
+            <TextInput
+              style={[styles.input, !isManual && { backgroundColor: '#F1F5F9', color: '#64748B' }]}
+              value={estimateNo}
+              onChangeText={isManual ? setEstimateNo : undefined}
+              editable={isManual}
+              placeholder="e.g. TDSC-EST/2026-27/0001"
+            />
+          </View>
+
           <View style={{ marginTop: spacing.sm }}>
             <Text style={styles.lbl}>Quotation Date</Text>
             <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" />

@@ -2493,54 +2493,158 @@ def get_indian_financial_year(date_str: Optional[str] = None) -> str:
     return f"{start_yr}-{end_yr:02d}"
 
 
+VOUCHERS_CONFIG_REGISTRY = {
+    "sale_invoice": {
+        "title": "Sale Invoice",
+        "default_prefix": "TDSC",
+        "format": "{prefix}/{fy}/{seq:06d}",
+        "counter": "sale_invoice_{fy}",
+        "digits": 6,
+        "fy_scoped": True,
+    },
+    "payment_in": {
+        "title": "Payment-In",
+        "default_prefix": "PAYIN",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "payment_in_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
+    "sale_return": {
+        "title": "Sale Return / Credit Note",
+        "default_prefix": "CN",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "sale_return_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
+    "estimate": {
+        "title": "Estimate / Quotation",
+        "default_prefix": "TDSC-EST",
+        "format": "{prefix}/{fy}/{seq:04d}",
+        "counter": "estimate_{fy}",
+        "digits": 4,
+        "fy_scoped": True,
+    },
+    "proforma": {
+        "title": "Proforma Invoice",
+        "default_prefix": "TDSC-PI",
+        "format": "{prefix}/{fy}/{seq:04d}",
+        "counter": "proforma_{fy}",
+        "digits": 4,
+        "fy_scoped": True,
+    },
+    "sale_order": {
+        "title": "Sale Order",
+        "default_prefix": "TDSC-SO",
+        "format": "{prefix}/{fy}/{seq:04d}",
+        "counter": "sale_order_{fy}",
+        "digits": 4,
+        "fy_scoped": True,
+    },
+    "delivery_challan": {
+        "title": "Delivery Challan",
+        "default_prefix": "TDSC-DC",
+        "format": "{prefix}/{fy}/{seq:04d}",
+        "counter": "challan_{fy}",
+        "digits": 4,
+        "fy_scoped": True,
+    },
+    "mobile_pos": {
+        "title": "Mobile POS",
+        "default_prefix": "POS",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "pos_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
+    "new_expense_approval": {
+        "title": "New Expense Approval",
+        "default_prefix": "EXP-APP",
+        "format": "{prefix}-{year}-{seq:04d}",
+        "counter": "expense_req_{year}",
+        "digits": 4,
+        "fy_scoped": True,
+    },
+    "expense_approval": {
+        "title": "Expense Approval",
+        "default_prefix": "EXP-APP",
+        "format": "{prefix}/{fy}/{seq:04d}",
+        "counter": "expense_app_{fy}",
+        "digits": 4,
+        "fy_scoped": True,
+    },
+}
+
+
 class SaleInvoiceSettingsInput(BaseModel):
+    voucher_type: Optional[str] = "sale_invoice"
     voucher_mode: str = "auto"  # "auto" or "manual"
     start_seq: int = 1
     date_start_from: Optional[str] = None
-    prefix: str = "TDSC"
+    prefix: Optional[str] = None
     reset_counter_now: Optional[bool] = False
 
 
-async def _get_sale_invoice_settings() -> dict:
-    doc = await db.app_settings.find_one({"_id": "sale_invoice_settings"}, {"_id": 0})
+async def _get_voucher_settings(voucher_type: str) -> dict:
+    reg = VOUCHERS_CONFIG_REGISTRY.get(voucher_type) or VOUCHERS_CONFIG_REGISTRY["sale_invoice"]
+    doc = await db.app_settings.find_one({"_id": f"voucher_settings_{voucher_type}"}, {"_id": 0})
+    if not doc and voucher_type == "sale_invoice":
+        doc = await db.app_settings.find_one({"_id": "sale_invoice_settings"}, {"_id": 0})
     if not doc:
         return {
+            "voucher_type": voucher_type,
+            "title": reg["title"],
             "voucher_mode": "auto",
             "start_seq": 1,
             "date_start_from": None,
-            "prefix": "TDSC",
+            "prefix": reg["default_prefix"],
         }
-    return doc
+    return {
+        "voucher_type": voucher_type,
+        "title": reg["title"],
+        "voucher_mode": doc.get("voucher_mode", "auto"),
+        "start_seq": int(doc.get("start_seq") or 1),
+        "date_start_from": doc.get("date_start_from"),
+        "prefix": doc.get("prefix") or reg["default_prefix"],
+    }
 
 
-async def _next_sale_invoice_no(date_str: Optional[str] = None) -> str:
-    """
-    Generate auto Sale Invoice number:
-    e.g. 'TDSC/2026-27/000001' (starts from 1 or admin-configured start_seq)
-    """
-    settings = await _get_sale_invoice_settings()
-    prefix = settings.get("prefix") or "TDSC"
-    start_seq = max(1, int(settings.get("start_seq") or 1))
+def _extract_year(date_str: Optional[str]) -> str:
+    if not date_str:
+        return str(datetime.now().year)
+    s = str(date_str).strip()
+    if len(s) >= 4 and s[:4].isdigit():
+        return s[:4]
+    if len(s) >= 4 and s[-4:].isdigit():
+        return s[-4:]
+    return str(datetime.now().year)
 
+
+def _build_voucher_counter_key(voucher_type: str, date_str: Optional[str] = None) -> str:
+    reg = VOUCHERS_CONFIG_REGISTRY.get(voucher_type) or VOUCHERS_CONFIG_REGISTRY["sale_invoice"]
     fy = get_indian_financial_year(date_str)
-    counter_key = f"sale_invoice_{fy}"
+    year = _extract_year(date_str)
+    return reg["counter"].format(fy=fy, year=year)
+
+
+def _format_voucher_code(voucher_type: str, prefix: str, seq: int, date_str: Optional[str] = None) -> str:
+    reg = VOUCHERS_CONFIG_REGISTRY.get(voucher_type) or VOUCHERS_CONFIG_REGISTRY["sale_invoice"]
+    fy = get_indian_financial_year(date_str)
+    year = _extract_year(date_str)
+    return reg["format"].format(prefix=prefix, fy=fy, year=year, seq=seq)
+
+
+async def _next_voucher_no(voucher_type: str, date_str: Optional[str] = None) -> str:
+    settings = await _get_voucher_settings(voucher_type)
+    prefix = settings.get("prefix") or VOUCHERS_CONFIG_REGISTRY.get(voucher_type, {}).get("default_prefix", "TDSC")
+    start_seq = max(1, int(settings.get("start_seq") or 1))
+    counter_key = _build_voucher_counter_key(voucher_type, date_str)
+
     counter = await db.counters.find_one({"_id": counter_key})
     if counter is None:
-        last_inv = await db.invoices.find_one(
-            {"invoice_type": "sale", "invoice_no": {"$regex": f"^{re.escape(prefix)}/{re.escape(fy)}/\\d+$"}},
-            sort=[("invoice_no", -1)]
-        )
-        if last_inv and last_inv.get("invoice_no"):
-            m = re.match(r"^" + re.escape(prefix) + r"/" + re.escape(fy) + r"/(\d+)$", last_inv["invoice_no"])
-            base_seq = int(m.group(1)) if m else (start_seq - 1)
-        else:
-            base_seq = start_seq - 1
-
-        await db.counters.update_one(
-            {"_id": counter_key},
-            {"$set": {"seq": base_seq}},
-            upsert=True
-        )
+        base_seq = start_seq - 1
+        await db.counters.update_one({"_id": counter_key}, {"$set": {"seq": base_seq}}, upsert=True)
 
     res = await db.counters.find_one_and_update(
         {"_id": counter_key},
@@ -2552,31 +2656,176 @@ async def _next_sale_invoice_no(date_str: Optional[str] = None) -> str:
     if seq < start_seq:
         seq = start_seq
         await db.counters.update_one({"_id": counter_key}, {"$set": {"seq": seq}})
-    return f"{prefix}/{fy}/{seq:06d}"
+    return _format_voucher_code(voucher_type, prefix, seq, date_str)
 
 
-async def _peek_next_sale_invoice_no(date_str: Optional[str] = None) -> str:
-    settings = await _get_sale_invoice_settings()
-    prefix = settings.get("prefix") or "TDSC"
+async def _peek_next_voucher_no(voucher_type: str, date_str: Optional[str] = None) -> str:
+    settings = await _get_voucher_settings(voucher_type)
+    prefix = settings.get("prefix") or VOUCHERS_CONFIG_REGISTRY.get(voucher_type, {}).get("default_prefix", "TDSC")
     start_seq = max(1, int(settings.get("start_seq") or 1))
+    counter_key = _build_voucher_counter_key(voucher_type, date_str)
 
-    fy = get_indian_financial_year(date_str)
-    counter_key = f"sale_invoice_{fy}"
     counter = await db.counters.find_one({"_id": counter_key})
     if counter is None:
-        last_inv = await db.invoices.find_one(
-            {"invoice_type": "sale", "invoice_no": {"$regex": f"^{re.escape(prefix)}/{re.escape(fy)}/\\d+$"}},
-            sort=[("invoice_no", -1)]
-        )
-        if last_inv and last_inv.get("invoice_no"):
-            m = re.match(r"^" + re.escape(prefix) + r"/" + re.escape(fy) + r"/(\d+)$", last_inv["invoice_no"])
-            seq = (int(m.group(1)) if m else start_seq) + 1
-        else:
-            seq = start_seq
+        seq = start_seq
     else:
         current_seq = int(counter.get("seq") or 0)
         seq = max(current_seq + 1, start_seq)
-    return f"{prefix}/{fy}/{seq:06d}"
+    return _format_voucher_code(voucher_type, prefix, seq, date_str)
+
+
+async def _get_sale_invoice_settings() -> dict:
+    return await _get_voucher_settings("sale_invoice")
+
+
+async def _next_sale_invoice_no(date_str: Optional[str] = None) -> str:
+    return await _next_voucher_no("sale_invoice", date_str)
+
+
+async def _peek_next_sale_invoice_no(date_str: Optional[str] = None) -> str:
+    return await _peek_next_voucher_no("sale_invoice", date_str)
+
+
+
+@api_router.get("/settings/vouchers")
+async def get_all_voucher_settings_api(current: User = Depends(get_current_user)):
+    """Get settings, preview numbers, and current sequences for all 10 voucher types."""
+    result = []
+    for v_key, reg in VOUCHERS_CONFIG_REGISTRY.items():
+        s = await _get_voucher_settings(v_key)
+        effective_date = s.get("date_start_from")
+        counter_key = _build_voucher_counter_key(v_key, effective_date)
+        counter_doc = await db.counters.find_one({"_id": counter_key})
+        curr_seq = (counter_doc or {}).get("seq", 0)
+        next_no = await _peek_next_voucher_no(v_key, effective_date)
+        fy = get_indian_financial_year(effective_date)
+        result.append({
+            **s,
+            "title": reg["title"],
+            "current_seq": curr_seq,
+            "next_no": next_no,
+            "financial_year": fy,
+            "counter_key": counter_key,
+        })
+    return result
+
+
+@api_router.get("/settings/voucher/{voucher_type}")
+async def get_single_voucher_setting_api(voucher_type: str, current: User = Depends(get_current_user)):
+    if voucher_type not in VOUCHERS_CONFIG_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Unknown voucher type: {voucher_type}")
+    reg = VOUCHERS_CONFIG_REGISTRY[voucher_type]
+    s = await _get_voucher_settings(voucher_type)
+    effective_date = s.get("date_start_from")
+    counter_key = _build_voucher_counter_key(voucher_type, effective_date)
+    counter_doc = await db.counters.find_one({"_id": counter_key})
+    curr_seq = (counter_doc or {}).get("seq", 0)
+    next_no = await _peek_next_voucher_no(voucher_type, effective_date)
+    fy = get_indian_financial_year(effective_date)
+    return {
+        **s,
+        "title": reg["title"],
+        "current_seq": curr_seq,
+        "next_no": next_no,
+        "financial_year": fy,
+        "counter_key": counter_key,
+    }
+
+
+@api_router.put("/settings/voucher/{voucher_type}")
+async def update_single_voucher_setting_api(
+    voucher_type: str,
+    payload: SaleInvoiceSettingsInput,
+    current: User = Depends(require_admin)
+):
+    if voucher_type not in VOUCHERS_CONFIG_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Unknown voucher type: {voucher_type}")
+    reg = VOUCHERS_CONFIG_REGISTRY[voucher_type]
+    start_seq = max(1, int(payload.start_seq or 1))
+    clean_date = payload.date_start_from.strip() if payload.date_start_from else None
+    clean_prefix = (payload.prefix or reg["default_prefix"]).strip().upper()
+
+    doc = {
+        "voucher_type": voucher_type,
+        "voucher_mode": "manual" if payload.voucher_mode == "manual" else "auto",
+        "start_seq": start_seq,
+        "date_start_from": clean_date,
+        "prefix": clean_prefix,
+        "updated_at": now_utc().isoformat(),
+        "updated_by": current.user_id,
+    }
+
+    await db.app_settings.update_one(
+        {"_id": f"voucher_settings_{voucher_type}"},
+        {"$set": doc},
+        upsert=True
+    )
+    if voucher_type == "sale_invoice":
+        await db.app_settings.update_one(
+            {"_id": "sale_invoice_settings"},
+            {"$set": doc},
+            upsert=True
+        )
+
+    counter_key = _build_voucher_counter_key(voucher_type, clean_date)
+    if payload.reset_counter_now:
+        reset_val = max(0, start_seq - 1)
+        await db.counters.update_one(
+            {"_id": counter_key},
+            {"$set": {"seq": reset_val}},
+            upsert=True
+        )
+
+    counter_doc = await db.counters.find_one({"_id": counter_key})
+    curr_seq = (counter_doc or {}).get("seq", 0)
+    next_no = await _peek_next_voucher_no(voucher_type, clean_date)
+    fy = get_indian_financial_year(clean_date)
+
+    return {
+        **doc,
+        "title": reg["title"],
+        "current_seq": curr_seq,
+        "next_no": next_no,
+        "financial_year": fy,
+        "counter_key": counter_key,
+        "message": f"{reg['title']} voucher settings updated successfully",
+    }
+
+
+@api_router.get("/settings/sale-invoice")
+async def get_sale_invoice_settings_api(current: User = Depends(get_current_user)):
+    return await get_single_voucher_setting_api("sale_invoice", current)
+
+
+@api_router.put("/settings/sale-invoice")
+async def update_sale_invoice_settings_api(
+    payload: SaleInvoiceSettingsInput,
+    current: User = Depends(require_admin)
+):
+    return await update_single_voucher_setting_api("sale_invoice", payload, current)
+
+
+@api_router.get("/vouchers/next-no")
+async def get_generic_voucher_next_no(
+    voucher_type: str = Query("sale_invoice"),
+    date: Optional[str] = Query(None),
+    current: User = Depends(get_current_user)
+):
+    if voucher_type not in VOUCHERS_CONFIG_REGISTRY:
+        raise HTTPException(status_code=404, detail="Unknown voucher type")
+    s = await _get_voucher_settings(voucher_type)
+    effective_date = date or s.get("date_start_from")
+    next_no = await _peek_next_voucher_no(voucher_type, effective_date)
+    fy = get_indian_financial_year(effective_date)
+    return {
+        "voucher_type": voucher_type,
+        "next_no": next_no,
+        "voucher_mode": s.get("voucher_mode", "auto"),
+        "start_seq": s.get("start_seq", 1),
+        "date_start_from": s.get("date_start_from"),
+        "prefix": s.get("prefix"),
+        "financial_year": fy,
+    }
 
 
 @api_router.get("/invoices/next-no")
@@ -2586,23 +2835,43 @@ async def get_next_invoice_no(
     current: User = Depends(get_current_user)
 ):
     if invoice_type == "sale":
-        settings = await _get_sale_invoice_settings()
-        effective_date = date or settings.get("date_start_from")
-        next_no = await _peek_next_sale_invoice_no(effective_date)
+        s = await _get_voucher_settings("sale_invoice")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("sale_invoice", effective_date)
         fy = get_indian_financial_year(effective_date)
         return {
             "next_no": next_no,
             "invoice_type": "sale",
             "financial_year": fy,
-            "voucher_mode": settings.get("voucher_mode", "auto"),
-            "start_seq": settings.get("start_seq", 1),
-            "date_start_from": settings.get("date_start_from"),
-            "prefix": settings.get("prefix", "TDSC"),
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "start_seq": s.get("start_seq", 1),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "TDSC"),
         }
     elif invoice_type == "sale_return":
-        counter = await db.counters.find_one({"_id": "sale_return_no"})
-        seq = ((counter or {}).get("seq") or 0) + 1
-        return {"next_no": f"CN-{seq:04d}", "invoice_type": "sale_return"}
+        s = await _get_voucher_settings("sale_return")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("sale_return", effective_date)
+        return {
+            "next_no": next_no,
+            "invoice_type": "sale_return",
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "start_seq": s.get("start_seq", 1),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "CN"),
+        }
+    elif invoice_type in ["pos", "mobile_pos"]:
+        s = await _get_voucher_settings("mobile_pos")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("mobile_pos", effective_date)
+        return {
+            "next_no": next_no,
+            "invoice_type": "pos",
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "start_seq": s.get("start_seq", 1),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "POS"),
+        }
     elif invoice_type == "purchase_return":
         counter = await db.counters.find_one({"_id": "purchase_return_no"})
         seq = ((counter or {}).get("seq") or 0) + 1
@@ -2613,82 +2882,42 @@ async def get_next_invoice_no(
         return {"next_no": f"PB-{seq:04d}", "invoice_type": "purchase"}
 
 
-@api_router.get("/settings/sale-invoice")
-async def get_sale_invoice_settings_api(current: User = Depends(get_current_user)):
-    """Get Sale Invoice voucher numbering and start date settings."""
-    settings = await _get_sale_invoice_settings()
-    fy = get_indian_financial_year(settings.get("date_start_from"))
-    counter_doc = await db.counters.find_one({"_id": f"sale_invoice_{fy}"})
-    current_seq = (counter_doc or {}).get("seq", 0)
-    next_no = await _peek_next_sale_invoice_no(settings.get("date_start_from"))
-    return {
-        **settings,
-        "current_seq": current_seq,
-        "next_no": next_no,
-        "financial_year": fy,
-    }
-
-
-@api_router.put("/settings/sale-invoice")
-async def update_sale_invoice_settings_api(
-    payload: SaleInvoiceSettingsInput,
-    current: User = Depends(require_admin)
-):
-    """Update Sale Invoice voucher numbering mode, start sequence, and date start from."""
-    start_seq = max(1, int(payload.start_seq or 1))
-    clean_date = payload.date_start_from.strip() if payload.date_start_from else None
-    clean_prefix = (payload.prefix or "TDSC").strip().upper()
-    doc = {
-        "voucher_mode": "manual" if payload.voucher_mode == "manual" else "auto",
-        "start_seq": start_seq,
-        "date_start_from": clean_date,
-        "prefix": clean_prefix,
-        "updated_at": now_utc().isoformat(),
-        "updated_by": current.user_id,
-    }
-    await db.app_settings.update_one(
-        {"_id": "sale_invoice_settings"},
-        {"$set": doc},
-        upsert=True
-    )
-
-    fy = get_indian_financial_year(clean_date)
-    counter_key = f"sale_invoice_{fy}"
-    if payload.reset_counter_now:
-        new_seq = max(0, start_seq - 1)
-        await db.counters.update_one({"_id": counter_key}, {"$set": {"seq": new_seq}}, upsert=True)
-
-    next_no = await _peek_next_sale_invoice_no(clean_date)
-    return {
-        "message": "Sale Invoice settings updated successfully",
-        **doc,
-        "next_no": next_no,
-        "financial_year": fy,
-    }
-
-
 
 @api_router.get("/income/next-no")
-async def get_next_payment_in_no(current: User = Depends(get_current_user)):
-    next_no = await _peek_next_no("payment_in_no", "PAYIN")
-    return {"next_no": next_no}
+async def get_next_payment_in_no(
+    date: Optional[str] = Query(None),
+    current: User = Depends(get_current_user)
+):
+    s = await _get_voucher_settings("payment_in")
+    effective_date = date or s.get("date_start_from")
+    next_no = await _peek_next_voucher_no("payment_in", effective_date)
+    return {
+        "next_no": next_no,
+        "voucher_mode": s.get("voucher_mode", "auto"),
+        "start_seq": s.get("start_seq", 1),
+        "date_start_from": s.get("date_start_from"),
+        "prefix": s.get("prefix", "PAYIN"),
+    }
 
 
 @api_router.post("/income", response_model=Income)
 async def create_income(payload: IncomeInput, current: User = Depends(get_current_user)):
+    settings = await _get_voucher_settings("payment_in")
     no = (payload.voucher_no or "").strip()
     if not no or "preview" in no.lower() or no == "PAYIN-0000":
-        no = await _next_no("payment_in_no", "PAYIN")
-    elif no.startswith("PAYIN-"):
-        try:
-            val = int(no.split("-")[1])
-            await db.counters.update_one(
-                {"_id": "payment_in_no"},
-                {"$max": {"seq": val}},
-                upsert=True
-            )
-        except Exception:
-            pass
+        no = await _next_voucher_no("payment_in", payload.date)
+    else:
+        prefix = settings.get("prefix") or "PAYIN"
+        if no.startswith(f"{prefix}-"):
+            try:
+                val = int(no.split("-")[1])
+                await db.counters.update_one(
+                    {"_id": "payment_in_no"},
+                    {"$max": {"seq": val}},
+                    upsert=True
+                )
+            except Exception:
+                pass
 
     inc_dict = payload.dict()
     inc_dict.pop("voucher_no", None)

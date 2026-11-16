@@ -37,9 +37,22 @@ export default function NewProforma() {
   const [saving, setSaving] = useState(false);
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [proformaNo, setProformaNo] = useState('');
+  const [isManual, setIsManual] = useState(false);
 
   useEffect(() => {
-    if (!editId) return;
+    if (!editId) {
+      (async () => {
+        try {
+          const nextRes = await api.get<any>('/accounting/proforma/next-no');
+          if (nextRes) {
+            if (nextRes.date_start_from) setDate(nextRes.date_start_from);
+            if (nextRes.voucher_mode) setIsManual(nextRes.voucher_mode === 'manual');
+            if (nextRes.next_no) setProformaNo(nextRes.voucher_mode === 'manual' ? nextRes.next_no : `${nextRes.next_no} (preview)`);
+          }
+        } catch {}
+      })();
+      return;
+    }
     (async () => {
       setLoadingExisting(true);
       try {
@@ -143,6 +156,7 @@ export default function NewProforma() {
     setSaving(true);
     try {
       const payload = {
+        proforma_no: isManual && proformaNo && !proformaNo.includes('preview') ? proformaNo.trim() : undefined,
         date,
         customer_id: party.id,
         items: items.map(it => ({
@@ -185,6 +199,17 @@ export default function NewProforma() {
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Client & Date</Text>
+          <View style={{ marginTop: spacing.sm }}>
+            <Text style={styles.lbl}>{isManual ? "Proforma No. (Manual Entry)" : "Proforma No. (Auto)"}</Text>
+            <TextInput
+              style={[styles.input, !isManual && { backgroundColor: '#F1F5F9', color: '#64748B' }]}
+              value={proformaNo}
+              onChangeText={isManual ? setProformaNo : undefined}
+              editable={isManual}
+              placeholder="e.g. TDSC-PI/2026-27/0001"
+            />
+          </View>
+
           <View style={{ marginTop: spacing.sm }}>
             <Text style={styles.lbl}>Proforma Date</Text>
             <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" />

@@ -68,13 +68,24 @@ export default function NewExpenseApprovalScreen() {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [voucherNo, setVoucherNo] = useState<string>('');
+  const [voucherDate, setVoucherDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [isManual, setIsManual] = useState(false);
 
-  // Load customer directory on mount
+  // Load customer directory & voucher settings on mount
   useEffect(() => {
     (async () => {
       try {
-        const custs = await api.get<any[]>('/customers');
+        const [custs, nextRes] = await Promise.all([
+          api.get<any[]>('/customers').catch(() => []),
+          api.get<any>('/expense-approvals/next-no').catch(() => null),
+        ]);
         if (Array.isArray(custs)) setCustomers(custs);
+        if (nextRes) {
+          if (nextRes.date_start_from) setVoucherDate(nextRes.date_start_from);
+          if (nextRes.voucher_mode) setIsManual(nextRes.voucher_mode === 'manual');
+          if (nextRes.next_no) setVoucherNo(nextRes.next_no);
+        }
       } catch {}
     })();
   }, []);
@@ -247,6 +258,8 @@ export default function NewExpenseApprovalScreen() {
     setSubmitting(true);
     try {
       const payload = {
+        voucher_no: isManual && voucherNo && !voucherNo.includes('preview') ? voucherNo.trim() : undefined,
+        voucher_date: voucherDate,
         customer_id: selectedCustomer.id,
         customer_name: selectedCustomer.name,
         customer_code: selectedCustomer.customer_code,

@@ -1,106 +1,171 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert, TextInput, Platform } from 'react-native';
+import React, { useState, useCallback, useMemo } from 'react';
+import { View, Text, StyleSheet, ScrollView, Alert, Pressable, TextInput } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
-import { api } from '@/src/api';
-import { Card, ScreenLoader, PrimaryButton } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
+import { Card, PrimaryButton, ScreenLoader } from '@/src/ui';
+import { api } from '@/src/api';
 
-export default function SystemSettingsScreen() {
-  const [stats, setStats] = useState<any | null>(null);
+export const VOUCHER_CONFIG_TABS = [
+  { key: 'sale_invoice', label: 'Sale Invoice', icon: 'receipt-outline', defaultPrefix: 'TDSC', digits: 6, hasFy: true, desc: 'Sale Invoice voucher auto-numbering and starting date' },
+  { key: 'payment_in', label: 'Payment-In', icon: 'arrow-down-circle-outline', defaultPrefix: 'PAYIN', digits: 4, hasFy: false, desc: 'Payment received voucher auto-numbering and starting date' },
+  { key: 'sale_return', label: 'Sale Return / Credit Note', icon: 'return-down-back-outline', defaultPrefix: 'CN', digits: 4, hasFy: false, desc: 'Credit Note / Sale Return voucher numbering and starting date' },
+  { key: 'estimate', label: 'Estimate / Quotation', icon: 'clipboard-outline', defaultPrefix: 'TDSC-EST', digits: 4, hasFy: true, desc: 'Estimate and Quotation voucher numbering and starting date' },
+  { key: 'proforma', label: 'Proforma Invoice', icon: 'document-text-outline', defaultPrefix: 'TDSC-PI', digits: 4, hasFy: true, desc: 'Proforma Invoice voucher numbering and starting date' },
+  { key: 'sale_order', label: 'Sale Order', icon: 'cart-outline', defaultPrefix: 'TDSC-SO', digits: 4, hasFy: true, desc: 'Sale Order voucher numbering and starting date' },
+  { key: 'delivery_challan', label: 'Delivery Challan', icon: 'car-outline', defaultPrefix: 'TDSC-DC', digits: 4, hasFy: true, desc: 'Delivery Challan voucher numbering and starting date' },
+  { key: 'mobile_pos', label: 'Mobile POS', icon: 'phone-portrait-outline', defaultPrefix: 'POS', digits: 4, hasFy: false, desc: 'Counter / Mobile POS sale voucher numbering and starting date' },
+  { key: 'new_expense_approval', label: 'New Expense Approval', icon: 'add-circle-outline', defaultPrefix: 'EXP-APP', digits: 4, hasFy: true, desc: 'Expense booking request voucher numbering and starting date' },
+  { key: 'expense_approval', label: 'Expense Approval', icon: 'checkmark-done-circle-outline', defaultPrefix: 'EXP-APP', digits: 4, hasFy: true, desc: 'Final approved expense order voucher numbering and starting date' },
+] as const;
+
+export type VoucherConfigItem = {
+  voucher_type: string;
+  title: string;
+  voucher_mode: 'auto' | 'manual';
+  start_seq: string;
+  date_start_from: string;
+  prefix: string;
+  next_no: string;
+  current_seq: number;
+  financial_year?: string;
+};
+
+export default function SettingsScreen() {
+  const [stats, setStats] = useState<any>(null);
   const [backupBusy, setBackupBusy] = useState(false);
-  const [lastBackup, setLastBackup] = useState<any | null>(null);
+  const [lastBackup, setLastBackup] = useState<any>(null);
 
-  // Sale Invoice Voucher Numbering & Date Settings
-  const [invSettings, setInvSettings] = useState<{
-    voucher_mode: 'auto' | 'manual';
-    start_seq: string;
-    date_start_from: string;
-    prefix: string;
-    next_no: string;
-    current_seq: number;
-    financial_year: string;
-  }>({
-    voucher_mode: 'auto',
-    start_seq: '1',
-    date_start_from: '',
-    prefix: 'TDSC',
-    next_no: 'TDSC/2026-27/000001',
-    current_seq: 0,
-    financial_year: '2026-27',
-  });
-  const [savingInvSettings, setSavingInvSettings] = useState(false);
+  // Active Voucher Configuration Hub State
+  const [activeTabKey, setActiveTabKey] = useState<string>('sale_invoice');
+  const [vouchersMap, setVouchersMap] = useState<Record<string, VoucherConfigItem>>({});
+  const [savingVoucher, setSavingVoucher] = useState(false);
+
+  const activeTabMeta = useMemo(() => {
+    return VOUCHER_CONFIG_TABS.find(t => t.key === activeTabKey) || VOUCHER_CONFIG_TABS[0];
+  }, [activeTabKey]);
+
+  const activeVoucherConfig = useMemo(() => {
+    return vouchersMap[activeTabKey] || {
+      voucher_type: activeTabKey,
+      title: activeTabMeta.label,
+      voucher_mode: 'auto',
+      start_seq: '1',
+      date_start_from: '',
+      prefix: activeTabMeta.defaultPrefix,
+      next_no: `${activeTabMeta.defaultPrefix}-0001`,
+      current_seq: 0,
+      financial_year: '2026-27',
+    };
+  }, [vouchersMap, activeTabKey, activeTabMeta]);
+
+  const updateActiveField = (field: keyof VoucherConfigItem, val: any) => {
+    setVouchersMap(prev => ({
+      ...prev,
+      [activeTabKey]: {
+        ...activeVoucherConfig,
+        [field]: val,
+      }
+    }));
+  };
 
   const load = useCallback(async () => {
     try {
-      const [s, invConf] = await Promise.all([
+      const [s, vList] = await Promise.all([
         api.getSystemStats(),
-        api.get<any>('/settings/sale-invoice').catch(() => null),
+        api.get<any[]>('/settings/vouchers').catch(() => []),
       ]);
       setStats(s);
-      if (invConf) {
-        setInvSettings({
-          voucher_mode: invConf.voucher_mode === 'manual' ? 'manual' : 'auto',
-          start_seq: String(invConf.start_seq || 1),
-          date_start_from: invConf.date_start_from || '',
-          prefix: invConf.prefix || 'TDSC',
-          next_no: invConf.next_no || 'TDSC/2026-27/000001',
-          current_seq: invConf.current_seq || 0,
-          financial_year: invConf.financial_year || '2026-27',
+
+      const map: Record<string, VoucherConfigItem> = {};
+      if (Array.isArray(vList) && vList.length > 0) {
+        vList.forEach((item: any) => {
+          if (item?.voucher_type) {
+            map[item.voucher_type] = {
+              voucher_type: item.voucher_type,
+              title: item.title || item.voucher_type,
+              voucher_mode: item.voucher_mode === 'manual' ? 'manual' : 'auto',
+              start_seq: String(item.start_seq || 1),
+              date_start_from: item.date_start_from || '',
+              prefix: item.prefix || '',
+              next_no: item.next_no || '',
+              current_seq: item.current_seq || 0,
+              financial_year: item.financial_year || '2026-27',
+            };
+          }
         });
       }
+      // Fill defaults for any missing tab
+      VOUCHER_CONFIG_TABS.forEach(t => {
+        if (!map[t.key]) {
+          map[t.key] = {
+            voucher_type: t.key,
+            title: t.label,
+            voucher_mode: 'auto',
+            start_seq: '1',
+            date_start_from: '',
+            prefix: t.defaultPrefix,
+            next_no: `${t.defaultPrefix}-0001`,
+            current_seq: 0,
+            financial_year: '2026-27',
+          };
+        }
+      });
+      setVouchersMap(map);
     } catch {
       setStats(null);
     }
   }, []);
 
-  const handleSaveInvoiceSettings = async (resetCounter = false) => {
-    setSavingInvSettings(true);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const handleSaveVoucherSettings = async (resetCounter = false) => {
+    setSavingVoucher(true);
     try {
       const payload = {
-        voucher_mode: invSettings.voucher_mode,
-        start_seq: parseInt(invSettings.start_seq) || 1,
-        date_start_from: invSettings.date_start_from.trim() || null,
-        prefix: invSettings.prefix.trim().toUpperCase() || 'TDSC',
+        voucher_type: activeTabKey,
+        voucher_mode: activeVoucherConfig.voucher_mode,
+        start_seq: parseInt(activeVoucherConfig.start_seq) || 1,
+        date_start_from: activeVoucherConfig.date_start_from.trim() || null,
+        prefix: activeVoucherConfig.prefix.trim().toUpperCase() || activeTabMeta.defaultPrefix,
         reset_counter_now: resetCounter,
       };
-      const res = await api.put<any>('/settings/sale-invoice', payload);
-      setInvSettings(prev => ({
+      const res = await api.put<any>(`/settings/voucher/${activeTabKey}`, payload);
+      setVouchersMap(prev => ({
         ...prev,
-        voucher_mode: res.voucher_mode,
-        start_seq: String(res.start_seq),
-        date_start_from: res.date_start_from || '',
-        prefix: res.prefix,
-        next_no: res.next_no,
-        current_seq: resetCounter ? Math.max(0, parseInt(invSettings.start_seq) - 1) : prev.current_seq,
+        [activeTabKey]: {
+          ...activeVoucherConfig,
+          voucher_mode: res.voucher_mode,
+          start_seq: String(res.start_seq),
+          date_start_from: res.date_start_from || '',
+          prefix: res.prefix,
+          next_no: res.next_no,
+          current_seq: resetCounter ? Math.max(0, parseInt(activeVoucherConfig.start_seq) - 1) : res.current_seq,
+        }
       }));
       Alert.alert(
         'Settings Saved',
-        `Sale Invoice settings saved successfully!
-Next Voucher: ${res.next_no}` +
-        (res.date_start_from ? `
-Start Date: ${res.date_start_from}` : '')
+        `${activeTabMeta.label} settings saved successfully!\nNext Voucher: ${res.next_no}` +
+        (res.date_start_from ? `\nStart Date: ${res.date_start_from}` : '')
       );
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to update voucher settings');
     } finally {
-      setSavingInvSettings(false);
+      setSavingVoucher(false);
     }
   };
 
   const handleResetSequenceConfirm = () => {
     Alert.alert(
       'Reset Voucher Number Sequence?',
-      `Are you sure you want to reset the voucher sequence? The next voucher will start from #${invSettings.start_seq || 1}.`,
+      `Are you sure you want to reset the sequence for "${activeTabMeta.label}"? The next voucher will start from #${activeVoucherConfig.start_seq || 1}.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Reset to Start', style: 'destructive', onPress: () => handleSaveInvoiceSettings(true) },
+        { text: 'Reset to Start', style: 'destructive', onPress: () => handleSaveVoucherSettings(true) },
       ]
     );
   };
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const triggerBackup = async () => {
     setBackupBusy(true);
@@ -115,9 +180,22 @@ Start Date: ${res.date_start_from}` : '')
     }
   };
 
+  // Live computed preview code
+  const computedPreviewNo = useMemo(() => {
+    const pfx = activeVoucherConfig.prefix || activeTabMeta.defaultPrefix;
+    const seq = parseInt(activeVoucherConfig.start_seq) || 1;
+    const fy = activeVoucherConfig.financial_year || '2026-27';
+    if (activeTabMeta.hasFy) {
+      const pad = activeTabMeta.digits === 6 ? String(seq).padStart(6, '0') : String(seq).padStart(4, '0');
+      return `${pfx}/${fy}/${pad}`;
+    } else {
+      return `${pfx}-${String(seq).padStart(4, '0')}`;
+    }
+  }, [activeVoucherConfig, activeTabMeta]);
+
   return (
     <View style={styles.container}>
-      <ScreenHeader title="System Settings & Backup" />
+      <ScreenHeader title="System Settings & Voucher Hub" />
 
       {stats === null ? (
         <ScreenLoader />
@@ -139,22 +217,63 @@ Start Date: ${res.date_start_from}` : '')
               <Text style={styles.infoVal}>2026 - 2027</Text>
             </View>
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Invoice Numbering Rule:</Text>
+              <Text style={styles.infoLabel}>Active Voucher Type:</Text>
               <Text style={styles.infoVal}>
-                {invSettings.prefix}/{invSettings.financial_year}/{String(parseInt(invSettings.start_seq) || 1).padStart(6, '0')} ({invSettings.voucher_mode === 'auto' ? 'Automatic from 1' : 'Manual / Custom'})
+                {activeTabMeta.label} ({activeVoucherConfig.voucher_mode === 'auto' ? 'Auto Start from 1' : 'Manual Entry'})
               </Text>
             </View>
           </Card>
 
-          {/* Sale Invoice Voucher Settings Card */}
+          {/* Unified Voucher Numbering & Starting Date Configuration Hub */}
           <Card>
             <View style={styles.cardHeader}>
               <View style={[styles.iconBox, { backgroundColor: '#0D948815' }]}>
-                <Ionicons name="receipt-outline" size={22} color="#0D9488" />
+                <Ionicons name="layers-outline" size={22} color="#0D9488" />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.title}>Sale Invoice Voucher Settings</Text>
-                <Text style={styles.subText}>Configure Voucher No. Auto Start from 1 / Manual & Start Date</Text>
+                <Text style={styles.title}>Voucher Numbering & Starting Date Hub</Text>
+                <Text style={styles.subText}>Configure Auto Start from 1, Manual Mode & Start Date for all 10 menus</Text>
+              </View>
+            </View>
+
+            {/* Horizontal Scrollable Tabs for all 10 Vouchers */}
+            <View style={{ marginTop: spacing.md }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabScrollRow}>
+                {VOUCHER_CONFIG_TABS.map(tab => {
+                  const isSelected = tab.key === activeTabKey;
+                  const cfg = vouchersMap[tab.key];
+                  const isManual = cfg?.voucher_mode === 'manual';
+                  return (
+                    <Pressable
+                      key={tab.key}
+                      onPress={() => setActiveTabKey(tab.key)}
+                      style={[styles.tabChip, isSelected && styles.tabChipActive]}
+                    >
+                      <Ionicons
+                        name={tab.icon as any}
+                        size={16}
+                        color={isSelected ? '#FFF' : '#475569'}
+                      />
+                      <Text style={[styles.tabChipTxt, isSelected && styles.tabChipTxtActive]}>
+                        {tab.label}
+                      </Text>
+                      <View style={[styles.chipBadge, isSelected ? styles.chipBadgeActive : (isManual ? styles.chipBadgeManual : styles.chipBadgeAuto)]}>
+                        <Text style={[styles.chipBadgeTxt, isSelected && { color: '#FFF' }]}>
+                          {isManual ? 'MAN' : 'AUTO'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+
+            {/* Active Voucher Detail Header Banner */}
+            <View style={styles.voucherSubHeader}>
+              <Ionicons name={activeTabMeta.icon as any} size={20} color="#0D9488" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.voucherSubTitle}>{activeTabMeta.label} Configuration</Text>
+                <Text style={styles.voucherSubDesc}>{activeTabMeta.desc}</Text>
               </View>
             </View>
 
@@ -163,60 +282,63 @@ Start Date: ${res.date_start_from}` : '')
               <Text style={styles.settingLabel}>1. Voucher Numbering Mode</Text>
               <View style={styles.modeToggleRow}>
                 <Pressable
-                  onPress={() => setInvSettings(p => ({ ...p, voucher_mode: 'auto', start_seq: '1' }))}
-                  style={[styles.modeToggleBtn, invSettings.voucher_mode === 'auto' && styles.modeToggleBtnActive]}
+                  onPress={() => updateActiveField('voucher_mode', 'auto')}
+                  style={[styles.modeToggleBtn, activeVoucherConfig.voucher_mode === 'auto' && styles.modeToggleBtnActive]}
                 >
                   <Ionicons
-                    name={invSettings.voucher_mode === 'auto' ? 'radio-button-on' : 'radio-button-off'}
+                    name={activeVoucherConfig.voucher_mode === 'auto' ? 'radio-button-on' : 'radio-button-off'}
                     size={18}
-                    color={invSettings.voucher_mode === 'auto' ? '#0D9488' : '#64748B'}
+                    color={activeVoucherConfig.voucher_mode === 'auto' ? '#0D9488' : '#64748B'}
                   />
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.modeToggleTxt, invSettings.voucher_mode === 'auto' && styles.modeToggleTxtActive]}>
+                    <Text style={[styles.modeToggleTxt, activeVoucherConfig.voucher_mode === 'auto' && styles.modeToggleTxtActive]}>
                       Automatic (Start from 1)
                     </Text>
                     <Text style={styles.modeToggleSub}>
-                      Sequential auto-numbering starting from 000001
+                      Sequential auto-numbering starting from 1 (or configured start sequence)
                     </Text>
                   </View>
                 </Pressable>
 
                 <Pressable
-                  onPress={() => setInvSettings(p => ({ ...p, voucher_mode: 'manual' }))}
-                  style={[styles.modeToggleBtn, invSettings.voucher_mode === 'manual' && styles.modeToggleBtnActive]}
+                  onPress={() => updateActiveField('voucher_mode', 'manual')}
+                  style={[styles.modeToggleBtn, activeVoucherConfig.voucher_mode === 'manual' && styles.modeToggleBtnActive]}
                 >
                   <Ionicons
-                    name={invSettings.voucher_mode === 'manual' ? 'radio-button-on' : 'radio-button-off'}
+                    name={activeVoucherConfig.voucher_mode === 'manual' ? 'radio-button-on' : 'radio-button-off'}
                     size={18}
-                    color={invSettings.voucher_mode === 'manual' ? '#0D9488' : '#64748B'}
+                    color={activeVoucherConfig.voucher_mode === 'manual' ? '#0D9488' : '#64748B'}
                   />
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.modeToggleTxt, invSettings.voucher_mode === 'manual' && styles.modeToggleTxtActive]}>
+                    <Text style={[styles.modeToggleTxt, activeVoucherConfig.voucher_mode === 'manual' && styles.modeToggleTxtActive]}>
                       Manual / Custom Sequence
                     </Text>
                     <Text style={styles.modeToggleSub}>
-                      Editable voucher number with custom starting number
+                      Voucher number is editable on voucher creation screen
                     </Text>
                   </View>
                 </Pressable>
               </View>
             </View>
 
-            {/* 2. Starting Sequence Number */}
+            {/* 2. Starting Sequence Number & Prefix */}
             <View style={styles.settingBlock}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={styles.settingLabel}>2. Voucher Number Starts From</Text>
                 <Text style={{ fontSize: 11, color: '#0D9488', fontWeight: '700' }}>
-                  Next Seq: #{invSettings.start_seq || '1'}
+                  Next Seq: #{activeVoucherConfig.start_seq || '1'}
                 </Text>
               </View>
               <View style={styles.inputRow}>
                 <View style={styles.prefixPill}>
-                  <Text style={styles.prefixTxt}>{invSettings.prefix}/{invSettings.financial_year}/</Text>
+                  <Text style={styles.prefixTxt}>
+                    {activeVoucherConfig.prefix || activeTabMeta.defaultPrefix}
+                    {activeTabMeta.hasFy ? `/${activeVoucherConfig.financial_year || '2026-27'}/` : '-'}
+                  </Text>
                 </View>
                 <TextInput
-                  value={invSettings.start_seq}
-                  onChangeText={(val) => setInvSettings(p => ({ ...p, start_seq: val.replace(/[^0-9]/g, '') }))}
+                  value={activeVoucherConfig.start_seq}
+                  onChangeText={(val) => updateActiveField('start_seq', val.replace(/[^0-9]/g, ''))}
                   keyboardType="numeric"
                   placeholder="1"
                   placeholderTextColor="#94A3B8"
@@ -224,7 +346,7 @@ Start Date: ${res.date_start_from}` : '')
                 />
               </View>
               <Text style={styles.helperTxt}>
-                Format preview: {invSettings.prefix}/{invSettings.financial_year}/{String(parseInt(invSettings.start_seq) || 1).padStart(6, '0')}
+                Format preview: {computedPreviewNo}
               </Text>
             </View>
 
@@ -232,50 +354,50 @@ Start Date: ${res.date_start_from}` : '')
             <View style={styles.settingBlock}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={styles.settingLabel}>3. Voucher Date Start From</Text>
-                {invSettings.date_start_from ? (
-                  <Pressable onPress={() => setInvSettings(p => ({ ...p, date_start_from: '' }))}>
+                {activeVoucherConfig.date_start_from ? (
+                  <Pressable onPress={() => updateActiveField('date_start_from', '')}>
                     <Text style={{ fontSize: 11, color: '#DC2626', fontWeight: '700' }}>Clear (Use Current Date)</Text>
                   </Pressable>
                 ) : null}
               </View>
               <TextInput
-                value={invSettings.date_start_from}
-                onChangeText={(val) => setInvSettings(p => ({ ...p, date_start_from: val }))}
+                value={activeVoucherConfig.date_start_from}
+                onChangeText={(val) => updateActiveField('date_start_from', val)}
                 placeholder="YYYY-MM-DD (e.g. 2026-11-16)"
                 placeholderTextColor="#94A3B8"
                 style={styles.dateInput}
               />
               <View style={styles.quickDateRow}>
                 <Pressable
-                  onPress={() => setInvSettings(p => ({ ...p, date_start_from: new Date().toISOString().slice(0, 10) }))}
+                  onPress={() => updateActiveField('date_start_from', new Date().toISOString().slice(0, 10))}
                   style={styles.quickDateChip}
                 >
                   <Text style={styles.quickDateTxt}>Set to Today</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => setInvSettings(p => ({ ...p, date_start_from: '2026-04-01' }))}
+                  onPress={() => updateActiveField('date_start_from', '2026-04-01')}
                   style={styles.quickDateChip}
                 >
                   <Text style={styles.quickDateTxt}>Set to 1 April 2026</Text>
                 </Pressable>
               </View>
               <Text style={styles.helperTxt}>
-                {invSettings.date_start_from
-                  ? `💡 New Sale Vouchers will automatically initialize from: ${invSettings.date_start_from}`
+                {activeVoucherConfig.date_start_from
+                  ? `💡 New ${activeTabMeta.label} vouchers will automatically initialize from: ${activeVoucherConfig.date_start_from}`
                   : '💡 Leave blank to default to the current real-time date.'}
               </Text>
             </View>
 
-            {/* Preview Box */}
+            {/* Live Preview Box */}
             <View style={styles.voucherPreviewBanner}>
               <Ionicons name="sparkles" size={20} color="#0D9488" />
               <View style={{ flex: 1 }}>
-                <Text style={styles.previewTitle}>Live Voucher Number Preview</Text>
+                <Text style={styles.previewTitle}>Live Voucher Number Preview ({activeTabMeta.label})</Text>
                 <Text style={styles.previewValue}>
-                  {invSettings.prefix}/{invSettings.financial_year}/{String(parseInt(invSettings.start_seq) || 1).padStart(6, '0')}
+                  {computedPreviewNo}
                 </Text>
                 <Text style={styles.previewDate}>
-                  📅 Initial Date: {invSettings.date_start_from || new Date().toISOString().slice(0, 10)}
+                  📅 Initial Date: {activeVoucherConfig.date_start_from || new Date().toISOString().slice(0, 10)} • Mode: {activeVoucherConfig.voucher_mode === 'auto' ? 'Automatic' : 'Manual Entry'}
                 </Text>
               </View>
             </View>
@@ -283,18 +405,18 @@ Start Date: ${res.date_start_from}` : '')
             {/* Action Buttons */}
             <View style={{ gap: 8, marginTop: spacing.md }}>
               <PrimaryButton
-                title={savingInvSettings ? 'Saving Settings...' : 'Save Voucher Settings'}
-                onPress={() => handleSaveInvoiceSettings(false)}
-                disabled={savingInvSettings}
+                title={savingVoucher ? 'Saving Settings...' : `Save ${activeTabMeta.label} Settings`}
+                onPress={() => handleSaveVoucherSettings(false)}
+                disabled={savingVoucher}
               />
               <Pressable
                 onPress={handleResetSequenceConfirm}
-                disabled={savingInvSettings}
+                disabled={savingVoucher}
                 style={styles.resetSeqBtn}
               >
                 <Ionicons name="refresh" size={16} color="#DC2626" />
                 <Text style={styles.resetSeqBtnTxt}>
-                  Reset Sequence to #{invSettings.start_seq || '1'} Now
+                  Reset {activeTabMeta.label} Sequence to #{activeVoucherConfig.start_seq || '1'} Now
                 </Text>
               </Pressable>
             </View>
@@ -359,12 +481,12 @@ Start Date: ${res.date_start_from}` : '')
                 <Text style={styles.statLbl}>Customers</Text>
               </View>
               <View style={styles.statTile}>
-                <Text style={styles.statNum}>{stats.total_services}</Text>
-                <Text style={styles.statLbl}>Services</Text>
+                <Text style={styles.statNum}>{stats.total_tenders}</Text>
+                <Text style={styles.statLbl}>Tenders</Text>
               </View>
               <View style={styles.statTile}>
                 <Text style={styles.statNum}>{stats.total_tasks}</Text>
-                <Text style={styles.statLbl}>Tasks</Text>
+                <Text style={styles.statLbl}>Active Tasks</Text>
               </View>
               <View style={styles.statTile}>
                 <Text style={styles.statNum}>{stats.total_invoices}</Text>
@@ -396,7 +518,75 @@ const styles = StyleSheet.create({
   statNum: { fontSize: font.lg, fontWeight: '800', color: colors.brandPrimary },
   statLbl: { fontSize: font.xs, color: colors.muted, marginTop: 2 },
 
-  /* Sale Invoice Settings Styles */
+  /* Voucher Hub Styles */
+  tabScrollRow: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  tabChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  tabChipActive: {
+    backgroundColor: '#0D9488',
+    borderColor: '#0D9488',
+  },
+  tabChipTxt: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  tabChipTxtActive: {
+    color: '#FFF',
+  },
+  chipBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    marginLeft: 2,
+  },
+  chipBadgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  chipBadgeAuto: {
+    backgroundColor: '#DCFCE7',
+  },
+  chipBadgeManual: {
+    backgroundColor: '#FEF3C7',
+  },
+  chipBadgeTxt: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  voucherSubHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: spacing.md,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#CCFBF1',
+    borderRadius: radius.md,
+    padding: 10,
+  },
+  voucherSubTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  voucherSubDesc: {
+    fontSize: 11,
+    color: '#115E59',
+    marginTop: 1,
+  },
   settingBlock: {
     marginTop: spacing.md,
     paddingTop: spacing.sm,

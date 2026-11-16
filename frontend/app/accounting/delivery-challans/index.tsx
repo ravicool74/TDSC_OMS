@@ -21,6 +21,7 @@ export default function DeliveryChallansList() {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingNo, setEditingNo] = useState<string | null>(null);
+  const [isManual, setIsManual] = useState(false);
   const [party, setParty] = useState<PickedParty | null>(null);
   const [showPartyPick, setShowPartyPick] = useState(false);
   const [date, setDate] = useState(today());
@@ -47,7 +48,7 @@ export default function DeliveryChallansList() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const openNew = () => {
+  const openNew = async () => {
     setEditingId(null);
     setEditingNo(null);
     setParty(null);
@@ -58,6 +59,14 @@ export default function DeliveryChallansList() {
     setItemQty('1');
     setNotes('');
     setShowModal(true);
+    try {
+      const nextRes = await api.get<any>('/accounting/challans/next-no');
+      if (nextRes) {
+        if (nextRes.date_start_from) setDate(nextRes.date_start_from);
+        if (nextRes.voucher_mode) setIsManual(nextRes.voucher_mode === 'manual');
+        if (nextRes.next_no) setEditingNo(nextRes.next_no);
+      }
+    } catch {}
   };
 
   const openEdit = (item: any) => {
@@ -111,6 +120,7 @@ export default function DeliveryChallansList() {
     setSaving(true);
     try {
       const payload = {
+        challan_no: isManual && editingNo && !editingNo.includes('preview') ? editingNo.trim() : undefined,
         date,
         customer_id: party.id,
         vehicle_no: vehicleNo.trim() || undefined,
@@ -291,6 +301,17 @@ export default function DeliveryChallansList() {
             </View>
 
             <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
+              <View>
+                <Text style={styles.inputLbl}>{isManual ? "Challan No. (Manual Entry)" : "Challan No. (Auto)"}</Text>
+                <TextInput
+                  style={[styles.input, !isManual && { backgroundColor: '#F1F5F9', color: '#64748B' }]}
+                  value={editingNo || ''}
+                  onChangeText={isManual ? setEditingNo : undefined}
+                  editable={isManual}
+                  placeholder="e.g. TDSC-DC/2026-27/0001"
+                />
+              </View>
+
               <View>
                 <Text style={styles.inputLbl}>Date</Text>
                 <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" />

@@ -51,6 +51,8 @@ class ExpenseApprovalInput(BaseModel):
     sale_voucher_amount: float
     sale_received_amount: float
     sale_unpaid_amount: Optional[float] = 0.0
+    voucher_no: Optional[str] = None
+    voucher_date: Optional[str] = None
     expenses: List[ExpenseLineItem]
     notes: Optional[str] = ""
     status: Optional[str] = "submitted"
@@ -103,10 +105,23 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             await db.expense_workflow_config.insert_one(cfg)
         return cfg
 
-    async def _generate_voucher_no() -> str:
-        year = datetime.now().year
-        count = await db.expense_approval_vouchers.count_documents({})
-        return f"EXP-APP-{year}-{(count + 1):04d}"
+    async def _generate_voucher_no(date_str: Optional[str] = None) -> str:
+        from server import _next_voucher_no
+        return await _next_voucher_no("new_expense_approval", date_str)
+
+    @router.get("/next-no")
+    async def get_next_expense_approval_no(date: Optional[str] = Query(None), current: Any = Depends(get_current_user)):
+        from server import _get_voucher_settings, _peek_next_voucher_no
+        s = await _get_voucher_settings("new_expense_approval")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("new_expense_approval", effective_date)
+        return {
+            "next_no": next_no,
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "EXP-REQ"),
+            "start_seq": s.get("start_seq", 1),
+        }
 
     @router.get("/approver-candidates")
     async def list_approver_candidates(current: Any = Depends(get_current_user)):
@@ -283,7 +298,12 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
                 detail="Expense cannot be greater than received amount"
             )
 
-        voucher_no = await _generate_voucher_no()
+        custom_no = getattr(payload, "voucher_no", None)
+        effective_vdate = (getattr(payload, "voucher_date", None) or "").strip() or datetime.now().strftime("%d-%m-%Y")
+        if custom_no and not "preview" in str(custom_no).lower() and str(custom_no).strip():
+            voucher_no = str(custom_no).strip()
+        else:
+            voucher_no = await _generate_voucher_no(effective_vdate)
         vid = f"eapp_{uuid.uuid4().hex[:12]}"
         now_str = now_utc_iso()
 
@@ -293,7 +313,7 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         doc = {
             "id": vid,
             "voucher_no": voucher_no,
-            "voucher_date": datetime.now().strftime("%d-%m-%Y"),
+            "voucher_date": effective_vdate,
             "customer_id": payload.customer_id,
             "customer_name": payload.customer_name or cust.get("name") or "Contractor",
             "customer_code": payload.customer_code or cust.get("customer_code") or "",

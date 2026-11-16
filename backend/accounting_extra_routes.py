@@ -45,6 +45,7 @@ class Estimate(BaseModel):
     updated_at: datetime = Field(default_factory=now_utc)
 
 class EstimateInput(BaseModel):
+    estimate_no: Optional[str] = None
     date: str
     customer_id: str
     items: List[VoucherItem]
@@ -72,6 +73,7 @@ class ProformaInvoice(BaseModel):
     updated_at: datetime = Field(default_factory=now_utc)
 
 class ProformaInput(BaseModel):
+    proforma_no: Optional[str] = None
     date: str
     customer_id: str
     items: List[VoucherItem]
@@ -92,6 +94,7 @@ class DeliveryChallan(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 class DeliveryChallanInput(BaseModel):
+    challan_no: Optional[str] = None
     date: str
     customer_id: str
     invoice_id: Optional[str] = None
@@ -150,18 +153,34 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         docs = await db.estimates.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
         return [Estimate(**d) for d in docs]
 
+    @router.get("/estimates/next-no")
+    async def get_next_estimate_no(date: Optional[str] = Query(None), current: any = Depends(get_current_user)):
+        from server import _get_voucher_settings, _peek_next_voucher_no
+        s = await _get_voucher_settings("estimate")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("estimate", effective_date)
+        return {
+            "next_no": next_no,
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "TDSC-EST"),
+            "start_seq": s.get("start_seq", 1),
+        }
+
     @router.post("/estimates", response_model=Estimate)
     async def create_estimate(payload: EstimateInput, current: any = Depends(get_current_user)):
         cust = await db.customers.find_one({"$or": [{"id": payload.customer_id}, {"customer_code": payload.customer_id}]})
         if not cust:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        fy = get_financial_year()
-        counter = await db.counters.find_one_and_update(
-            {"_id": f"estimate_{fy}"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True
-        )
-        seq = counter.get("seq", 1)
-        est_no = f"TDSC-EST/{fy}/{seq:04d}"
+        from server import _next_voucher_no
+        custom_no = getattr(payload, "estimate_no", None)
+        if custom_no and not "preview" in str(custom_no).lower() and str(custom_no).strip():
+            est_no = str(custom_no).strip()
+            seq = 1
+        else:
+            est_no = await _next_voucher_no("estimate", payload.date)
+            seq = 1
         now = now_utc()
 
         items, subtotal, discount, tax, grand = compute_totals(payload.items)
@@ -308,18 +327,34 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         docs = await db.proforma_invoices.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
         return [ProformaInvoice(**d) for d in docs]
 
+    @router.get("/proforma/next-no")
+    async def get_next_proforma_no(date: Optional[str] = Query(None), current: any = Depends(get_current_user)):
+        from server import _get_voucher_settings, _peek_next_voucher_no
+        s = await _get_voucher_settings("proforma")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("proforma", effective_date)
+        return {
+            "next_no": next_no,
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "TDSC-PI"),
+            "start_seq": s.get("start_seq", 1),
+        }
+
     @router.post("/proforma", response_model=ProformaInvoice)
     async def create_proforma(payload: ProformaInput, current: any = Depends(get_current_user)):
         cust = await db.customers.find_one({"$or": [{"id": payload.customer_id}, {"customer_code": payload.customer_id}]})
         if not cust:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        fy = get_financial_year()
-        counter = await db.counters.find_one_and_update(
-            {"_id": f"proforma_{fy}"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True
-        )
-        seq = counter.get("seq", 1)
-        pi_no = f"TDSC-PI/{fy}/{seq:04d}"
+        from server import _next_voucher_no
+        custom_no = getattr(payload, "proforma_no", None)
+        if custom_no and not "preview" in str(custom_no).lower() and str(custom_no).strip():
+            pi_no = str(custom_no).strip()
+            seq = 1
+        else:
+            pi_no = await _next_voucher_no("proforma", payload.date)
+            seq = 1
         now = now_utc()
 
         items, subtotal, discount, tax, grand = compute_totals(payload.items)
@@ -469,6 +504,21 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         docs = await db.delivery_challans.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
         return [DeliveryChallan(**d) for d in docs]
 
+    @router.get("/delivery-challans/next-no")
+    @router.get("/challans/next-no")
+    async def get_next_challan_no(date: Optional[str] = Query(None), current: any = Depends(get_current_user)):
+        from server import _get_voucher_settings, _peek_next_voucher_no
+        s = await _get_voucher_settings("delivery_challan")
+        effective_date = date or s.get("date_start_from")
+        next_no = await _peek_next_voucher_no("delivery_challan", effective_date)
+        return {
+            "next_no": next_no,
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "date_start_from": s.get("date_start_from"),
+            "prefix": s.get("prefix", "TDSC-DC"),
+            "start_seq": s.get("start_seq", 1),
+        }
+
     @router.post("/delivery-challans", response_model=DeliveryChallan)
     @router.post("/challans", response_model=DeliveryChallan)
     async def create_challan(payload: DeliveryChallanInput, current: any = Depends(get_current_user)):
@@ -476,12 +526,14 @@ def make_accounting_extra_router(db, get_current_user, require_admin, require_ad
         if not cust:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        fy = get_financial_year()
-        counter = await db.counters.find_one_and_update(
-            {"_id": f"challan_{fy}"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True
-        )
-        seq = counter.get("seq", 1)
-        dc_no = f"TDSC-DC/{fy}/{seq:04d}"
+        from server import _next_voucher_no
+        custom_no = getattr(payload, "challan_no", None)
+        if custom_no and not "preview" in str(custom_no).lower() and str(custom_no).strip():
+            dc_no = str(custom_no).strip()
+            seq = 1
+        else:
+            dc_no = await _next_voucher_no("delivery_challan", payload.date)
+            seq = 1
         now = now_utc()
 
         items, _, _, _, _ = compute_totals(payload.items)

@@ -53,6 +53,7 @@ export default function NewPaymentIn() {
   // Voucher details
   const [voucherNo, setVoucherNo] = useState<string>('PAYIN-0001 (preview)');
   const [date, setDate] = useState<string>(today());
+  const [isManualVoucher, setIsManualVoucher] = useState(false);
 
   // Customer State & Modals
   const [showPartyPick, setShowPartyPick] = useState(false);
@@ -117,7 +118,17 @@ export default function NewPaymentIn() {
           api.get<any[]>('/bank-accounts').catch(() => []),
           api.get<any[]>('/employees').catch(() => []),
         ]);
-        if (nextRes?.next_no) setVoucherNo(`${nextRes.next_no} (preview)`);
+        if (nextRes) {
+          if (nextRes.next_no) {
+            setVoucherNo(nextRes.voucher_mode === 'manual' ? nextRes.next_no : `${nextRes.next_no} (preview)`);
+          }
+          if (nextRes.voucher_mode) {
+            setIsManualVoucher(nextRes.voucher_mode === 'manual');
+          }
+          if (nextRes.date_start_from) {
+            setDate(nextRes.date_start_from);
+          }
+        }
         if (m) setMeta(m);
         if (b) setBanks(b);
         if (e) setEmployees(e);
@@ -440,10 +451,10 @@ export default function NewPaymentIn() {
             <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
               <View style={{ flex: 1 }}>
                 <FormInput
-                  label="Payment-In Voucher No. *"
+                  label={isManualVoucher ? "Payment-In Voucher No. (Manual Entry) *" : "Payment-In Voucher No. (Auto) *"}
                   value={voucherNo}
-                  onChangeText={setVoucherNo}
-                  placeholder="PAYIN-0001"
+                  onChangeText={isManualVoucher ? setVoucherNo : (() => {})}
+                  placeholder={isManualVoucher ? "e.g. PAYIN-0001" : "PAYIN-0001"}
                   testID="voucher-no"
                 />
               </View>
