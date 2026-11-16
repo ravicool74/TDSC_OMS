@@ -32,6 +32,11 @@ class SystemStats(BaseModel):
     total_invoices: int
     today_sales: float
     todays_sales: Optional[float] = None
+    today_cash: Optional[float] = None
+    todays_cash: Optional[float] = None
+    today_inflow: Optional[float] = None
+    today_outflow: Optional[float] = None
+    net_closing_movement: Optional[float] = None
     total_receivable: float
     receivable: Optional[float] = None
     total_payable: float
@@ -148,12 +153,41 @@ def make_system_operations_router(db, get_current_user, require_admin):
         pending_tasks = await db.tasks.count_documents({"status": {"$in": ["pending", "assigned", "in_progress", "under_review"]}})
         total_invoices = await db.invoices.count_documents({})
 
-        today_str = date.today().isoformat()
-        # Today's Sales
-        sales_cursor = db.invoices.find({"invoice_type": "sale", "invoice_date": today_str})
+        now_utc = datetime.now(timezone.utc)
+        now_ist = now_utc + timedelta(hours=5, minutes=30)
+        today_dates = list(set([
+            now_ist.strftime("%Y-%m-%d"),
+            now_utc.strftime("%Y-%m-%d"),
+            date.today().isoformat()
+        ]))
+
+        # Sales for today (Inflow & Billed Sales)
+        sales = await db.invoices.find({"invoice_type": "sale"}, {"_id": 0}).to_list(1000)
         today_sales = 0.0
-        async for s in sales_cursor:
-            today_sales += float(s.get("total_amount") or 0.0)
+        today_inflow = 0.0
+        for s in sales:
+            d = s.get("date") or s.get("invoice_date")
+            if d in today_dates:
+                today_sales += float(s.get("total_amount") or 0.0)
+                today_inflow += float(s.get("paid_amount") or s.get("total_amount") or 0.0)
+
+        # Expenses for today (Outflow)
+        expenses = await db.expenses.find({"status": {"$ne": "rejected"}}, {"_id": 0}).to_list(1000)
+        today_outflow = 0.0
+        for e in expenses:
+            d = e.get("date")
+            if d in today_dates:
+                today_outflow += float(e.get("amount") or 0.0)
+
+        # Purchases for today (Outflow)
+        purchases = await db.invoices.find({"invoice_type": "purchase"}, {"_id": 0}).to_list(1000)
+        for p in purchases:
+            d = p.get("date") or p.get("invoice_date")
+            if d in today_dates:
+                today_outflow += float(p.get("paid_amount") or p.get("total_amount") or 0.0)
+
+        # Net Day Book cash/bank movement for today
+        today_cash = round(today_inflow - today_outflow, 2)
 
         # Receivables & Payables
         rec_cursor = db.invoices.find({"invoice_type": "sale", "status": {"$ne": "paid"}})
@@ -194,6 +228,11 @@ def make_system_operations_router(db, get_current_user, require_admin):
             total_invoices=total_invoices,
             today_sales=round(today_sales, 2),
             todays_sales=round(today_sales, 2),
+            today_cash=round(today_cash, 2),
+            todays_cash=round(today_cash, 2),
+            today_inflow=round(today_inflow, 2),
+            today_outflow=round(today_outflow, 2),
+            net_closing_movement=round(today_cash, 2),
             total_receivable=round(total_rec, 2),
             receivable=round(total_rec, 2),
             total_payable=round(total_pay, 2),
@@ -215,18 +254,21 @@ def make_system_operations_router(db, get_current_user, require_admin):
         to_d = to_date or date.today().isoformat()
 
         entries = []
-        # Sales
-        sales = await db.invoices.find({"invoice_date": {"$gte": from_d, "$lte": to_d}}).to_list(500)
-        for s in sales:
-            entries.append({
-                "date": s.get("invoice_date"),
-                "type": "Sale Invoice" if s.get("invoice_type") == "sale" else "Purchase Bill",
-                "reference": s.get("invoice_number"),
-                "party": s.get("party_name"),
-                "debit": float(s.get("total_amount") or 0.0) if s.get("invoice_type") == "sale" else 0.0,
-                "credit": float(s.get("total_amount") or 0.0) if s.get("invoice_type") == "purchase" else 0.0,
-                "mode": s.get("payment_mode", "credit"),
-            })
+        # Sales & Purchases
+        all_invs = await db.invoices.find({}, {"_id": 0}).to_list(1000)
+        for s in all_invs:
+            d = s.get("date") or s.get("invoice_date")
+            if d and from_d <= d <= to_d:
+                is_sale = (s.get("invoice_type") == "sale")
+                entries.append({
+                    "date": d,
+                    "type": "Sale Invoice" if is_sale else "Purchase Bill",
+                    "reference": s.get("invoice_no") or s.get("invoice_number"),
+                    "party": s.get("party_name"),
+                    "debit": float(s.get("paid_amount") or s.get("total_amount") or 0.0) if is_sale else 0.0,
+                    "credit": float(s.get("paid_amount") or s.get("total_amount") or 0.0) if not is_sale else 0.0,
+                    "mode": s.get("payment_mode", "cash"),
+                })
 
         # Expenses
         expenses = await db.expenses.find({"date": {"$gte": from_d, "$lte": to_d}}).to_list(500)

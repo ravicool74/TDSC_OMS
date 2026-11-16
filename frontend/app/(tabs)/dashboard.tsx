@@ -32,6 +32,11 @@ interface SystemStats {
   total_tasks?: number;
   todays_sales?: number;
   today_sales?: number;
+  today_cash?: number;
+  todays_cash?: number;
+  today_inflow?: number;
+  today_outflow?: number;
+  net_closing_movement?: number;
   receivable?: number;
   total_receivable?: number;
   payable?: number;
@@ -166,21 +171,35 @@ export default function Dashboard() {
           <View style={styles.financialSection}>
             <Text style={styles.sectionHeaderTitle}>Financial Overview</Text>
             <View style={styles.financialRow}>
-              <View style={[styles.finCard, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
+              <Pressable
+                style={[styles.finCard, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}
+                onPress={() => router.push('/accounting/day-book' as any)}
+                testID="fin-card-today-cash"
+              >
                 <Ionicons name="cash-outline" size={20} color="#059669" />
-                <Text style={styles.finLabel}>Today's Sales</Text>
-                <Text style={[styles.finValue, { color: '#059669' }]}>{inr(sysStats?.todays_sales ?? sysStats?.today_sales ?? 0)}</Text>
-              </View>
-              <View style={[styles.finCard, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
+                <Text style={styles.finLabel}>Today's Cash</Text>
+                <Text style={[styles.finValue, { color: '#059669' }]}>
+                  {inr(sysStats?.today_cash ?? sysStats?.todays_cash ?? sysStats?.net_closing_movement ?? sysStats?.todays_sales ?? sysStats?.today_sales ?? 0)}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.finCard, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+                onPress={() => router.push('/accounting/invoices' as any)}
+                testID="fin-card-to-receive"
+              >
                 <Ionicons name="arrow-down-circle-outline" size={20} color="#2563EB" />
                 <Text style={styles.finLabel}>To Receive</Text>
                 <Text style={[styles.finValue, { color: '#2563EB' }]}>{inr(sysStats?.receivable ?? sysStats?.total_receivable ?? 0)}</Text>
-              </View>
-              <View style={[styles.finCard, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+              </Pressable>
+              <Pressable
+                style={[styles.finCard, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}
+                onPress={() => router.push('/accounting/expenses' as any)}
+                testID="fin-card-to-pay"
+              >
                 <Ionicons name="arrow-up-circle-outline" size={20} color="#DC2626" />
                 <Text style={styles.finLabel}>To Pay</Text>
                 <Text style={[styles.finValue, { color: '#DC2626' }]}>{inr(sysStats?.payable ?? sysStats?.total_payable ?? 0)}</Text>
-              </View>
+              </Pressable>
             </View>
           </View>
         )}
