@@ -19,19 +19,26 @@ class GlobalSearchResponse(BaseModel):
 
 class SystemStats(BaseModel):
     total_branches: int
+    branches: Optional[int] = None
     total_posts: int
     total_users: int
     total_employees: int
+    employees: Optional[int] = None
     total_customers: int
+    customers: Optional[int] = None
     total_services: int
     total_tasks: int
     pending_tasks: int
     total_invoices: int
     today_sales: float
+    todays_sales: Optional[float] = None
     total_receivable: float
+    receivable: Optional[float] = None
     total_payable: float
+    payable: Optional[float] = None
     today_punches: int
     expiring_documents: int
+    expiring_documents_30_days: Optional[int] = None
 
 def make_system_operations_router(db, get_current_user, require_admin):
     router = APIRouter(prefix="/system", tags=["system-operations"])
@@ -174,19 +181,26 @@ def make_system_operations_router(db, get_current_user, require_admin):
 
         return SystemStats(
             total_branches=total_branches,
+            branches=total_branches,
             total_posts=total_posts,
             total_users=total_users,
             total_employees=total_employees,
+            employees=total_employees,
             total_customers=total_customers,
+            customers=total_customers,
             total_services=total_services,
             total_tasks=total_tasks,
             pending_tasks=pending_tasks,
             total_invoices=total_invoices,
             today_sales=round(today_sales, 2),
+            todays_sales=round(today_sales, 2),
             total_receivable=round(total_rec, 2),
+            receivable=round(total_rec, 2),
             total_payable=round(total_pay, 2),
+            payable=round(total_pay, 2),
             today_punches=today_punches,
             expiring_documents=expiring_docs,
+            expiring_documents_30_days=expiring_docs,
         )
 
     # ====== REPORTS ======

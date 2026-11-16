@@ -5403,6 +5403,7 @@ async def payroll_summary(month: str, current: User = Depends(require_admin_or_m
 async def dashboard_summary(current: User = Depends(get_current_user)):
     customers = await db.customers.count_documents({})
     employees = await db.employees.count_documents({})
+    branches = await db.branches.count_documents({})
     total_tasks = await db.tasks.count_documents({})
     open_tasks = await db.tasks.count_documents({"status": {"$in": ["todo", "doing"]}})
     open_tenders = await db.tenders.count_documents({"status": "open"})
@@ -5412,6 +5413,7 @@ async def dashboard_summary(current: User = Depends(get_current_user)):
     return {
         "customers": customers,
         "employees": employees,
+        "branches": branches,
         "tasks_total": total_tasks,
         "tasks_open": open_tasks,
         "open_tenders": open_tenders,

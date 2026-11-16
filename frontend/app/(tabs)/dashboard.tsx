@@ -18,17 +18,26 @@ interface Summary {
   customers: number; employees: number; tasks_total: number; tasks_open: number;
   open_tenders: number; pending_leaves: number; accounts_pending: number;
   urgent_tenders: any[];
+  branches?: number;
 }
 
 interface SystemStats {
-  branches: number;
-  employees: number;
-  customers: number;
-  pending_tasks: number;
-  todays_sales: number;
-  receivable: number;
-  payable: number;
-  expiring_documents_30_days: number;
+  branches?: number;
+  total_branches?: number;
+  employees?: number;
+  total_employees?: number;
+  customers?: number;
+  total_customers?: number;
+  pending_tasks?: number;
+  total_tasks?: number;
+  todays_sales?: number;
+  today_sales?: number;
+  receivable?: number;
+  total_receivable?: number;
+  payable?: number;
+  total_payable?: number;
+  expiring_documents_30_days?: number;
+  expiring_documents?: number;
 }
 
 export default function Dashboard() {
@@ -80,7 +89,7 @@ export default function Dashboard() {
     }
   };
 
-  const expiringCount = sysStats?.expiring_documents_30_days ?? 0;
+  const expiringCount = sysStats?.expiring_documents_30_days ?? sysStats?.expiring_documents ?? 0;
 
   if (!canView(user, 'dashboard')) {
     return (
@@ -160,17 +169,17 @@ export default function Dashboard() {
               <View style={[styles.finCard, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
                 <Ionicons name="cash-outline" size={20} color="#059669" />
                 <Text style={styles.finLabel}>Today's Sales</Text>
-                <Text style={[styles.finValue, { color: '#059669' }]}>{inr(sysStats?.todays_sales ?? 0)}</Text>
+                <Text style={[styles.finValue, { color: '#059669' }]}>{inr(sysStats?.todays_sales ?? sysStats?.today_sales ?? 0)}</Text>
               </View>
               <View style={[styles.finCard, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
                 <Ionicons name="arrow-down-circle-outline" size={20} color="#2563EB" />
                 <Text style={styles.finLabel}>To Receive</Text>
-                <Text style={[styles.finValue, { color: '#2563EB' }]}>{inr(sysStats?.receivable ?? 0)}</Text>
+                <Text style={[styles.finValue, { color: '#2563EB' }]}>{inr(sysStats?.receivable ?? sysStats?.total_receivable ?? 0)}</Text>
               </View>
               <View style={[styles.finCard, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
                 <Ionicons name="arrow-up-circle-outline" size={20} color="#DC2626" />
                 <Text style={styles.finLabel}>To Pay</Text>
-                <Text style={[styles.finValue, { color: '#DC2626' }]}>{inr(sysStats?.payable ?? 0)}</Text>
+                <Text style={[styles.finValue, { color: '#DC2626' }]}>{inr(sysStats?.payable ?? sysStats?.total_payable ?? 0)}</Text>
               </View>
             </View>
           </View>
@@ -196,7 +205,7 @@ export default function Dashboard() {
                 <View style={[styles.statIcon, { backgroundColor: '#DBEAFE' }]}>
                   <Ionicons name="people" size={20} color="#2563EB" />
                 </View>
-                <Text style={styles.statValue}>{sysStats?.customers ?? data?.customers ?? 0}</Text>
+                <Text style={styles.statValue}>{sysStats?.customers ?? sysStats?.total_customers ?? data?.customers ?? 0}</Text>
                 <Text style={styles.statLabel}>Total Clients</Text>
               </Pressable>
             )}
@@ -206,7 +215,7 @@ export default function Dashboard() {
                 <View style={[styles.statIcon, { backgroundColor: '#EDE9FE' }]}>
                   <Ionicons name="briefcase" size={20} color="#7C3AED" />
                 </View>
-                <Text style={styles.statValue}>{sysStats?.employees ?? data?.employees ?? 0}</Text>
+                <Text style={styles.statValue}>{sysStats?.employees ?? sysStats?.total_employees ?? data?.employees ?? 0}</Text>
                 <Text style={styles.statLabel}>Employees</Text>
               </Pressable>
             )}
@@ -216,7 +225,7 @@ export default function Dashboard() {
                 <View style={[styles.statIcon, { backgroundColor: '#FEE2E2' }]}>
                   <Ionicons name="business" size={20} color="#DC2626" />
                 </View>
-                <Text style={styles.statValue}>{sysStats?.branches ?? 1}</Text>
+                <Text style={styles.statValue}>{sysStats?.branches ?? sysStats?.total_branches ?? data?.branches ?? 0}</Text>
                 <Text style={styles.statLabel}>Branches</Text>
               </Pressable>
             )}
