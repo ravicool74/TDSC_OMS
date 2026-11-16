@@ -512,157 +512,159 @@ export default function NewExpense() {
                       </Text>
                     </View>
                   ) : (
-                    <View style={styles.tableContainer}>
-                      {/* Table Header with Select All */}
-                      <View style={styles.tableHeaderRow}>
-                        <Text style={[styles.thCell, { flex: 2 }]}>Fee Item Name</Text>
-                        <Text style={[styles.thCell, { flex: 1.2, textAlign: 'right' }]}>Received</Text>
-                        <Text style={[styles.thCell, { flex: 1.2, textAlign: 'right' }]}>Balance</Text>
-                        <View style={{ flex: 1.6, alignItems: 'flex-end', paddingRight: 6 }}>
-                          <Text style={[styles.thCellTxt, { fontSize: 11, fontWeight: '800', color: '#0F766E' }]}>
-                            Spent (₹) * ✏️
-                          </Text>
-                        </View>
-                        <Pressable
-                          onPress={handleToggleSelectAll}
-                          style={{ width: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
-                          hitSlop={6}
-                        >
-                          <Text style={[styles.thCellTxt, { fontSize: 11, fontWeight: '800', color: '#0F766E' }]}>All</Text>
-                          <Ionicons
-                            name={
-                              passOnItems.filter(x => x.remaining_balance > 0).length > 0 &&
-                              passOnItems.filter(x => x.remaining_balance > 0).every(it => selectedPassOnItems.some(x => x.name === it.name))
-                                ? 'checkbox'
-                                : selectedPassOnItems.length > 0
-                                  ? 'remove-circle-outline'
-                                  : 'square-outline'
-                            }
-                            size={16}
-                            color="#0D9488"
-                          />
-                        </Pressable>
-                      </View>
-
-                      {/* Multiple Rows */}
-                      {passOnItems.map(it => {
-                        const isChosen = selectedPassOnItems.some(x => x.name === it.name);
-                        const isZero = it.remaining_balance <= 0;
-                        const currentSpentStr = itemSpentAmounts[it.name] ?? (isChosen ? String(it.remaining_balance) : '0');
-                        const currentSpentVal = parseFloat(currentSpentStr) || 0;
-                        const isItemOver = isChosen && currentSpentVal > it.remaining_balance;
-
-                        return (
-                          <View
-                            key={it.name}
-                            testID={`row-passon-${it.name}`}
-                            style={[
-                              styles.tableDataRow,
-                              isChosen && styles.tableDataRowChosen,
-                              isZero && { opacity: 0.6, backgroundColor: '#F8FAFC' },
-                            ]}
-                          >
-                            <Pressable
-                              onPress={() => !isZero && handleTogglePassOnItem(it)}
-                              style={{ flex: 2 }}
-                            >
-                              <Text style={[styles.tdName, isChosen && { color: '#0D9488', fontWeight: '800' }]}>{it.name}</Text>
-                              <Text style={styles.tdFeeType}>{it.fee_type || 'Reimbursement'}</Text>
-                              {it.already_spent > 0 ? (
-                                <Text style={{ fontSize: 10, color: '#DC2626' }}>
-                                  Prev Spent: ₹{it.already_spent.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                </Text>
-                              ) : null}
-                            </Pressable>
-
-                            <Text style={[styles.tdAmt, { flex: 1.2, textAlign: 'right' }]}>
-                              ₹{it.billed_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ minWidth: '100%' }}>
+                      <View style={[styles.tableContainer, { minWidth: 640, flex: 1 }]}>
+                        {/* Table Header with Select All */}
+                        <View style={styles.tableHeaderRow}>
+                          <Text style={[styles.thCell, { flex: 2.2, minWidth: 150 }]}>Fee Item Name</Text>
+                          <Text style={[styles.thCell, { flex: 1.1, minWidth: 90, textAlign: 'right', paddingRight: 12 }]}>Received</Text>
+                          <Text style={[styles.thCell, { flex: 1.1, minWidth: 90, textAlign: 'right', paddingRight: 12 }]}>Balance</Text>
+                          <View style={{ width: 145, alignItems: 'flex-end', paddingRight: 12 }}>
+                            <Text style={[styles.thCellTxt, { fontSize: 11, fontWeight: '800', color: '#0F766E' }]}>
+                              Spent (₹) * ✏️
                             </Text>
+                          </View>
+                          <Pressable
+                            onPress={handleToggleSelectAll}
+                            style={{ width: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                            hitSlop={6}
+                          >
+                            <Text style={[styles.thCellTxt, { fontSize: 11, fontWeight: '800', color: '#0F766E' }]}>All</Text>
+                            <Ionicons
+                              name={
+                                passOnItems.filter(x => x.remaining_balance > 0).length > 0 &&
+                                passOnItems.filter(x => x.remaining_balance > 0).every(it => selectedPassOnItems.some(x => x.name === it.name))
+                                  ? 'checkbox'
+                                  : selectedPassOnItems.length > 0
+                                    ? 'remove-circle-outline'
+                                    : 'square-outline'
+                              }
+                              size={16}
+                              color="#0D9488"
+                            />
+                          </Pressable>
+                        </View>
 
-                            <Text
+                        {/* Multiple Rows */}
+                        {passOnItems.map(it => {
+                          const isChosen = selectedPassOnItems.some(x => x.name === it.name);
+                          const isZero = it.remaining_balance <= 0;
+                          const currentSpentStr = itemSpentAmounts[it.name] ?? (isChosen ? String(it.remaining_balance) : '0');
+                          const currentSpentVal = parseFloat(currentSpentStr) || 0;
+                          const isItemOver = isChosen && currentSpentVal > it.remaining_balance;
+
+                          return (
+                            <View
+                              key={it.name}
+                              testID={`row-passon-${it.name}`}
                               style={[
-                                styles.tdAmt,
-                                { flex: 1.2, textAlign: 'right', fontWeight: '800' },
-                                isZero ? { color: '#94A3B8' } : { color: '#059669' },
+                                styles.tableDataRow,
+                                isChosen && styles.tableDataRowChosen,
+                                isZero && { opacity: 0.6, backgroundColor: '#F8FAFC' },
                               ]}
                             >
-                              ₹{it.remaining_balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                            </Text>
+                              <Pressable
+                                onPress={() => !isZero && handleTogglePassOnItem(it)}
+                                style={{ flex: 2.2, minWidth: 150 }}
+                              >
+                                <Text style={[styles.tdName, isChosen && { color: '#0D9488', fontWeight: '800' }]}>{it.name}</Text>
+                                <Text style={styles.tdFeeType}>{it.fee_type || 'Reimbursement'}</Text>
+                                {it.already_spent > 0 ? (
+                                  <Text style={{ fontSize: 10, color: '#DC2626' }}>
+                                    Prev Spent: ₹{it.already_spent.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  </Text>
+                                ) : null}
+                              </Pressable>
 
-                            {/* Editable Spent Amount Input Box */}
-                            <View style={{ flex: 1.6, alignItems: 'flex-end', justifyContent: 'center', paddingRight: 6 }}>
-                              <View
+                              <Text style={[styles.tdAmt, { flex: 1.1, minWidth: 90, textAlign: 'right', paddingRight: 12 }]}>
+                                ₹{it.billed_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </Text>
+
+                              <Text
                                 style={[
-                                  styles.spentInputContainer,
-                                  isChosen && styles.spentInputContainerActive,
-                                  isItemOver && styles.spentInputContainerError,
-                                  !isChosen && { opacity: 0.45, backgroundColor: '#F1F5F9' },
+                                  styles.tdAmt,
+                                  { flex: 1.1, minWidth: 90, textAlign: 'right', paddingRight: 12, fontWeight: '800' },
+                                  isZero ? { color: '#94A3B8' } : { color: '#059669' },
                                 ]}
                               >
-                                <Text style={[styles.rupeePrefix, isChosen && { color: '#0D9488' }]}>₹</Text>
-                                <TextInput
-                                  value={isChosen ? currentSpentStr : ''}
-                                  onChangeText={(val: string) => handleItemSpentChange(it.name, val)}
-                                  keyboardType="numeric"
-                                  editable={isChosen && !isZero}
-                                  placeholder={isChosen ? '0.00' : '—'}
-                                  placeholderTextColor="#94A3B8"
+                                ₹{it.remaining_balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </Text>
+
+                              {/* Editable Spent Amount Input Box */}
+                              <View style={{ width: 145, alignItems: 'flex-end', justifyContent: 'center', paddingRight: 12 }}>
+                                <View
                                   style={[
-                                    styles.spentTextInput,
-                                    isItemOver && { color: '#DC2626', fontWeight: '800' },
+                                    styles.spentInputContainer,
+                                    isChosen && styles.spentInputContainerActive,
+                                    isItemOver && styles.spentInputContainerError,
+                                    !isChosen && { opacity: 0.45, backgroundColor: '#F1F5F9' },
                                   ]}
-                                  testID={`input-spent-${it.name}`}
-                                />
+                                >
+                                  <Text style={[styles.rupeePrefix, isChosen && { color: '#0D9488' }]}>₹</Text>
+                                  <TextInput
+                                    value={isChosen ? currentSpentStr : ''}
+                                    onChangeText={(val: string) => handleItemSpentChange(it.name, val)}
+                                    keyboardType="numeric"
+                                    editable={isChosen && !isZero}
+                                    placeholder={isChosen ? '0.00' : '—'}
+                                    placeholderTextColor="#94A3B8"
+                                    style={[
+                                      styles.spentTextInput,
+                                      isItemOver && { color: '#DC2626', fontWeight: '800' },
+                                    ]}
+                                    testID={`input-spent-${it.name}`}
+                                  />
+                                </View>
+                                {isChosen && isItemOver ? (
+                                  <Text style={styles.overLimitTxt}>
+                                    Max: ₹{it.remaining_balance.toLocaleString('en-IN')}
+                                  </Text>
+                                ) : null}
                               </View>
-                              {isChosen && isItemOver ? (
-                                <Text style={styles.overLimitTxt}>
-                                  Max: ₹{it.remaining_balance.toLocaleString('en-IN')}
-                                </Text>
-                              ) : null}
+
+                              <Pressable
+                                onPress={() => !isZero && handleTogglePassOnItem(it)}
+                                style={{ width: 60, alignItems: 'center', justifyContent: 'center' }}
+                                hitSlop={8}
+                              >
+                                <Ionicons
+                                  name={isChosen ? 'checkbox' : isZero ? 'close-circle-outline' : 'square-outline'}
+                                  size={22}
+                                  color={isChosen ? '#0D9488' : isZero ? '#94A3B8' : colors.muted}
+                                />
+                              </Pressable>
                             </View>
+                          );
+                        })}
 
-                            <Pressable
-                              onPress={() => !isZero && handleTogglePassOnItem(it)}
-                              style={{ width: 56, alignItems: 'center', justifyContent: 'center' }}
-                              hitSlop={8}
-                            >
-                              <Ionicons
-                                name={isChosen ? 'checkbox' : isZero ? 'close-circle-outline' : 'square-outline'}
-                                size={22}
-                                color={isChosen ? '#0D9488' : isZero ? '#94A3B8' : colors.muted}
-                              />
-                            </Pressable>
+                        {/* Jod kar Total Row (Dedicated Total Row in Table) */}
+                        <View style={styles.tableTotalRow}>
+                          <View style={{ flex: 2.2, minWidth: 150 }}>
+                            <Text style={styles.tableTotalLabel}>
+                              Total ({selectedPassOnItems.length}/{passOnItems.length} Selected)
+                            </Text>
+                            <Text style={styles.tableTotalSub}>Jod kar Total Spent</Text>
                           </View>
-                        );
-                      })}
-
-                      {/* Jod kar Total Row (Dedicated Total Row in Table) */}
-                      <View style={styles.tableTotalRow}>
-                        <View style={{ flex: 2 }}>
-                          <Text style={styles.tableTotalLabel}>
-                            Total ({selectedPassOnItems.length}/{passOnItems.length} Selected)
+                          <Text style={[styles.tableTotalVal, { flex: 1.1, minWidth: 90, textAlign: 'right', paddingRight: 12, color: '#0F172A' }]}>
+                            ₹{totalSelectedReceived.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                           </Text>
-                          <Text style={styles.tableTotalSub}>Jod kar Total Spent</Text>
-                        </View>
-                        <Text style={[styles.tableTotalVal, { flex: 1.2, textAlign: 'right', color: '#0F172A' }]}>
-                          ₹{totalSelectedReceived.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </Text>
-                        <Text style={[styles.tableTotalVal, { flex: 1.2, textAlign: 'right', color: '#059669' }]}>
-                          ₹{totalSelectedBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </Text>
-                        <View style={{ flex: 1.6, alignItems: 'flex-end', paddingRight: 6 }}>
-                          <Text style={[styles.tableTotalVal, { color: '#0D9488', fontSize: 13, fontWeight: '900' }]}>
-                            ₹{totalSelectedSpentNow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          <Text style={[styles.tableTotalVal, { flex: 1.1, minWidth: 90, textAlign: 'right', paddingRight: 12, color: '#059669' }]}>
+                            ₹{totalSelectedBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                           </Text>
-                          <Text style={{ fontSize: 9, color: '#0F766E', fontWeight: '700' }}>Auto-calculated</Text>
-                        </View>
-                        <View style={{ width: 56, alignItems: 'center', justifyContent: 'center' }}>
-                          <View style={styles.totalBadge}>
-                            <Text style={styles.totalBadgeTxt}>{selectedPassOnItems.length}</Text>
+                          <View style={{ width: 145, alignItems: 'flex-end', paddingRight: 12 }}>
+                            <Text style={[styles.tableTotalVal, { color: '#0D9488', fontSize: 13, fontWeight: '900' }]}>
+                              ₹{totalSelectedSpentNow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </Text>
+                            <Text style={{ fontSize: 9, color: '#0F766E', fontWeight: '700' }}>Auto-calculated</Text>
+                          </View>
+                          <View style={{ width: 60, alignItems: 'center', justifyContent: 'center' }}>
+                            <View style={styles.totalBadge}>
+                              <Text style={styles.totalBadgeTxt}>{selectedPassOnItems.length}</Text>
+                            </View>
                           </View>
                         </View>
                       </View>
-                    </View>
+                    </ScrollView>
                   )}
 
                   {/* Active selected item highlight card */}
@@ -975,10 +977,12 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: '#99F6E4',
     borderRadius: radius.sm,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    minWidth: 100,
-    maxWidth: 130,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    width: 120,
+    maxWidth: 120,
+    height: 32,
+    overflow: 'hidden',
   },
   spentInputContainerActive: {
     borderColor: '#0D9488',
@@ -991,17 +995,21 @@ const styles = StyleSheet.create({
   rupeePrefix: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#64748B',
-    marginRight: 2,
+    color: '#0D9488',
+    marginRight: 4,
   },
   spentTextInput: {
     flex: 1,
+    width: '100%',
+    minWidth: 0,
     fontSize: font.sm,
     fontWeight: '800',
     color: '#0F172A',
     textAlign: 'right',
     padding: 0,
-    minHeight: 22,
+    margin: 0,
+    height: 26,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none', borderStyle: 'none' } as any) : {}),
   },
   overLimitTxt: {
     fontSize: 9,
