@@ -189,16 +189,40 @@ def make_system_operations_router(db, get_current_user, require_admin):
         # Net Day Book cash/bank movement for today
         today_cash = round(today_inflow - today_outflow, 2)
 
-        # Receivables & Payables
-        rec_cursor = db.invoices.find({"invoice_type": "sale", "status": {"$ne": "paid"}})
+        # Receivables (To Receive) from Sale Invoices + Customer balances
+        rec_cursor = db.invoices.find({"invoice_type": "sale"})
         total_rec = 0.0
         async for r in rec_cursor:
-            total_rec += float(r.get("balance") or 0.0)
+            r_tot = float(r.get("total_amount") or 0.0)
+            r_paid = float(r.get("paid_amount") or 0.0)
+            r_bal = float(r.get("balance") if r.get("balance") is not None else max(0.0, r_tot - r_paid))
+            if r.get("status") != "paid" or r_bal > 0:
+                total_rec += r_bal
 
-        pay_cursor = db.invoices.find({"invoice_type": "purchase", "status": {"$ne": "paid"}})
+        cust_cursor = db.customers.find({"balance": {"$gt": 0}})
+        async for c in cust_cursor:
+            total_rec += float(c.get("balance") or 0.0)
+
+        # Payables (To Pay): Purchases balance + Pending Expense Approval Vouchers + Pending Expenses
+        pur_cursor = db.invoices.find({"invoice_type": "purchase"})
         total_pay = 0.0
-        async for p in pay_cursor:
-            total_pay += float(p.get("balance") or 0.0)
+        async for p in pur_cursor:
+            p_tot = float(p.get("total_amount") or 0.0)
+            p_paid = float(p.get("paid_amount") or 0.0)
+            p_bal = float(p.get("balance") if p.get("balance") is not None else max(0.0, p_tot - p_paid))
+            if p.get("status") != "paid" or p_bal > 0:
+                total_pay += p_bal
+
+        app_cursor = db.expense_approval_vouchers.find({"status": {"$in": ["submitted", "verified", "pending"]}})
+        async for a in app_cursor:
+            total_pay += float(a.get("total_expense_amount") or a.get("amount") or 0.0)
+
+        pending_exp_cursor = db.expenses.find({"status": {"$in": ["pending", "submitted", "unpaid"]}})
+        async for pe in pending_exp_cursor:
+            total_pay += float(pe.get("amount") or 0.0)
+
+        total_rec = round(total_rec, 2)
+        total_pay = round(total_pay, 2)
 
         # Today Punches
         today_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0)

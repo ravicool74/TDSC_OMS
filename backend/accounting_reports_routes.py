@@ -191,7 +191,11 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
         tot_expenses = sum(float(e.get("amount") or 0) for e in expenses)
         tot_bank = sum(float(b.get("opening_balance") or 0) for b in banks)
         rec_balance = sum(float(s.get("balance") or 0) for s in sales)
-        pay_balance = sum(float(p.get("balance") or 0) for p in purchases)
+        exp_vouchers = await db.expense_approval_vouchers.find({"status": {"$in": ["submitted", "verified", "pending"]}}, {"_id": 0}).to_list(1000)
+        tot_exp_vouchers = sum(float(a.get("total_expense_amount") or a.get("amount") or 0) for a in exp_vouchers)
+        pending_expenses = await db.expenses.find({"status": {"$in": ["pending", "submitted", "unpaid"]}}, {"_id": 0}).to_list(1000)
+        tot_pending_exp = sum(float(pe.get("amount") or 0) for pe in pending_expenses)
+        pay_balance = sum(float(p.get("balance") or 0) for p in purchases) + tot_exp_vouchers + tot_pending_exp
         gross_profit = tot_sales - (tot_purchases * 0.75) # Est COGS
         net_profit = tot_sales - tot_purchases - tot_expenses
 

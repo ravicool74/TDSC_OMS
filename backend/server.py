@@ -4330,10 +4330,6 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
         or_conds.extend([{"linked_vouchers.voucher_id": inv_id}, {"linked_voucher_no": inv_no}])
     if inv_no:
         or_conds.append({"linked_vouchers.voucher_no": inv_no})
-    if party_id:
-        or_conds.append({"client_id": party_id})
-    elif party_name:
-        or_conds.append({"client_name": party_name})
 
     existing_payments = list(d.get("payments") or [])
     
@@ -4414,12 +4410,20 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
                 continue
 
             inc_amt = float(inc.get("amount") or 0.0)
-            allocated = inc_amt
+            allocated = 0.0
+            matched_this_invoice = False
             if inc.get("linked_vouchers"):
                 for lv in inc["linked_vouchers"]:
                     if lv.get("voucher_id") == inv_id or lv.get("voucher_no") == inv_no:
                         allocated = float(lv.get("allocated_amount") or inc_amt)
+                        matched_this_invoice = True
                         break
+            elif inc.get("linked_voucher_no") == inv_no:
+                allocated = inc_amt
+                matched_this_invoice = True
+
+            if not matched_this_invoice:
+                continue
 
             svc_label = inc.get("service_name") or "Receipt"
             merged.append({
