@@ -23,13 +23,20 @@ const TERMS = [
   { label: 'Custom', days: 0 },
 ];
 
-const PAY_MODES = [
+export const PAY_MODES = [
   { key: 'cash', label: 'Cash', icon: 'cash' },
-  { key: 'bank_transfer', label: 'Bank Transfer', icon: 'business' },
+  { key: 'bank_transfer', label: 'Bank Transfer / Online', icon: 'business' },
   { key: 'cheque', label: 'Cheque', icon: 'document-text' },
-  { key: 'upi', label: 'UPI', icon: 'phone-portrait' },
-  { key: 'other', label: 'Other', icon: 'ellipsis-horizontal' },
+  { key: 'upi', label: 'UPI / QR', icon: 'phone-portrait' },
+  { key: 'other', label: 'Other Mode', icon: 'ellipsis-horizontal' },
 ] as const;
+
+export type PaymentSplit = {
+  id: string;
+  mode: string;
+  amount: string;
+  reference: string;
+};
 
 type LineItem = {
   key: string;
@@ -41,7 +48,7 @@ type LineItem = {
   tax_rate: string;
   discount: string;
   item_type?: 'passed_on_money' | 'actual_service';
-  fee_type?: string;
+  fee_type?: string | null;
 };
 
 export default function NewInvoice() {
@@ -55,10 +62,17 @@ export default function NewInvoice() {
   const isPurchase = actualInvoiceType === 'purchase';
 
   const [paymentType, setPaymentType] = useState<'credit' | 'cash'>('credit');
-  const [paymentMode, setPaymentMode] = useState<string>('cash');
-  const [showPayMode, setShowPayMode] = useState(false);
-  const [paidAmountInput, setPaidAmountInput] = useState<string>('');
+  const [activePickingSplitId, setActivePickingSplitId] = useState<string | null>(null);
+
+  // Multi-Payment Mode Splits State
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([
+    { id: 'pay_1', mode: 'cash', amount: '', reference: '' }
+  ]);
+
   const [date, setDate] = useState(today());
+  const dateInitializedRef = React.useRef(false);
+  const [isManualVoucherNo, setIsManualVoucherNo] = useState(false);
+
   const [terms, setTerms] = useState<string>('Net 60 days');
   const [dueDate, setDueDate] = useState(addDays(today(), 60));
   const [showTerms, setShowTerms] = useState(false);
@@ -74,7 +88,7 @@ export default function NewInvoice() {
   const [signatoryName, setSignatoryName] = useState('अंजू कुमारी');
   const [includeSignature, setIncludeSignature] = useState(true);
   const [signatureUrl, setSignatureUrl] = useState<string | null>(null);
-  const [invoiceNo, setInvoiceNo] = useState<string>('AUTO'); // just display
+  const [invoiceNo, setInvoiceNo] = useState<string>('AUTO');
   const [busy, setBusy] = useState(false);
 
   // Recompute due date when date or terms change
@@ -92,8 +106,28 @@ export default function NewInvoice() {
           setInvoiceNo(ex.invoice_no || 'EDIT');
           if (ex.invoice_type) setActualInvoiceType(ex.invoice_type);
           setPaymentType(ex.payment_type || 'credit');
-          setPaymentMode(ex.payment_mode || 'cash');
-          setPaidAmountInput(String(ex.paid_amount || ''));
+          if (Array.isArray(ex.payment_splits) && ex.payment_splits.length > 0) {
+            setPaymentSplits(ex.payment_splits.map((s: any, idx: number) => ({
+              id: `pay_${idx + 1}`,
+              mode: s.mode || s.payment_mode || 'cash',
+              amount: String(s.amount || ''),
+              reference: s.reference || s.ref || '',
+            })));
+          } else if (Array.isArray(ex.payments) && ex.payments.length > 0) {
+            setPaymentSplits(ex.payments.map((p: any, idx: number) => ({
+              id: `pay_${idx + 1}`,
+              mode: p.payment_mode || 'cash',
+              amount: String(p.amount || ''),
+              reference: p.reference || p.ref || '',
+            })));
+          } else if (ex.paid_amount) {
+            setPaymentSplits([{
+              id: 'pay_1',
+              mode: ex.payment_mode || 'cash',
+              amount: String(ex.paid_amount || ''),
+              reference: '',
+            }]);
+          }
           setDate(ex.date || today());
           setTerms(ex.payment_terms || 'Custom');
           setDueDate(ex.due_date || today());
@@ -114,14 +148,23 @@ export default function NewInvoice() {
       }
       try {
         const next = await api.get<any>(`/invoices/next-no?invoice_type=${actualInvoiceType}&date=${date}`);
-        if (next?.next_no) {
-          setInvoiceNo(`${next.next_no} (preview)`);
+        if (next) {
+          if (next.next_no) {
+            setInvoiceNo(next.voucher_mode === 'manual' ? next.next_no : `${next.next_no} (preview)`);
+          }
+          if (next.voucher_mode) {
+            setIsManualVoucherNo(next.voucher_mode === 'manual');
+          }
+          if (next.date_start_from && !dateInitializedRef.current) {
+            setDate(next.date_start_from);
+            dateInitializedRef.current = true;
+          }
         } else {
           setInvoiceNo(
             actualInvoiceType === 'purchase' ? 'PB-0001 (preview)' :
             actualInvoiceType === 'sale_return' ? 'CN-0001 (preview)' :
             actualInvoiceType === 'purchase_return' ? 'DN-0001 (preview)' :
-            'TDSC/2026-27/000002 (preview)'
+            'TDSC/2026-27/000001 (preview)'
           );
         }
       } catch {
@@ -129,7 +172,7 @@ export default function NewInvoice() {
           actualInvoiceType === 'purchase' ? 'PB-0001 (preview)' :
           actualInvoiceType === 'sale_return' ? 'CN-0001 (preview)' :
           actualInvoiceType === 'purchase_return' ? 'DN-0001 (preview)' :
-          'TDSC/2026-27/000002 (preview)'
+          'TDSC/2026-27/000001 (preview)'
         );
       }
     })();
@@ -138,11 +181,15 @@ export default function NewInvoice() {
   const addItem = (i: PickedItem) => {
     setItems(p => [...p, {
       key: `${i.id}-${Date.now()}`,
-      item_id: i.id, name: i.name, unit: i.unit || 'PCS',
-      qty: '1', price: String(isPurchase ? i.purchase_price || i.sale_price : i.sale_price || 0),
-      tax_rate: String(i.tax_rate || 0), discount: '0',
-      item_type: i.item_type || 'actual_service',
-      fee_type: i.fee_type || undefined,
+      item_id: i.id,
+      name: i.name,
+      unit: i.unit || 'PCS',
+      qty: '1',
+      price: String(i.sale_price || i.purchase_price || 0),
+      tax_rate: String(i.tax_rate || 0),
+      discount: '0',
+      item_type: (i as any).item_type || 'actual_service',
+      fee_type: (i as any).fee_type || null,
     }]);
   };
 
@@ -173,18 +220,56 @@ export default function NewInvoice() {
     return { subtotal, discount, tax, total, passedOnTotal, actualServiceTotal };
   }, [items]);
 
-  // Auto-fill Paid = Total when cash mode selected
-  useEffect(() => {
-    if (paymentType === 'cash') setPaidAmountInput(String(totals.total || ''));
-  }, [paymentType, totals.total]);
+  // Combined sum of all entered payment modes
+  const totalSplitPaid = useMemo(() => {
+    return paymentSplits.reduce((sum, ps) => sum + (parseFloat(ps.amount) || 0), 0);
+  }, [paymentSplits]);
 
   const paidNum = useMemo(() => {
     if (paymentType === 'cash') return totals.total;
-    const p = parseFloat(paidAmountInput);
-    if (Number.isFinite(p) && p >= 0) return Math.min(p, totals.total);
-    return 0;
-  }, [paidAmountInput, paymentType, totals.total]);
-  const duesNum = useMemo(() => Math.max(0, totals.total - paidNum), [totals.total, paidNum]);
+    return totalSplitPaid;
+  }, [paymentType, totals.total, totalSplitPaid]);
+
+  const duesNum = useMemo(() => Math.max(0, Math.round((totals.total - paidNum) * 100) / 100), [totals.total, paidNum]);
+
+  // Sync cash payment mode full amount
+  useEffect(() => {
+    if (paymentType === 'cash') {
+      setPaymentSplits([{ id: 'pay_1', mode: 'cash', amount: totals.total > 0 ? String(totals.total) : '', reference: '' }]);
+    }
+  }, [totals.total, paymentType]);
+
+  const handleAddPaymentSplit = () => {
+    const usedModes = paymentSplits.map(s => s.mode);
+    const availableMode = PAY_MODES.find(m => !usedModes.includes(m.key))?.key || 'other';
+    setPaymentSplits(prev => [
+      ...prev,
+      {
+        id: `pay_${Date.now()}`,
+        mode: availableMode,
+        amount: '',
+        reference: '',
+      }
+    ]);
+  };
+
+  const handleUpdatePaymentSplit = (id: string, field: 'mode' | 'amount' | 'reference', val: string) => {
+    setPaymentSplits(prev => prev.map(s => s.id === id ? { ...s, [field]: val } : s));
+  };
+
+  const handleRemovePaymentSplit = (id: string) => {
+    if (paymentSplits.length <= 1) {
+      setPaymentSplits([{ id: 'pay_1', mode: 'cash', amount: '', reference: '' }]);
+      return;
+    }
+    setPaymentSplits(prev => prev.filter(s => s.id !== id));
+  };
+
+  const handleAutoFillRemaining = (id: string) => {
+    const otherSum = paymentSplits.filter(s => s.id !== id).reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+    const remaining = Math.max(0, Math.round((totals.total - otherSum) * 100) / 100);
+    handleUpdatePaymentSplit(id, 'amount', remaining > 0 ? String(remaining) : '');
+  };
 
   const save = async (andNew: boolean) => {
     if (!party) return notify('Customer required', 'Please select or add a customer first');
@@ -193,11 +278,22 @@ export default function NewInvoice() {
     }
     setBusy(true);
     try {
+      const validSplits = paymentSplits
+        .map(s => ({
+          mode: s.mode,
+          amount: parseFloat(s.amount) || 0,
+          reference: s.reference ? s.reference.trim() : '',
+        }))
+        .filter(s => s.amount > 0);
+
+      const dominantMode = validSplits.length > 0 ? validSplits.map(s => s.mode).join(', ') : 'cash';
+
       const body = {
         invoice_type: actualInvoiceType,
         invoice_no: invoiceNo && !invoiceNo.includes('preview') && invoiceNo !== 'AUTO' ? invoiceNo.trim() : undefined,
         payment_type: paymentType,
-        payment_mode: paymentMode,
+        payment_mode: dominantMode,
+        payment_splits: validSplits.length > 0 ? validSplits : undefined,
         date, payment_terms: terms, due_date: paymentType === 'cash' ? date : dueDate,
         party_id: party.id, party_name: party.name, party_mobile: party.mobile || null, party_gst: party.gst_no || null,
         items: items.map(it => ({
@@ -225,23 +321,6 @@ export default function NewInvoice() {
           } catch { attachErrors++; }
         }
       }
-      // Only create an Income record if payment was actually received at invoice generation
-      const actualPaidAtGen = paymentType === 'cash' ? totals.total : (Number(paidNum) || 0);
-      if (!editId && actualInvoiceType === 'sale' && actualPaidAtGen > 0) {
-        try {
-          await api.post('/income', {
-            date, client_id: party.id, client_name: party.name, client_mobile: party.mobile || null,
-            service_category: 'DSC Services', service_name: `Invoice ${inv.invoice_no || ''}`,
-            amount: actualPaidAtGen, payment_mode: paymentType === 'cash' ? 'cash' : (paymentMode || 'cash'),
-            remarks: `Initial down payment for invoice ${inv.invoice_no || inv.id}`,
-            linked_vouchers: [{
-              voucher_id: inv.id,
-              voucher_no: inv.invoice_no,
-              allocated_amount: actualPaidAtGen,
-            }],
-          });
-        } catch {}
-      }
       const suffix = attachErrors ? ` (${attachErrors} attachment upload failed)` : '';
       // Check if auto-tasks are enabled to show hint
       let autoHint = '';
@@ -253,6 +332,7 @@ export default function NewInvoice() {
       }
       if (andNew) {
         setParty(null); setItems([]); setNotes(''); setAttachments([]); setPaymentType('credit'); setDate(today()); setTerms('Net 60 days');
+        setPaymentSplits([{ id: 'pay_1', mode: 'cash', amount: '', reference: '' }]);
         notify('Saved', `${inv.invoice_no} saved successfully${suffix}${autoHint}`);
       } else {
         notify('Saved', `${inv.invoice_no} saved successfully${suffix}${autoHint}`);
@@ -295,7 +375,13 @@ export default function NewInvoice() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 170 + Math.max(insets.bottom, 12) }} keyboardShouldPersistTaps="handled">
           <View style={styles.rowGrid}>
-            <Cell label="Invoice No" value={invoiceNo} disabled />
+            <Cell
+              label={isManualVoucherNo ? "Invoice No (Manual Entry)" : "Invoice No (Auto)"}
+              value={invoiceNo}
+              onChangeText={isManualVoucherNo ? setInvoiceNo : undefined}
+              disabled={!isManualVoucherNo}
+              placeholder={isManualVoucherNo ? "e.g. TDSC/2026-27/000001" : undefined}
+            />
             <Cell label="Date" value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" testID="in-date" />
           </View>
           <View style={styles.rowGrid}>
@@ -375,37 +461,99 @@ export default function NewInvoice() {
             ))
           )}
 
-          {/* Payment details: Paid / Dues / Payment Mode */}
+          {/* Payment details: Multi-Mode Split Payments & Dues */}
           <View style={styles.payCard} testID="pay-details">
-            <Text style={styles.payHead}>PAYMENT DETAILS</Text>
-            <View style={styles.rowGrid}>
-              <View style={styles.cell}>
-                <Text style={styles.cellLbl}>Paid Amount</Text>
-                <TextInput
-                  testID="in-paid"
-                  keyboardType="numeric"
-                  value={paidAmountInput}
-                  onChangeText={setPaidAmountInput}
-                  style={[styles.cellInput, { color: '#059669' }]}
-                  placeholder="0"
-                  placeholderTextColor={colors.muted}
-                />
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.payHead}>PAYMENT MODE & SPLIT BREAKDOWN</Text>
+              {paymentType === 'cash' ? (
+                <View style={{ backgroundColor: '#D1FAE5', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 }}>
+                  <Text style={{ color: '#047857', fontSize: 11, fontWeight: '800' }}>Cash Full Paid</Text>
+                </View>
+              ) : null}
+            </View>
+
+            {/* Total Paid & Remaining Dues Banner */}
+            <View style={styles.splitSummaryBanner}>
+              <View style={styles.splitSumCol}>
+                <Text style={styles.splitSumLbl}>Total Paid (Auto Sum)</Text>
+                <Text style={[styles.splitSumVal, { color: '#059669' }]}>{inr(paidNum)}</Text>
               </View>
-              <View style={styles.cell}>
-                <Text style={styles.cellLbl}>Dues (auto)</Text>
-                <Text style={[styles.cellVal, { color: duesNum > 0 ? '#DC2626' : '#059669' }]}>{inr(duesNum)}</Text>
+              <View style={[styles.splitSumCol, { alignItems: 'flex-end' }]}>
+                <Text style={styles.splitSumLbl}>Remaining Balance (Dues)</Text>
+                <Text style={[styles.splitSumVal, { color: duesNum > 0 ? '#DC2626' : '#059669' }]}>
+                  {duesNum > 0 ? inr(duesNum) : '₹0.00 (Cleared)'}
+                </Text>
               </View>
             </View>
-            <Pressable onPress={() => setShowPayMode(true)} style={styles.payModeRow} testID="pick-pay-mode">
-              <View style={styles.payModeIcon}>
-                <Ionicons name={(PAY_MODES.find(p => p.key === paymentMode)?.icon as any) || 'cash'} size={20} color={colors.brandPrimary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cellLbl}>Payment Mode</Text>
-                <Text style={styles.cellVal}>{PAY_MODES.find(p => p.key === paymentMode)?.label || 'Cash'}</Text>
-              </View>
-              <Ionicons name="chevron-down" size={18} color={colors.muted} />
-            </Pressable>
+
+            {/* Split Payment Rows */}
+            <View style={{ gap: 8 }}>
+              {paymentSplits.map((sp, idx) => {
+                const currentModeObj = PAY_MODES.find(m => m.key === sp.mode) || PAY_MODES[0];
+                return (
+                  <View key={sp.id} style={styles.splitCard}>
+                    <View style={styles.splitHeaderRow}>
+                      <Pressable
+                        onPress={() => setActivePickingSplitId(sp.id)}
+                        style={styles.splitModeBtn}
+                      >
+                        <Ionicons name={currentModeObj.icon as any} size={18} color={colors.brandPrimary} />
+                        <Text style={styles.splitModeTxt}>{currentModeObj.label}</Text>
+                        <Ionicons name="chevron-down" size={14} color={colors.muted} />
+                      </Pressable>
+
+                      <View style={styles.splitAmtBox}>
+                        <Text style={styles.splitCurrency}>₹</Text>
+                        <TextInput
+                          keyboardType="numeric"
+                          value={sp.amount}
+                          onChangeText={v => handleUpdatePaymentSplit(sp.id, 'amount', v)}
+                          style={styles.splitAmtInput}
+                          placeholder="0.00"
+                          placeholderTextColor={colors.muted}
+                        />
+                      </View>
+
+                      {paymentSplits.length > 1 ? (
+                        <Pressable onPress={() => handleRemovePaymentSplit(sp.id)} hitSlop={6} style={{ padding: 4 }}>
+                          <Ionicons name="trash-outline" size={18} color={colors.error} />
+                        </Pressable>
+                      ) : null}
+                    </View>
+
+                    {/* Reference / UTR / Cheque / Notes input */}
+                    <View style={styles.splitRefRow}>
+                      <Ionicons name="bookmark-outline" size={14} color={colors.muted} />
+                      <TextInput
+                        value={sp.reference}
+                        onChangeText={v => handleUpdatePaymentSplit(sp.id, 'reference', v)}
+                        style={styles.splitRefInput}
+                        placeholder={
+                          sp.mode === 'cheque' ? 'Cheque No. & Bank Name' :
+                          sp.mode === 'upi' ? 'UPI Transaction ID / Ref No.' :
+                          sp.mode === 'bank_transfer' ? 'UTR / IMPS / NEFT Reference' :
+                          'Payment Note / Ref (optional)'
+                        }
+                        placeholderTextColor={colors.muted}
+                      />
+                      {duesNum > 0 && (parseFloat(sp.amount) || 0) === 0 ? (
+                        <Pressable onPress={() => handleAutoFillRemaining(sp.id)} style={styles.quickFillBtn}>
+                          <Text style={styles.quickFillTxt}>Fill Remaining</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* Add More Split Button */}
+            {paymentType !== 'cash' ? (
+              <Pressable onPress={handleAddPaymentSplit} style={styles.addSplitBtn}>
+                <Ionicons name="add-circle-outline" size={18} color={colors.brandPrimary} />
+                <Text style={styles.addSplitTxt}>+ Add Payment Mode (Online / Cheque / Cash / UPI)</Text>
+              </Pressable>
+            ) : null}
           </View>
 
           {/* Attachments */}
@@ -448,33 +596,42 @@ export default function NewInvoice() {
                 <Text style={styles.taxLbl}>
                   Services: {inr(totals.actualServiceTotal)} | Pass-on: {inr(totals.passedOnTotal)}
                 </Text>
-              ) : totals.tax > 0 ? (
-                <Text style={styles.taxLbl}>incl. GST {inr(totals.tax)}</Text>
               ) : null}
             </View>
             <Text style={styles.totalVal}>{inr(totals.total)}</Text>
           </View>
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Pressable disabled={busy} onPress={() => save(true)} style={[styles.btnSecondary, busy && { opacity: 0.5 }]} testID="save-new">
+            <Pressable style={styles.btnSecondary} onPress={() => save(true)} disabled={busy}>
               <Text style={styles.btnSecondaryTxt}>Save & New</Text>
             </Pressable>
-            <Pressable disabled={busy} onPress={() => save(false)} style={[styles.btnPrimary, busy && { opacity: 0.5 }]} testID="save-btn">
-              <Text style={styles.btnPrimaryTxt}>{busy ? 'Saving…' : 'Save'}</Text>
+            <Pressable style={styles.btnPrimary} onPress={() => save(false)} disabled={busy} testID="btn-save-invoice">
+              <Text style={styles.btnPrimaryTxt}>{busy ? 'Saving…' : 'Save Invoice'}</Text>
             </Pressable>
           </View>
         </View>
       </KeyboardAvoidingView>
 
-      <CustomerSearchModal visible={showPartyPick} onClose={() => setShowPartyPick(false)} onPick={setParty} title="Search / Add Customer" />
-      <ItemSearchModal visible={showItemPick} onClose={() => setShowItemPick(false)} onPick={addItem} title="Add Item" />
+      <CustomerSearchModal
+        visible={showPartyPick}
+        title={isPurchase ? 'Select Vendor' : 'Select Customer'}
+        onPick={(p: PickedParty) => { setParty(p); setShowPartyPick(false); }}
+        onClose={() => setShowPartyPick(false)}
+      />
 
-      {/* Payment terms modal (simple picker) */}
+      <ItemSearchModal
+        visible={showItemPick}
+        title="Select Item / Service"
+        onPick={(it: PickedItem) => { addItem(it); setShowItemPick(false); }}
+        onClose={() => setShowItemPick(false)}
+      />
+
+      {/* Payment Terms Sheet */}
       {showTerms ? (
         <Pressable style={styles.termsOverlay} onPress={() => setShowTerms(false)}>
-          <View style={[styles.termsSheet, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]}>
+          <View style={styles.termsSheet}>
             <Text style={styles.termsTitle}>Payment Terms</Text>
             {TERMS.map(t => (
-              <Pressable key={t.label} onPress={() => { setTerms(t.label); setShowTerms(false); }} style={styles.termsRow} testID={`term-${t.label}`}>
+              <Pressable key={t.label} onPress={() => { setTerms(t.label); setShowTerms(false); }} style={styles.termsRow}>
                 <Text style={{ flex: 1, color: '#111827', fontWeight: '600' }}>{t.label}</Text>
                 {terms === t.label ? <Ionicons name="checkmark" size={20} color={colors.brandPrimary} /> : null}
               </Pressable>
@@ -483,18 +640,30 @@ export default function NewInvoice() {
         </Pressable>
       ) : null}
 
-      {/* Payment mode modal */}
-      {showPayMode ? (
-        <Pressable style={styles.termsOverlay} onPress={() => setShowPayMode(false)}>
-          <View style={[styles.termsSheet, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]}>
-            <Text style={styles.termsTitle}>Payment Mode</Text>
-            {PAY_MODES.map(m => (
-              <Pressable key={m.key} onPress={() => { setPaymentMode(m.key); setShowPayMode(false); }} style={styles.termsRow} testID={`pm-${m.key}`}>
-                <Ionicons name={m.icon as any} size={20} color={colors.brandPrimary} />
-                <Text style={{ flex: 1, color: '#111827', fontWeight: '600', marginLeft: 10 }}>{m.label}</Text>
-                {paymentMode === m.key ? <Ionicons name="checkmark" size={20} color={colors.brandPrimary} /> : null}
-              </Pressable>
-            ))}
+      {/* Payment Mode Selector Modal for Multi-Mode Splits */}
+      {activePickingSplitId ? (
+        <Pressable style={styles.termsOverlay} onPress={() => setActivePickingSplitId(null)}>
+          <View style={styles.termsSheet}>
+            <Text style={styles.termsTitle}>Select Payment Mode</Text>
+            {PAY_MODES.map(m => {
+              const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
+              const isSelected = currentSplit?.mode === m.key;
+              return (
+                <Pressable
+                  key={m.key}
+                  onPress={() => {
+                    handleUpdatePaymentSplit(activePickingSplitId, 'mode', m.key);
+                    setActivePickingSplitId(null);
+                  }}
+                  style={styles.termsRow}
+                  testID={`pm-${m.key}`}
+                >
+                  <Ionicons name={m.icon as any} size={20} color={colors.brandPrimary} />
+                  <Text style={{ flex: 1, color: '#111827', fontWeight: '600', marginLeft: 10 }}>{m.label}</Text>
+                  {isSelected ? <Ionicons name="checkmark" size={20} color={colors.brandPrimary} /> : null}
+                </Pressable>
+              );
+            })}
           </View>
         </Pressable>
       ) : null}
@@ -506,8 +675,15 @@ const Cell: React.FC<{ label: string; value: string; onChangeText?: (v: string) 
   = ({ label, value, onChangeText, placeholder, disabled, testID }) => (
   <View style={styles.cell}>
     <Text style={styles.cellLbl}>{label}</Text>
-    <TextInput testID={testID} value={value} onChangeText={onChangeText} placeholder={placeholder} editable={!disabled}
-      placeholderTextColor={colors.muted} style={[styles.cellInput, disabled && { color: colors.muted }]} />
+    <TextInput
+      testID={testID}
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      editable={!disabled}
+      placeholderTextColor={colors.muted}
+      style={[styles.cellInput, disabled && { color: colors.muted }]}
+    />
   </View>
 );
 
@@ -563,8 +739,23 @@ const styles = StyleSheet.create({
   termsSheet: { backgroundColor: '#FFF', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
   termsTitle: { fontSize: font.lg, fontWeight: '800', color: '#111827', marginBottom: 8 },
   termsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  payCard: { backgroundColor: '#FFF', borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: 12, gap: 10 },
-  payHead: { fontSize: 11, fontWeight: '900', letterSpacing: 1, color: '#374151' },
-  payModeRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 10 },
-  payModeIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' },
+  payCard: { backgroundColor: '#FFF', borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 12 },
+  payHead: { fontSize: 11, fontWeight: '900', letterSpacing: 0.8, color: '#374151' },
+  splitSummaryBanner: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#F8FAFC', borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', padding: 10 },
+  splitSumCol: { flex: 1 },
+  splitSumLbl: { fontSize: 10, fontWeight: '700', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+  splitSumVal: { fontSize: font.base, fontWeight: '900', marginTop: 2 },
+  splitCard: { backgroundColor: '#F8FAFC', borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', padding: 10, gap: 8 },
+  splitHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  splitModeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
+  splitModeTxt: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  splitAmtBox: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: 10 },
+  splitCurrency: { fontSize: 14, fontWeight: '800', color: '#059669', marginRight: 4 },
+  splitAmtInput: { flex: 1, fontSize: font.base, fontWeight: '800', color: '#059669', paddingVertical: 6 },
+  splitRefRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4 },
+  splitRefInput: { flex: 1, fontSize: 12, color: '#334155', paddingVertical: 2 },
+  quickFillBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, borderWidth: 1, borderColor: '#BFDBFE' },
+  quickFillTxt: { fontSize: 10, fontWeight: '800', color: colors.brandPrimary },
+  addSplitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderStyle: 'dashed', borderRadius: radius.md, paddingVertical: 10 },
+  addSplitTxt: { color: '#16A34A', fontWeight: '800', fontSize: 13 },
 });
