@@ -757,6 +757,7 @@ class Income(BaseModel):
     remarks: Optional[str] = None
     items: List[dict] = Field(default_factory=list)              # Particulars: sl, item, qty, rate, amount
     linked_vouchers: List[dict] = Field(default_factory=list)    # Linked sale vouchers
+    payment_splits: Optional[List[dict]] = None
     attachments: List[dict] = Field(default_factory=list)
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
@@ -784,6 +785,7 @@ class IncomeInput(BaseModel):
     remarks: Optional[str] = None
     items: List[dict] = Field(default_factory=list)
     linked_vouchers: List[dict] = Field(default_factory=list)
+    payment_splits: Optional[List[dict]] = None
 
 
 class IncomeUpdateInput(BaseModel):
@@ -804,6 +806,7 @@ class IncomeUpdateInput(BaseModel):
     remarks: Optional[str] = None
     items: Optional[List[dict]] = None
     linked_vouchers: Optional[List[dict]] = None
+    payment_splits: Optional[List[dict]] = None
 
 
 
@@ -2923,6 +2926,22 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
     inc_dict.pop("voucher_no", None)
     inc_dict.pop("income_no", None)
 
+    # Process multi-mode payment splits if provided
+    if payload.payment_splits:
+        running_tot = 0.0
+        for ps in payload.payment_splits:
+            p_amt = float(ps.get("amount") or 0)
+            if p_amt > 0:
+                running_tot = round(running_tot + p_amt, 2)
+        if running_tot > 0:
+            inc_dict["amount"] = running_tot
+        distinct_modes = list(dict.fromkeys(
+            str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
+            for ps in payload.payment_splits if float(ps.get("amount") or 0) > 0
+        ))
+        if distinct_modes:
+            inc_dict["payment_mode"] = ", ".join(distinct_modes)
+
     # Auto-fill customer details if client_id is present
     if payload.client_id:
         cust = await db.customers.find_one({"id": payload.client_id}, {"_id": 0})
@@ -3146,6 +3165,21 @@ async def update_income(iid: str, payload: IncomeUpdateInput, current: User = De
         raise HTTPException(status_code=404, detail="Payment-In voucher not found")
 
     upd = {k: v for k, v in payload.dict().items() if v is not None}
+
+    if payload.payment_splits is not None:
+        running_tot = 0.0
+        for ps in payload.payment_splits:
+            p_amt = float(ps.get("amount") or 0)
+            if p_amt > 0:
+                running_tot = round(running_tot + p_amt, 2)
+        if running_tot > 0:
+            upd["amount"] = running_tot
+        distinct_modes = list(dict.fromkeys(
+            str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
+            for ps in payload.payment_splits if float(ps.get("amount") or 0) > 0
+        ))
+        if distinct_modes:
+            upd["payment_mode"] = ", ".join(distinct_modes)
 
     cid = upd.get("client_id") or existing.get("client_id")
     if cid:

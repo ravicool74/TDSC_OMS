@@ -42,6 +42,22 @@ export type LinkedVoucher = {
   remarks?: string;
 };
 
+export type PaymentSplit = {
+  id: string;
+  mode: string;
+  amount: string;
+  reference: string;
+  bank_account_id?: string;
+};
+
+const PAY_MODES = [
+  { key: 'cash', label: 'Cash', icon: 'cash-outline' },
+  { key: 'bank_transfer', label: 'Bank Transfer / Online', icon: 'card-outline' },
+  { key: 'cheque', label: 'Cheque', icon: 'document-text-outline' },
+  { key: 'upi', label: 'UPI / QR', icon: 'qr-code-outline' },
+  { key: 'other', label: 'Other', icon: 'ellipsis-horizontal-circle-outline' },
+];
+
 export default function NewPaymentIn() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -73,6 +89,12 @@ export default function NewPaymentIn() {
 
   // Linked Vouchers state
   const [linkedVouchers, setLinkedVouchers] = useState<LinkedVoucher[]>([]);
+
+  // Multi-Mode Payment Splits state
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([
+    { id: 'pay_1', mode: 'cash', amount: '', reference: '', bank_account_id: '' }
+  ]);
+  const [activePickingSplitId, setActivePickingSplitId] = useState<string | null>(null);
 
   // "Link Voucher" Modal State
   const [linkModalVisible, setLinkModalVisible] = useState(false);
@@ -218,15 +240,77 @@ export default function NewPaymentIn() {
     return linkedVouchers.reduce((acc, lv) => acc + (Number(lv.allocated_amount) || 0), 0);
   }, [linkedVouchers]);
 
+  // Combined sum of all entered payment modes
+  const totalSplitPaid = useMemo(() => {
+    return paymentSplits.reduce((sum, ps) => sum + (parseFloat(ps.amount) || 0), 0);
+  }, [paymentSplits]);
+
+  // Target required amount (from line items or linked vouchers)
+  const targetRequiredAmount = useMemo(() => {
+    if (itemsSum > 0) return itemsSum;
+    if (totalAllocated > 0) return totalAllocated;
+    if (customTotalAmount && !Number.isNaN(parseFloat(customTotalAmount))) {
+      return parseFloat(customTotalAmount);
+    }
+    return 0;
+  }, [itemsSum, totalAllocated, customTotalAmount]);
+
+  const duesNum = useMemo(() => {
+    return Math.max(0, Math.round((targetRequiredAmount - totalSplitPaid) * 100) / 100);
+  }, [targetRequiredAmount, totalSplitPaid]);
+
   // Effective payment in amount
   const effectiveTotalAmount = useMemo(() => {
     if (customTotalAmount && !Number.isNaN(parseFloat(customTotalAmount))) {
       return parseFloat(customTotalAmount);
     }
+    if (totalSplitPaid > 0) return totalSplitPaid;
     if (itemsSum > 0) return itemsSum;
     if (totalAllocated > 0) return totalAllocated;
     return 0;
-  }, [customTotalAmount, itemsSum, totalAllocated]);
+  }, [customTotalAmount, totalSplitPaid, itemsSum, totalAllocated]);
+
+  // Auto sync single split with required target amount
+  useEffect(() => {
+    if (paymentSplits.length === 1 && (!paymentSplits[0].amount || parseFloat(paymentSplits[0].amount) === 0)) {
+      if (targetRequiredAmount > 0) {
+        setPaymentSplits([{ ...paymentSplits[0], amount: String(targetRequiredAmount) }]);
+      }
+    }
+  }, [targetRequiredAmount]);
+
+  const handleAddPaymentSplit = () => {
+    const usedModes = paymentSplits.map(s => s.mode);
+    const availableMode = PAY_MODES.find(m => !usedModes.includes(m.key))?.key || 'other';
+    setPaymentSplits(prev => [
+      ...prev,
+      {
+        id: `pay_${Date.now()}`,
+        mode: availableMode,
+        amount: '',
+        reference: '',
+        bank_account_id: bankAccountId || '',
+      }
+    ]);
+  };
+
+  const handleUpdatePaymentSplit = (id: string, field: keyof PaymentSplit, val: string) => {
+    setPaymentSplits(prev => prev.map(s => s.id === id ? { ...s, [field]: val } : s));
+  };
+
+  const handleRemovePaymentSplit = (id: string) => {
+    if (paymentSplits.length <= 1) {
+      setPaymentSplits([{ id: 'pay_1', mode: 'cash', amount: '', reference: '', bank_account_id: '' }]);
+      return;
+    }
+    setPaymentSplits(prev => prev.filter(s => s.id !== id));
+  };
+
+  const handleAutoFillRemaining = (id: string) => {
+    const otherSum = paymentSplits.filter(s => s.id !== id).reduce((acc, s) => acc + (parseFloat(s.amount) || 0), 0);
+    const remaining = Math.max(0, Math.round((targetRequiredAmount - otherSum) * 100) / 100);
+    handleUpdatePaymentSplit(id, 'amount', remaining > 0 ? String(remaining) : '');
+  };
 
   // Open "Link Voucher" modal
   const openLinkModal = (voucher: any) => {
@@ -293,6 +377,58 @@ export default function NewPaymentIn() {
       }
       return sv;
     }));
+
+    // Auto-populate Item Breakdown with Qty, Rate, Amount from linked voucher
+    const vItemNames = Array.isArray(linkingVoucher.items)
+      ? linkingVoucher.items.map((it: any) => it.name).filter(Boolean)
+      : [];
+    const vSummary = vItemNames.length > 0
+      ? vItemNames.join(' AND ')
+      : (linkingVoucher.invoice_no ? `Payment against Voucher ${linkingVoucher.invoice_no}` : 'Payment Receipt');
+
+    setItems(prev => {
+      const isBlankOrZero = prev.length <= 1 && (!prev[0].rate || prev[0].rate === 0 || !prev[0].amount || prev[0].amount === 0);
+      if (isBlankOrZero) {
+        return [{
+          sl: 1,
+          item: (prev[0]?.item && prev[0].item.trim()) ? prev[0].item : vSummary,
+          qty: 1,
+          rate: alloc,
+          amount: alloc,
+        }];
+      }
+      const zeroIdx = prev.findIndex(r => !r.rate || r.rate === 0 || !r.amount || r.amount === 0);
+      if (zeroIdx >= 0) {
+        return prev.map((r, i) => i === zeroIdx ? {
+          ...r,
+          item: (r.item && r.item.trim()) ? r.item : vSummary,
+          qty: r.qty || 1,
+          rate: alloc,
+          amount: Math.round((r.qty || 1) * alloc * 100) / 100,
+        } : r);
+      }
+      return [
+        ...prev,
+        {
+          sl: prev.length + 1,
+          item: vSummary,
+          qty: 1,
+          rate: alloc,
+          amount: alloc,
+        }
+      ];
+    });
+
+    // Auto-sync single split amount if empty/0
+    setPaymentSplits(prev => {
+      if (prev.length <= 1 && (!prev[0].amount || parseFloat(prev[0].amount) === 0)) {
+        return [{
+          ...prev[0],
+          amount: String(alloc),
+        }];
+      }
+      return prev;
+    });
 
     setLinkModalVisible(false);
   };
@@ -383,6 +519,19 @@ export default function NewPaymentIn() {
     setBusy(true);
 
     try {
+      const validSplits = paymentSplits
+        .map(s => ({
+          mode: s.mode,
+          amount: parseFloat(s.amount) || 0,
+          reference: s.reference ? s.reference.trim() : '',
+          bank_account_id: s.bank_account_id || bankAccountId || null,
+        }))
+        .filter(s => s.amount > 0);
+
+      const dominantMode = validSplits.length > 0 ? validSplits.map(s => s.mode).join(', ') : paymentMode;
+      const splitSum = validSplits.reduce((acc, s) => acc + s.amount, 0);
+      const computedFinalAmount = splitSum > 0 ? splitSum : finalAmount;
+
       const payload = {
         voucher_no: voucherNo.includes('preview') ? undefined : voucherNo,
         date,
@@ -391,9 +540,10 @@ export default function NewPaymentIn() {
         client_mobile: selectedParty.mobile || null,
         service_category: serviceCategory,
         service_name: serviceName || (items[0]?.item ? items[0].item : 'Payment-In Receipt'),
-        amount: finalAmount,
-        payment_mode: paymentMode,
-        bank_account_id: paymentMode !== 'cash' ? (bankAccountId || null) : null,
+        amount: computedFinalAmount,
+        payment_mode: dominantMode,
+        payment_splits: validSplits.length > 0 ? validSplits : undefined,
+        bank_account_id: bankAccountId || null,
         employee_id: employeeId || null,
         employee_name: employeeName || null,
         remarks: remarks || null,
@@ -779,39 +929,125 @@ export default function NewPaymentIn() {
             </View>
           </View>
 
-          {/* Section 6: Payment Details, Bank Account & Service Category */}
+          {/* Section 6: Payment Details, Bank Account & Service Category (Multi-Mode Split) */}
           <View style={styles.card}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="wallet-outline" size={20} color="#D97706" />
-              <Text style={styles.sectionTitle}>PAYMENT MODE & BANK ACCOUNT</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="wallet-outline" size={20} color="#D97706" />
+                <Text style={styles.sectionTitle}>PAYMENT MODE & BANK ACCOUNT</Text>
+              </View>
+              <View style={{ backgroundColor: '#D1FAE5', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 }}>
+                <Text style={{ color: '#047857', fontSize: 11, fontWeight: '800' }}>Multi-Mode Support</Text>
+              </View>
             </View>
 
-            <OptionRow
-              label="Payment Mode"
-              options={meta.payment_modes || ['cash', 'bank', 'upi', 'cheque']}
-              value={paymentMode}
-              onChange={setPaymentMode}
-              testID="payment-mode"
-            />
-
-            {paymentMode !== 'cash' && banks.length > 0 && (
-              <View style={{ gap: 6, marginTop: 4 }}>
-                <Text style={styles.fieldLabel}>Deposit into Bank Account</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                  {banks.map(b => (
-                    <Pressable
-                      key={b.id}
-                      onPress={() => setBankAccountId(b.id)}
-                      style={[styles.chip, bankAccountId === b.id && styles.chipActive]}
-                    >
-                      <Text style={[styles.chipText, bankAccountId === b.id && { color: '#FFF' }]}>{b.name}</Text>
-                    </Pressable>
-                  ))}
-                </View>
+            {/* Total Paid & Remaining Dues Banner */}
+            <View style={styles.splitSummaryBanner}>
+              <View style={styles.splitSumCol}>
+                <Text style={styles.splitSumLbl}>Total Paid (Auto Sum)</Text>
+                <Text style={[styles.splitSumVal, { color: '#059669' }]}>{inr(totalSplitPaid)}</Text>
               </View>
-            )}
+              <View style={[styles.splitSumCol, { alignItems: 'flex-end' }]}>
+                <Text style={styles.splitSumLbl}>Remaining Balance (Dues)</Text>
+                <Text style={[styles.splitSumVal, { color: duesNum > 0 ? '#DC2626' : '#059669' }]}>
+                  {duesNum > 0 ? inr(duesNum) : '₹0.00 (Cleared)'}
+                </Text>
+              </View>
+            </View>
 
-            <View style={{ gap: 6, marginTop: 4 }}>
+            {/* Payment Splits List */}
+            <View style={{ gap: 8 }}>
+              {paymentSplits.map((sp, idx) => {
+                const currentModeObj = PAY_MODES.find(m => m.key === sp.mode) || PAY_MODES[0];
+                const isBankOrCheque = sp.mode === 'bank_transfer' || sp.mode === 'cheque' || sp.mode === 'bank';
+                return (
+                  <View key={sp.id} style={styles.splitCard}>
+                    <View style={styles.splitHeaderRow}>
+                      <Pressable
+                        onPress={() => setActivePickingSplitId(sp.id)}
+                        style={styles.splitModeBtn}
+                      >
+                        <Ionicons name={currentModeObj.icon as any} size={18} color="#059669" />
+                        <Text style={styles.splitModeTxt}>{currentModeObj.label}</Text>
+                        <Ionicons name="chevron-down" size={14} color="#64748B" />
+                      </Pressable>
+
+                      <View style={styles.splitAmtBox}>
+                        <Text style={styles.splitCurrency}>₹</Text>
+                        <TextInput
+                          keyboardType="numeric"
+                          value={sp.amount}
+                          onChangeText={v => handleUpdatePaymentSplit(sp.id, 'amount', v)}
+                          style={styles.splitAmtInput}
+                          placeholder="0.00"
+                          placeholderTextColor="#94A3B8"
+                        />
+                      </View>
+
+                      {paymentSplits.length > 1 ? (
+                        <Pressable onPress={() => handleRemovePaymentSplit(sp.id)} hitSlop={6} style={{ padding: 4 }}>
+                          <Ionicons name="trash-outline" size={18} color="#DC2626" />
+                        </Pressable>
+                      ) : null}
+                    </View>
+
+                    {/* Bank Account Selection (if Bank/Cheque/Online) */}
+                    {isBankOrCheque && banks.length > 0 && (
+                      <View style={{ gap: 4, marginTop: 4, paddingHorizontal: 4 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569' }}>Deposit into Bank Account:</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                          {banks.map(b => {
+                            const isSel = (sp.bank_account_id || bankAccountId) === b.id;
+                            return (
+                              <Pressable
+                                key={b.id}
+                                onPress={() => {
+                                  handleUpdatePaymentSplit(sp.id, 'bank_account_id', b.id);
+                                  setBankAccountId(b.id);
+                                }}
+                                style={[styles.chip, isSel && styles.chipActive]}
+                              >
+                                <Text style={[styles.chipText, isSel && { color: '#FFF' }]}>{b.name}</Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Reference / UTR / Cheque / Notes input */}
+                    <View style={styles.splitRefRow}>
+                      <Ionicons name="bookmark-outline" size={14} color="#64748B" />
+                      <TextInput
+                        value={sp.reference}
+                        onChangeText={v => handleUpdatePaymentSplit(sp.id, 'reference', v)}
+                        style={styles.splitRefInput}
+                        placeholder={
+                          sp.mode === 'cheque' ? 'Cheque No. & Bank Name' :
+                          sp.mode === 'upi' ? 'UPI Transaction ID / Ref No.' :
+                          sp.mode === 'bank_transfer' ? 'UTR / IMPS / NEFT Reference' :
+                          'Payment Note / Ref (optional)'
+                        }
+                        placeholderTextColor="#94A3B8"
+                      />
+                      {duesNum > 0 && (parseFloat(sp.amount) || 0) === 0 ? (
+                        <Pressable onPress={() => handleAutoFillRemaining(sp.id)} style={styles.quickFillBtn}>
+                          <Text style={styles.quickFillTxt}>Fill Remaining</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* Add More Split Button */}
+            <Pressable onPress={handleAddPaymentSplit} style={styles.addSplitBtn}>
+              <Ionicons name="add-circle-outline" size={18} color="#059669" />
+              <Text style={styles.addSplitTxt}>+ Add Payment Mode (Online / Cheque / Cash / UPI)</Text>
+            </Pressable>
+
+            <View style={{ gap: 6, marginTop: 8 }}>
               <Text style={styles.fieldLabel}>Service Category</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                 {(meta.income_categories || []).map((cat: string) => (
@@ -1829,5 +2065,159 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: 12,
     fontWeight: '700',
+  },
+
+  // Split Payment Styles
+  splitSummaryBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  splitSumCol: { flex: 1 },
+  splitSumLbl: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  splitSumVal: {
+    fontSize: 15,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  splitCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    gap: 8,
+  },
+  splitHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  splitModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  splitModeTxt: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  splitAmtBox: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+  },
+  splitCurrency: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#059669',
+    marginRight: 4,
+  },
+  splitAmtInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#059669',
+    paddingVertical: 6,
+  },
+  splitRefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  splitRefInput: {
+    flex: 1,
+    fontSize: 12,
+    color: '#334155',
+    paddingVertical: 2,
+  },
+  quickFillBtn: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  quickFillTxt: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#0284C7',
+  },
+  addSplitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderStyle: 'dashed',
+    borderRadius: radius.md,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  addSplitTxt: {
+    color: '#16A34A',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  termsOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  termsSheet: {
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    padding: 20,
+  },
+  termsTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 12,
+  },
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
   },
 });

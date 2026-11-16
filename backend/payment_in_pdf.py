@@ -195,6 +195,18 @@ def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
     cust_pan = cust_data.get("pan") or "-"
     cust_addr = cust_data.get("address") or "-"
 
+    splits_detail = ""
+    if inc.get("payment_splits"):
+        splits_parts = []
+        for sp in inc["payment_splits"]:
+            p_amt = float(sp.get("amount") or 0)
+            if p_amt > 0:
+                p_m = str(sp.get("mode") or "").upper()
+                p_ref = f" [{sp.get('reference')}]" if sp.get("reference") else ""
+                splits_parts.append(f"{p_m}: {_rupee(p_amt)}{p_ref}")
+        if splits_parts:
+            splits_detail = "<br/><b>Payment Splits:</b> " + ", ".join(splits_parts)
+
     cust_rows = [
         [
             Paragraph("<b>RECEIVED WITH THANKS FROM</b>", bill_to),
@@ -210,7 +222,7 @@ def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
             ),
             Paragraph(
                 f"<b>Total Received:</b> <font color='#047857' size='11'><b>{_rupee(float(inc.get('amount') or 0))}</b></font><br/>"
-                f"<b>Mode:</b> {str(inc.get('payment_mode') or 'cash').upper()}<br/>"
+                f"<b>Mode:</b> {str(inc.get('payment_mode') or 'cash').upper()}{splits_detail}<br/>"
                 f"<b>Received By:</b> {inc.get('employee_name') or 'Accounts Desk'}<br/>"
                 f"<b>Ref / Remarks:</b> {inc.get('remarks') or '-'}",
                 small
@@ -245,8 +257,8 @@ def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
         Paragraph("<b>Sl.</b>", small),
         Paragraph("<b>Particulars / Service Description</b>", small),
         Paragraph("<b>Qty</b>", small),
-        Paragraph("<b>Rate (₹)</b>", small),
-        Paragraph("<b>Amount (₹)</b>", small),
+        Paragraph("<b>Rate (Rs.)</b>", small),
+        Paragraph("<b>Amount (Rs.)</b>", small),
     ]
     item_rows = [items_header]
     for idx, it in enumerate(raw_items, 1):
@@ -287,10 +299,10 @@ def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
         link_header = [
             Paragraph("<b>Sale Voucher No.</b>", small),
             Paragraph("<b>Voucher Date</b>", small),
-            Paragraph("<b>Total Bill (₹)</b>", small),
-            Paragraph("<b>Already Paid (₹)</b>", small),
-            Paragraph("<b>Amount Linked (₹)</b>", small),
-            Paragraph("<b>Remaining Balance (₹)</b>", small),
+            Paragraph("<b>Total Bill (Rs.)</b>", small),
+            Paragraph("<b>Already Paid (Rs.)</b>", small),
+            Paragraph("<b>Amount Linked (Rs.)</b>", small),
+            Paragraph("<b>Remaining Balance (Rs.)</b>", small),
         ]
         link_rows = [link_header]
         for lv in linked:
