@@ -27,6 +27,7 @@ export type PaymentInItem = {
   qty: number;
   rate: number;
   amount: number;
+  voucher_id?: string;
 };
 
 export type LinkedVoucher = {
@@ -212,6 +213,13 @@ export default function NewPaymentIn() {
         const q = parseFloat(field === 'qty' ? val : cur.qty) || 0;
         const r = parseFloat(field === 'rate' ? val : cur.rate) || 0;
         cur.amount = Math.round(q * r * 100) / 100;
+      } else if (field === 'amount') {
+        const a = parseFloat(val) || 0;
+        cur.amount = a;
+        const q = parseFloat(cur.qty as any) || 1;
+        if (q > 0) {
+          cur.rate = Math.round((a / q) * 100) / 100;
+        }
       }
       next[index] = cur;
       return next;
@@ -378,45 +386,75 @@ export default function NewPaymentIn() {
       return sv;
     }));
 
-    // Auto-populate Item Breakdown with Qty, Rate, Amount from linked voucher
-    const vItemNames = Array.isArray(linkingVoucher.items)
-      ? linkingVoucher.items.map((it: any) => it.name).filter(Boolean)
-      : [];
-    const vSummary = vItemNames.length > 0
-      ? vItemNames.join(' AND ')
-      : (linkingVoucher.invoice_no ? `Payment against Voucher ${linkingVoucher.invoice_no}` : 'Payment Receipt');
+    // Auto-populate Item Breakdown PARTICULAR-WISE from linked voucher
+    const rawVoucherItems = Array.isArray(linkingVoucher.items) ? linkingVoucher.items : [];
+    const validVItems = rawVoucherItems.filter((it: any) => it && (it.name || it.item));
+
+    let newItemsForVoucher: PaymentInItem[] = [];
+
+    if (validVItems.length > 0) {
+      // Total amount across all items in the voucher
+      const itemsRawTotal = validVItems.reduce((acc: number, it: any) => {
+        const lineAmt = Number(it.amount != null ? it.amount : ((Number(it.qty) || 1) * (Number(it.price) || 0))) || 0;
+        return acc + lineAmt;
+      }, 0);
+
+      // Proportion ratio if allocated differs from voucher total
+      const ratio = itemsRawTotal > 0 ? (alloc / itemsRawTotal) : (1 / validVItems.length);
+
+      let runningAlloc = 0;
+      newItemsForVoucher = validVItems.map((it: any, idx: number) => {
+        const itName = String(it.name || it.item || 'Item').trim();
+        const itQty = Number(it.qty) || 1;
+        const itOrigPrice = Number(it.price != null ? it.price : it.rate) || 0;
+        const itOrigAmt = Number(it.amount != null ? it.amount : (itQty * itOrigPrice)) || 0;
+
+        let itAllocAmt: number;
+        if (Math.abs(alloc - itemsRawTotal) < 0.01) {
+          itAllocAmt = itOrigAmt;
+        } else if (idx === validVItems.length - 1) {
+          itAllocAmt = Math.max(0, Math.round((alloc - runningAlloc) * 100) / 100);
+        } else {
+          itAllocAmt = Math.round(itOrigAmt * ratio * 100) / 100;
+          runningAlloc += itAllocAmt;
+        }
+
+        const itRate = itQty > 0 ? Math.round((itAllocAmt / itQty) * 100) / 100 : itAllocAmt;
+
+        return {
+          sl: idx + 1,
+          item: itName,
+          qty: itQty,
+          rate: itRate,
+          amount: itAllocAmt,
+          voucher_id: linkingVoucher.id,
+        };
+      });
+    } else {
+      const vDesc = linkingVoucher.invoice_no
+        ? `Payment against Voucher ${linkingVoucher.invoice_no}`
+        : 'Payment Receipt';
+      newItemsForVoucher = [{
+        sl: 1,
+        item: vDesc,
+        qty: 1,
+        rate: alloc,
+        amount: alloc,
+        voucher_id: linkingVoucher.id,
+      }];
+    }
 
     setItems(prev => {
-      const isBlankOrZero = prev.length <= 1 && (!prev[0].rate || prev[0].rate === 0 || !prev[0].amount || prev[0].amount === 0);
-      if (isBlankOrZero) {
-        return [{
-          sl: 1,
-          item: (prev[0]?.item && prev[0].item.trim()) ? prev[0].item : vSummary,
-          qty: 1,
-          rate: alloc,
-          amount: alloc,
-        }];
-      }
-      const zeroIdx = prev.findIndex(r => !r.rate || r.rate === 0 || !r.amount || r.amount === 0);
-      if (zeroIdx >= 0) {
-        return prev.map((r, i) => i === zeroIdx ? {
-          ...r,
-          item: (r.item && r.item.trim()) ? r.item : vSummary,
-          qty: r.qty || 1,
-          rate: alloc,
-          amount: Math.round((r.qty || 1) * alloc * 100) / 100,
-        } : r);
-      }
-      return [
-        ...prev,
-        {
-          sl: prev.length + 1,
-          item: vSummary,
-          qty: 1,
-          rate: alloc,
-          amount: alloc,
-        }
-      ];
+      // Remove any previously linked items for this same voucher (if re-linking/editing link)
+      const filteredPrev = prev.filter(r => r.voucher_id !== linkingVoucher.id);
+      const isBlankOrZero = filteredPrev.length === 0 || (
+        filteredPrev.length === 1 &&
+        (!filteredPrev[0].item.trim() || !filteredPrev[0].rate || filteredPrev[0].rate === 0 || !filteredPrev[0].amount || filteredPrev[0].amount === 0)
+      );
+
+      const baseList = isBlankOrZero ? [] : filteredPrev;
+      const combined = [...baseList, ...newItemsForVoucher];
+      return combined.map((it, idx) => ({ ...it, sl: idx + 1 }));
     });
 
     // Auto-sync single split amount if empty/0
@@ -451,6 +489,15 @@ export default function NewPaymentIn() {
       }));
     }
     setLinkedVouchers(prev => prev.filter(l => l.voucher_id !== voucherId));
+
+    // Also remove items corresponding to this unlinked voucher
+    setItems(prev => {
+      const remaining = prev.filter(it => it.voucher_id !== voucherId);
+      if (remaining.length === 0) {
+        return [{ sl: 1, item: '', qty: 1, rate: 0, amount: 0 }];
+      }
+      return remaining.map((it, idx) => ({ ...it, sl: idx + 1 }));
+    });
   };
 
   // Open "View Link History" modal
@@ -908,9 +955,14 @@ export default function NewPaymentIn() {
                   style={[styles.tableInput, { width: 75, textAlign: 'right' }]}
                   testID={`item-rate-${idx}`}
                 />
-                <Text style={[styles.cellTxt, { width: 85, textAlign: 'right', fontWeight: '800', color: '#059669' }]}>
-                  {inr(row.amount)}
-                </Text>
+                <TextInput
+                  value={String(row.amount || '')}
+                  onChangeText={v => updateItem(idx, 'amount', v)}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                  style={[styles.tableInput, { width: 85, textAlign: 'right', fontWeight: '800', color: '#059669' }]}
+                  testID={`item-amount-${idx}`}
+                />
                 <Pressable
                   onPress={() => removeItemRow(idx)}
                   hitSlop={6}
