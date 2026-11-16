@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform,
-  Pressable, ActivityIndicator, Alert
+  Pressable, ActivityIndicator, Alert, TextInput
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -49,12 +49,15 @@ export default function NewExpense() {
   const [passOnItems, setPassOnItems] = useState<InvoicePassOnItem[]>([]);
   const [selectedPassOnItems, setSelectedPassOnItems] = useState<InvoicePassOnItem[]>([]);
 
+  // Itemwise editable spent amount: { [itemName]: "amountString" }
+  const [itemSpentAmounts, setItemSpentAmounts] = useState<Record<string, string>>({});
+
   // Computed totals for selected pass-on items
   const totalSelectedReceived = useMemo(
     () => selectedPassOnItems.reduce((sum, it) => sum + (it.billed_amount || 0), 0),
     [selectedPassOnItems]
   );
-  const totalSelectedSpent = useMemo(
+  const totalSelectedPrevSpent = useMemo(
     () => selectedPassOnItems.reduce((sum, it) => sum + (it.already_spent || 0), 0),
     [selectedPassOnItems]
   );
@@ -62,6 +65,22 @@ export default function NewExpense() {
     () => selectedPassOnItems.reduce((sum, it) => sum + (it.remaining_balance || 0), 0),
     [selectedPassOnItems]
   );
+
+  // Live item-wise spent sum currently entered by user
+  const totalSelectedSpentNow = useMemo(() => {
+    return selectedPassOnItems.reduce((sum, it) => {
+      const val = parseFloat(itemSpentAmounts[it.name] ?? String(it.remaining_balance || 0)) || 0;
+      return sum + val;
+    }, 0);
+  }, [selectedPassOnItems, itemSpentAmounts]);
+
+  // Check if any selected item exceeds its individual balance
+  const anyItemExceedsBalance = useMemo(() => {
+    return selectedPassOnItems.some(it => {
+      const val = parseFloat(itemSpentAmounts[it.name] ?? String(it.remaining_balance || 0)) || 0;
+      return val > (it.remaining_balance || 0);
+    });
+  }, [selectedPassOnItems, itemSpentAmounts]);
 
   const [meta, setMeta] = useState<any>({ expense_categories: [], payment_modes: ['cash', 'bank', 'upi', 'cheque'] });
   const [banks, setBanks] = useState<any[]>([]);
@@ -99,6 +118,7 @@ export default function NewExpense() {
     setSelectedInvoice(null);
     setPassOnItems([]);
     setSelectedPassOnItems([]);
+    setItemSpentAmounts({});
     setLoadingInvoices(true);
     try {
       const invs = await api.get<any[]>(`/invoices?invoice_type=sale&party_id=${party.id}`);
@@ -118,6 +138,7 @@ export default function NewExpense() {
   const handleSelectInvoice = async (inv: any) => {
     setSelectedInvoice(inv);
     setSelectedPassOnItems([]);
+    setItemSpentAmounts({});
     setLoadingPassOnItems(true);
     try {
       const res = await api.get<any>(`/invoices/${inv.id}/passed-on-items`);
@@ -127,6 +148,11 @@ export default function NewExpense() {
       const avail = items.filter((x: InvoicePassOnItem) => x.remaining_balance > 0);
       if (avail.length > 0) {
         setSelectedPassOnItems(avail);
+        const initSpent: Record<string, string> = {};
+        avail.forEach((x: InvoicePassOnItem) => {
+          initSpent[x.name] = String(x.remaining_balance || 0);
+        });
+        setItemSpentAmounts(initSpent);
         const sumBal = avail.reduce((sum: number, x: InvoicePassOnItem) => sum + (x.remaining_balance || 0), 0);
         setF(p => ({
           ...p,
@@ -142,16 +168,45 @@ export default function NewExpense() {
     }
   };
 
+  // Handle live edit of spent amount for a specific item
+  const handleItemSpentChange = (itemName: string, val: string) => {
+    const clean = val.replace(/[^0-9.]/g, '');
+    setItemSpentAmounts(prev => {
+      const next = { ...prev, [itemName]: clean };
+      // Recalculate total spent from all currently selected items
+      const newTotal = selectedPassOnItems.reduce((sum, it) => {
+        const itVal = it.name === itemName ? clean : (next[it.name] ?? String(it.remaining_balance || 0));
+        return sum + (parseFloat(itVal) || 0);
+      }, 0);
+      setF(p => ({
+        ...p,
+        amount: newTotal > 0 ? String(newTotal) : '',
+      }));
+      return next;
+    });
+  };
+
   // Toggle single item in/out of selection
   const handleTogglePassOnItem = (it: InvoicePassOnItem) => {
     if (it.remaining_balance <= 0) return;
     setSelectedPassOnItems(prev => {
       const exists = prev.some(x => x.name === it.name);
       const next = exists ? prev.filter(x => x.name !== it.name) : [...prev, it];
-      const sumBal = next.reduce((sum, x) => sum + (x.remaining_balance || 0), 0);
+      
+      let nextSpent = { ...itemSpentAmounts };
+      if (!exists && (!nextSpent[it.name] || parseFloat(nextSpent[it.name]) <= 0)) {
+        nextSpent[it.name] = String(it.remaining_balance);
+        setItemSpentAmounts(nextSpent);
+      }
+
+      const sumSpent = next.reduce((sum, x) => {
+        const val = parseFloat(nextSpent[x.name] ?? String(x.remaining_balance || 0)) || 0;
+        return sum + val;
+      }, 0);
+
       setF(p => ({
         ...p,
-        amount: sumBal > 0 ? String(sumBal) : '',
+        amount: sumSpent > 0 ? String(sumSpent) : '',
         category: next.length === 1 ? `${next[0].name} Expense` : next.length > 1 ? `Pass-on Expense (${next.length} Items)` : '',
         description: next.length > 0
           ? `Disbursement of client pass-on funds for ${next.map(x => x.name).join(', ')} against Voucher ${selectedInvoice?.invoice_no || ''}`
@@ -171,10 +226,17 @@ export default function NewExpense() {
       setF(p => ({ ...p, amount: '', category: '', description: '' }));
     } else {
       setSelectedPassOnItems(eligible);
-      const sumBal = eligible.reduce((sum, x) => sum + (x.remaining_balance || 0), 0);
+      const nextSpent: Record<string, string> = { ...itemSpentAmounts };
+      eligible.forEach(x => {
+        if (!nextSpent[x.name] || parseFloat(nextSpent[x.name]) <= 0) {
+          nextSpent[x.name] = String(x.remaining_balance);
+        }
+      });
+      setItemSpentAmounts(nextSpent);
+      const sumSpent = eligible.reduce((sum, x) => sum + (parseFloat(nextSpent[x.name] ?? String(x.remaining_balance || 0)) || 0), 0);
       setF(p => ({
         ...p,
-        amount: String(sumBal),
+        amount: String(sumSpent),
         category: eligible.length === 1 ? `${eligible[0].name} Expense` : `Pass-on Expense (${eligible.length} Items)`,
         description: `Disbursement of client pass-on funds for ${eligible.map(x => x.name).join(', ')} against Voucher ${selectedInvoice?.invoice_no || ''}`,
       }));
@@ -185,8 +247,7 @@ export default function NewExpense() {
   const amtNum = parseFloat(f.amount) || 0;
   const isOverLimit =
     expenseMode === 'pass_on' &&
-    selectedPassOnItems.length > 0 &&
-    amtNum > totalSelectedBalance;
+    (anyItemExceedsBalance || (selectedPassOnItems.length > 0 && amtNum > totalSelectedBalance));
 
   const save = async () => {
     const amt = parseFloat(f.amount);
@@ -206,6 +267,10 @@ export default function NewExpense() {
       }
       if (selectedPassOnItems.length === 0) {
         setErr('Please select at least one Passed On Money item from the table');
+        return;
+      }
+      if (anyItemExceedsBalance) {
+        setErr('One or more selected items have a spent amount exceeding their available balance.');
         return;
       }
       if (amt > totalSelectedBalance) {
@@ -245,13 +310,19 @@ export default function NewExpense() {
         payload.sale_item_name = selectedPassOnItems.map(x => x.name).join(', ');
         payload.pass_on_item_type = 'passed_on_money';
         payload.pass_on_received_amount = totalSelectedReceived;
-        payload.selected_items = selectedPassOnItems.map(x => ({
-          name: x.name,
-          fee_type: x.fee_type,
-          billed_amount: x.billed_amount,
-          already_spent: x.already_spent,
-          remaining_balance: x.remaining_balance,
-        }));
+        payload.amount = amt;
+        payload.selected_items = selectedPassOnItems.map(x => {
+          const sAmt = parseFloat(itemSpentAmounts[x.name] ?? String(x.remaining_balance || 0)) || 0;
+          return {
+            name: x.name,
+            fee_type: x.fee_type,
+            billed_amount: x.billed_amount,
+            already_spent: x.already_spent,
+            remaining_balance: x.remaining_balance,
+            spent_amount: sAmt,
+            amount: sAmt,
+          };
+        });
       }
 
       const created: any = await api.post('/expenses', payload);
@@ -270,11 +341,16 @@ export default function NewExpense() {
       }
 
       if (Platform.OS === 'web') {
-        window.alert(`Expense ${created.expense_no || ''} booked successfully!`);
+        window.alert(`Expense ${created.expense_no || ''} saved and forwarded for approval successfully!`);
       } else {
-        Alert.alert('Success', `Expense ${created.expense_no || ''} booked successfully!`);
+        Alert.alert('Success', `Expense ${created.expense_no || ''} saved and forwarded for approval successfully!`);
       }
-      router.replace('/accounting/expenses' as any);
+      const targetApprovalId = created.linked_approval_id || created.linked_voucher_no;
+      if (targetApprovalId) {
+        router.replace(`/accounting/expenses/approval/${targetApprovalId}` as any);
+      } else {
+        router.replace('/accounting/expenses/approval' as any);
+      }
     } catch (e: any) {
       setErr(e?.message || 'Failed to book expense');
     } finally {
@@ -440,12 +516,16 @@ export default function NewExpense() {
                       {/* Table Header with Select All */}
                       <View style={styles.tableHeaderRow}>
                         <Text style={[styles.thCell, { flex: 2 }]}>Fee Item Name</Text>
-                        <Text style={[styles.thCell, { flex: 1.5, textAlign: 'right' }]}>Received</Text>
-                        <Text style={[styles.thCell, { flex: 1.5, textAlign: 'right' }]}>Spent</Text>
-                        <Text style={[styles.thCell, { flex: 1.5, textAlign: 'right' }]}>Balance</Text>
+                        <Text style={[styles.thCell, { flex: 1.2, textAlign: 'right' }]}>Received</Text>
+                        <Text style={[styles.thCell, { flex: 1.2, textAlign: 'right' }]}>Balance</Text>
+                        <View style={{ flex: 1.6, alignItems: 'flex-end', paddingRight: 6 }}>
+                          <Text style={[styles.thCellTxt, { fontSize: 11, fontWeight: '800', color: '#0F766E' }]}>
+                            Spent (₹) * ✏️
+                          </Text>
+                        </View>
                         <Pressable
                           onPress={handleToggleSelectAll}
-                          style={{ width: 68, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                          style={{ width: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                           hitSlop={6}
                         >
                           <Text style={[styles.thCellTxt, { fontSize: 11, fontWeight: '800', color: '#0F766E' }]}>All</Text>
@@ -468,44 +548,91 @@ export default function NewExpense() {
                       {passOnItems.map(it => {
                         const isChosen = selectedPassOnItems.some(x => x.name === it.name);
                         const isZero = it.remaining_balance <= 0;
+                        const currentSpentStr = itemSpentAmounts[it.name] ?? (isChosen ? String(it.remaining_balance) : '0');
+                        const currentSpentVal = parseFloat(currentSpentStr) || 0;
+                        const isItemOver = isChosen && currentSpentVal > it.remaining_balance;
+
                         return (
-                          <Pressable
+                          <View
                             key={it.name}
                             testID={`row-passon-${it.name}`}
-                            onPress={() => !isZero && handleTogglePassOnItem(it)}
                             style={[
                               styles.tableDataRow,
                               isChosen && styles.tableDataRowChosen,
                               isZero && { opacity: 0.6, backgroundColor: '#F8FAFC' },
                             ]}
                           >
-                            <View style={{ flex: 2 }}>
+                            <Pressable
+                              onPress={() => !isZero && handleTogglePassOnItem(it)}
+                              style={{ flex: 2 }}
+                            >
                               <Text style={[styles.tdName, isChosen && { color: '#0D9488', fontWeight: '800' }]}>{it.name}</Text>
                               <Text style={styles.tdFeeType}>{it.fee_type || 'Reimbursement'}</Text>
-                            </View>
-                            <Text style={[styles.tdAmt, { flex: 1.5, textAlign: 'right' }]}>
+                              {it.already_spent > 0 ? (
+                                <Text style={{ fontSize: 10, color: '#DC2626' }}>
+                                  Prev Spent: ₹{it.already_spent.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                </Text>
+                              ) : null}
+                            </Pressable>
+
+                            <Text style={[styles.tdAmt, { flex: 1.2, textAlign: 'right' }]}>
                               ₹{it.billed_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                             </Text>
-                            <Text style={[styles.tdAmt, { flex: 1.5, textAlign: 'right', color: '#DC2626' }]}>
-                              ₹{it.already_spent.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                            </Text>
+
                             <Text
                               style={[
                                 styles.tdAmt,
-                                { flex: 1.5, textAlign: 'right', fontWeight: '800' },
+                                { flex: 1.2, textAlign: 'right', fontWeight: '800' },
                                 isZero ? { color: '#94A3B8' } : { color: '#059669' },
                               ]}
                             >
                               ₹{it.remaining_balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                             </Text>
-                            <View style={{ width: 68, alignItems: 'center', justifyContent: 'center' }}>
+
+                            {/* Editable Spent Amount Input Box */}
+                            <View style={{ flex: 1.6, alignItems: 'flex-end', justifyContent: 'center', paddingRight: 6 }}>
+                              <View
+                                style={[
+                                  styles.spentInputContainer,
+                                  isChosen && styles.spentInputContainerActive,
+                                  isItemOver && styles.spentInputContainerError,
+                                  !isChosen && { opacity: 0.45, backgroundColor: '#F1F5F9' },
+                                ]}
+                              >
+                                <Text style={[styles.rupeePrefix, isChosen && { color: '#0D9488' }]}>₹</Text>
+                                <TextInput
+                                  value={isChosen ? currentSpentStr : ''}
+                                  onChangeText={(val: string) => handleItemSpentChange(it.name, val)}
+                                  keyboardType="numeric"
+                                  editable={isChosen && !isZero}
+                                  placeholder={isChosen ? '0.00' : '—'}
+                                  placeholderTextColor="#94A3B8"
+                                  style={[
+                                    styles.spentTextInput,
+                                    isItemOver && { color: '#DC2626', fontWeight: '800' },
+                                  ]}
+                                  testID={`input-spent-${it.name}`}
+                                />
+                              </View>
+                              {isChosen && isItemOver ? (
+                                <Text style={styles.overLimitTxt}>
+                                  Max: ₹{it.remaining_balance.toLocaleString('en-IN')}
+                                </Text>
+                              ) : null}
+                            </View>
+
+                            <Pressable
+                              onPress={() => !isZero && handleTogglePassOnItem(it)}
+                              style={{ width: 56, alignItems: 'center', justifyContent: 'center' }}
+                              hitSlop={8}
+                            >
                               <Ionicons
                                 name={isChosen ? 'checkbox' : isZero ? 'close-circle-outline' : 'square-outline'}
-                                size={20}
+                                size={22}
                                 color={isChosen ? '#0D9488' : isZero ? '#94A3B8' : colors.muted}
                               />
-                            </View>
-                          </Pressable>
+                            </Pressable>
+                          </View>
                         );
                       })}
 
@@ -515,18 +642,21 @@ export default function NewExpense() {
                           <Text style={styles.tableTotalLabel}>
                             Total ({selectedPassOnItems.length}/{passOnItems.length} Selected)
                           </Text>
-                          <Text style={styles.tableTotalSub}>Combined Approval Sum</Text>
+                          <Text style={styles.tableTotalSub}>Jod kar Total Spent</Text>
                         </View>
-                        <Text style={[styles.tableTotalVal, { flex: 1.5, textAlign: 'right', color: '#0F172A' }]}>
+                        <Text style={[styles.tableTotalVal, { flex: 1.2, textAlign: 'right', color: '#0F172A' }]}>
                           ₹{totalSelectedReceived.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </Text>
-                        <Text style={[styles.tableTotalVal, { flex: 1.5, textAlign: 'right', color: '#DC2626' }]}>
-                          ₹{totalSelectedSpent.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </Text>
-                        <Text style={[styles.tableTotalVal, { flex: 1.5, textAlign: 'right', color: '#059669', fontSize: 13, fontWeight: '900' }]}>
+                        <Text style={[styles.tableTotalVal, { flex: 1.2, textAlign: 'right', color: '#059669' }]}>
                           ₹{totalSelectedBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </Text>
-                        <View style={{ width: 68, alignItems: 'center', justifyContent: 'center' }}>
+                        <View style={{ flex: 1.6, alignItems: 'flex-end', paddingRight: 6 }}>
+                          <Text style={[styles.tableTotalVal, { color: '#0D9488', fontSize: 13, fontWeight: '900' }]}>
+                            ₹{totalSelectedSpentNow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </Text>
+                          <Text style={{ fontSize: 9, color: '#0F766E', fontWeight: '700' }}>Auto-calculated</Text>
+                        </View>
+                        <View style={{ width: 56, alignItems: 'center', justifyContent: 'center' }}>
                           <View style={styles.totalBadge}>
                             <Text style={styles.totalBadgeTxt}>{selectedPassOnItems.length}</Text>
                           </View>
@@ -545,20 +675,24 @@ export default function NewExpense() {
                             Booking against: <Text style={{ fontWeight: '800' }}>{selectedPassOnItems.length} Item{selectedPassOnItems.length > 1 ? 's' : ''}</Text>
                           </Text>
                           <Text style={{ fontSize: 11, fontWeight: '800', color: '#0F766E' }}>
-                            Combined Balance: ₹{totalSelectedBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            Total Spent: ₹{totalSelectedSpentNow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                           </Text>
                         </View>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 }}>
-                          {selectedPassOnItems.map(it => (
-                            <View key={it.name} style={styles.selectedPill}>
-                              <Text style={styles.selectedPillTxt}>
-                                {it.name}: <Text style={{ fontWeight: '800' }}>₹{it.remaining_balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</Text>
-                              </Text>
-                            </View>
-                          ))}
+                          {selectedPassOnItems.map(it => {
+                            const itVal = parseFloat(itemSpentAmounts[it.name] ?? String(it.remaining_balance || 0)) || 0;
+                            return (
+                              <View key={it.name} style={styles.selectedPill}>
+                                <Text style={styles.selectedPillTxt}>
+                                  {it.name}: Spent <Text style={{ fontWeight: '800' }}>₹{itVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</Text>
+                                  <Text style={{ fontSize: 10, color: colors.muted }}> (Max: ₹{it.remaining_balance.toLocaleString('en-IN')})</Text>
+                                </Text>
+                              </View>
+                            );
+                          })}
                         </View>
                         <Text style={{ fontSize: 11, color: '#0F766E', marginTop: 2 }}>
-                          💡 Multiple items selected. Combined available balance is ready to book &amp; approve in one go.
+                          💡 Itemwise spent amounts are auto-summed and forwarded for Expense Approval.
                         </Text>
                       </View>
                     </View>
@@ -682,11 +816,11 @@ export default function NewExpense() {
           ) : null}
 
           <Text style={{ color: colors.muted, fontSize: font.sm, textAlign: 'center' }}>
-            Expense will be marked as Pending. Accounts/Admin can verify & approve later.
+            Expense will be forwarded to the Expense Approval section for itemwise verification & approval.
           </Text>
 
           <PrimaryButton
-            label={busy ? 'Saving...' : isOverLimit ? 'Cannot Book (Exceeds Balance)' : 'Save Expense'}
+            label={busy ? 'Saving & Forwarding...' : isOverLimit ? 'Cannot Book (Exceeds Balance)' : 'Save Expense and Forward for Approval'}
             onPress={save}
             loading={busy}
             disabled={isOverLimit || busy}
@@ -834,6 +968,48 @@ const styles = StyleSheet.create({
   tdName: { fontSize: font.sm, fontWeight: '700', color: '#0F172A' },
   tdFeeType: { fontSize: 10, color: '#64748B' },
   tdAmt: { fontSize: font.sm, color: '#334155' },
+  spentInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+    borderWidth: 1.5,
+    borderColor: '#99F6E4',
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    minWidth: 100,
+    maxWidth: 130,
+  },
+  spentInputContainerActive: {
+    borderColor: '#0D9488',
+    backgroundColor: '#F0FDFA',
+  },
+  spentInputContainerError: {
+    borderColor: '#DC2626',
+    backgroundColor: '#FEF2F2',
+  },
+  rupeePrefix: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#64748B',
+    marginRight: 2,
+  },
+  spentTextInput: {
+    flex: 1,
+    fontSize: font.sm,
+    fontWeight: '800',
+    color: '#0F172A',
+    textAlign: 'right',
+    padding: 0,
+    minHeight: 22,
+  },
+  overLimitTxt: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#DC2626',
+    marginTop: 2,
+    textAlign: 'right',
+  },
 
   // Selected Item Highlight
   selectedItemBanner: {

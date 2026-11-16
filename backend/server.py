@@ -3174,32 +3174,62 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
                 detail=f"Expense amount ₹{payload.amount:,.2f} exceeds available combined Passed On Money balance ₹{total_remaining_balance:,.2f} for selected items ({', '.join(target_item_names)}). (Total Received: ₹{total_received:,.2f}, Already Spent: ₹{total_spent:,.2f})"
             )
 
-        # Distribute payload.amount across selected items
+        # Check if user specified individual itemwise spent amounts in payload.selected_items
+        user_spent_map = {}
+        if payload.selected_items:
+            for si in payload.selected_items:
+                if isinstance(si, dict) and "name" in si:
+                    s_amt = si.get("spent_amount")
+                    if s_amt is None:
+                        s_amt = si.get("amount")
+                    if s_amt is not None:
+                        try:
+                            user_spent_map[str(si["name"]).strip().lower()] = float(s_amt)
+                        except (ValueError, TypeError):
+                            pass
+
         selected_items_breakdown = []
-        rem_to_allocate = round(payload.amount, 2)
-        for idet in items_detail:
-            if rem_to_allocate <= 0:
-                alloc = 0.0
-            elif rem_to_allocate >= idet["remaining_balance"]:
-                alloc = idet["remaining_balance"]
-                rem_to_allocate = round(rem_to_allocate - alloc, 2)
-            else:
-                alloc = rem_to_allocate
-                rem_to_allocate = 0.0
+        if user_spent_map:
+            # Allocate according to user's item-wise specified spent amounts
+            for idet in items_detail:
+                norm_name = str(idet["name"]).strip().lower()
+                alloc = user_spent_map.get(norm_name, 0.0)
+                alloc = round(alloc, 2)
+                selected_items_breakdown.append({
+                    "name": idet["name"],
+                    "fee_type": idet["fee_type"],
+                    "billed_amount": idet["line_total"],
+                    "already_spent": idet["already_spent"],
+                    "remaining_balance": idet["remaining_balance"],
+                    "allocated_amount": alloc,
+                    "amount": alloc,
+                })
+        else:
+            # Distribute payload.amount across selected items (waterfall fallback)
+            rem_to_allocate = round(payload.amount, 2)
+            for idet in items_detail:
+                if rem_to_allocate <= 0:
+                    alloc = 0.0
+                elif rem_to_allocate >= idet["remaining_balance"]:
+                    alloc = idet["remaining_balance"]
+                    rem_to_allocate = round(rem_to_allocate - alloc, 2)
+                else:
+                    alloc = rem_to_allocate
+                    rem_to_allocate = 0.0
 
-            selected_items_breakdown.append({
-                "name": idet["name"],
-                "fee_type": idet["fee_type"],
-                "billed_amount": idet["line_total"],
-                "already_spent": idet["already_spent"],
-                "remaining_balance": idet["remaining_balance"],
-                "allocated_amount": alloc,
-                "amount": alloc,
-            })
+                selected_items_breakdown.append({
+                    "name": idet["name"],
+                    "fee_type": idet["fee_type"],
+                    "billed_amount": idet["line_total"],
+                    "already_spent": idet["already_spent"],
+                    "remaining_balance": idet["remaining_balance"],
+                    "allocated_amount": alloc,
+                    "amount": alloc,
+                })
 
-        if rem_to_allocate > 0 and selected_items_breakdown:
-            selected_items_breakdown[0]["allocated_amount"] = round(selected_items_breakdown[0]["allocated_amount"] + rem_to_allocate, 2)
-            selected_items_breakdown[0]["amount"] = selected_items_breakdown[0]["allocated_amount"]
+            if rem_to_allocate > 0 and selected_items_breakdown:
+                selected_items_breakdown[0]["allocated_amount"] = round(selected_items_breakdown[0]["allocated_amount"] + rem_to_allocate, 2)
+                selected_items_breakdown[0]["amount"] = selected_items_breakdown[0]["allocated_amount"]
 
         exp_dict["sale_item_name"] = ", ".join(target_item_names)
         exp_dict["sale_item_names"] = target_item_names
@@ -3223,15 +3253,18 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
     # Build approval line items
     approval_line_items = []
     if selected_items_breakdown:
+        has_positive = any(float(s.get("allocated_amount") or 0) > 0 for s in selected_items_breakdown)
         for sitem in selected_items_breakdown:
-            approval_line_items.append({
-                "id": f"item_{uuid.uuid4().hex[:8]}",
-                "head": sitem["name"],
-                "description": f"Disbursement of {sitem['name']} against voucher {exp_dict.get('sale_invoice_no') or ''}".strip(),
-                "qty": 1.0,
-                "rate": float(sitem["allocated_amount"]),
-                "amount": float(sitem["allocated_amount"]),
-            })
+            alloc_val = float(sitem.get("allocated_amount") or sitem.get("amount") or 0.0)
+            if alloc_val > 0 or not has_positive:
+                approval_line_items.append({
+                    "id": f"item_{uuid.uuid4().hex[:8]}",
+                    "head": sitem["name"],
+                    "description": f"Disbursement of {sitem['name']} against voucher {exp_dict.get('sale_invoice_no') or ''}".strip(),
+                    "qty": 1.0,
+                    "rate": alloc_val,
+                    "amount": alloc_val,
+                })
     else:
         approval_line_items = [
             {

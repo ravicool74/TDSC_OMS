@@ -84,7 +84,7 @@ export default function ExpensesList() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Status Tab
-  const [statusTab, setStatusTab] = useState<'approved' | 'all' | 'pending' | 'rejected'>('all');
+  const [statusTab, setStatusTab] = useState<'approved' | 'all' | 'pending' | 'rejected'>('approved');
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -248,10 +248,14 @@ export default function ExpensesList() {
     const thisMonth = getThisMonthStartStr();
 
     let res = list.filter((exp) => {
-      // 1. Status Tab Filter
-      if (statusTab === 'approved' && exp.status !== 'approved') return false;
-      if (statusTab === 'pending' && !(exp.status === 'pending' || exp.status === 'submitted' || exp.status === 'verified')) return false;
-      if (statusTab === 'rejected' && exp.status !== 'rejected') return false;
+      // 1. Status Tab Filter: Enforce rule that unapproved expenses do NOT show until approved
+      if (statusTab === 'approved' || statusTab === 'all') {
+        if (exp.status !== 'approved') return false;
+      } else if (statusTab === 'pending') {
+        if (!(exp.status === 'pending' || exp.status === 'submitted' || exp.status === 'verified')) return false;
+      } else if (statusTab === 'rejected') {
+        if (exp.status !== 'rejected') return false;
+      }
 
       // 2. Category Filter
       if (selectedCategory !== 'all' && exp.category !== selectedCategory) return false;
@@ -507,11 +511,14 @@ export default function ExpensesList() {
           <Text style={styles.statSub}>{stats.approvedCount} Approved</Text>
         </View>
         <View style={styles.statDivider} />
-        <View style={styles.statBox}>
-          <Text style={styles.statLabel}>PENDING APPROVAL</Text>
+        <Pressable
+          onPress={() => router.push('/accounting/expenses/approval' as any)}
+          style={styles.statBox}
+        >
+          <Text style={styles.statLabel}>PENDING APPROVAL ↗</Text>
           <Text style={[styles.statValue, { color: '#D97706' }]}>{inr(stats.pendingAmt)}</Text>
-          <Text style={styles.statSub}>{stats.pendingCount} In Workflow</Text>
-        </View>
+          <Text style={styles.statSub}>{stats.pendingCount} In Approval Section</Text>
+        </Pressable>
         <View style={styles.statDivider} />
         <View style={styles.statBox}>
           <Text style={styles.statLabel}>TOTAL OUTFLOW</Text>
@@ -523,21 +530,13 @@ export default function ExpensesList() {
       {/* Status Segmented Tabs */}
       <View style={styles.tabBar}>
         <Pressable
-          onPress={() => setStatusTab('all')}
-          style={[styles.tabItem, statusTab === 'all' && styles.tabItemActive]}
-        >
-          <Text style={[styles.tabItemTxt, statusTab === 'all' && styles.tabItemTxtActive]}>
-            All ({list?.length || 0})
-          </Text>
-        </Pressable>
-        <Pressable
           onPress={() => setStatusTab('approved')}
-          style={[styles.tabItem, statusTab === 'approved' && styles.tabItemActive]}
+          style={[styles.tabItem, (statusTab === 'approved' || statusTab === 'all') && styles.tabItemActive]}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <View style={[styles.statusDot, { backgroundColor: '#059669' }]} />
-            <Text style={[styles.tabItemTxt, statusTab === 'approved' && styles.tabItemTxtActive]}>
-              Approved ({stats.approvedCount})
+            <Text style={[styles.tabItemTxt, (statusTab === 'approved' || statusTab === 'all') && styles.tabItemTxtActive]}>
+              Approved Expenses ({stats.approvedCount})
             </Text>
           </View>
         </Pressable>
@@ -548,7 +547,7 @@ export default function ExpensesList() {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <View style={[styles.statusDot, { backgroundColor: '#D97706' }]} />
             <Text style={[styles.tabItemTxt, statusTab === 'pending' && styles.tabItemTxtActive]}>
-              Pending ({stats.pendingCount})
+              Pending Approval ({stats.pendingCount})
             </Text>
           </View>
         </Pressable>
@@ -769,8 +768,44 @@ export default function ExpensesList() {
           </Pressable>
         </View>
       ) : (
-        <FlatList
-          data={filteredList}
+        <>
+          {statusTab === 'pending' && (
+            <Pressable
+              onPress={() => router.push('/accounting/expenses/approval' as any)}
+              style={styles.pendingWorkflowBanner}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <Ionicons name="git-pull-request-outline" size={24} color="#D97706" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pendingWorkflowTitle}>
+                    Pending Claims Awaiting Workflow Approval ({stats.pendingCount})
+                  </Text>
+                  <Text style={styles.pendingWorkflowSub}>
+                    Expenses do not show in All Expenses until verified & approved. Tap here to approve itemwise in Expense Approval Section.
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.pendingWorkflowBtn}>
+                <Text style={styles.pendingWorkflowBtnTxt}>Open Approval Workflow ➔</Text>
+              </View>
+            </Pressable>
+          )}
+
+          {statusTab !== 'pending' && stats.pendingCount > 0 && (
+            <Pressable
+              onPress={() => setStatusTab('pending')}
+              style={styles.pendingNoticePill}
+            >
+              <Ionicons name="information-circle-outline" size={16} color="#0D9488" />
+              <Text style={styles.pendingNoticePillTxt}>
+                Notice: {stats.pendingCount} expense claim(s) pending approval. They will show here once approved.
+              </Text>
+              <Text style={styles.pendingNoticePillLink}>View Pending</Text>
+            </Pressable>
+          )}
+
+          <FlatList
+            data={filteredList}
           keyExtractor={(i) => i.id}
           contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 100 }}
           renderItem={({ item }) => {
@@ -950,7 +985,8 @@ export default function ExpensesList() {
               </View>
             );
           }}
-        />
+          />
+        </>
       )}
 
       {/* ================= VIEW DETAILS MODAL ================= */}
@@ -2490,5 +2526,68 @@ const styles = StyleSheet.create({
     color: '#334155',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  pendingWorkflowBanner: {
+    marginHorizontal: spacing.md,
+    marginTop: spacing.sm,
+    marginBottom: 4,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1.5,
+    borderColor: '#FDE68A',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  pendingWorkflowTitle: {
+    fontSize: font.sm,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  pendingWorkflowSub: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  pendingWorkflowBtn: {
+    backgroundColor: '#D97706',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+  },
+  pendingWorkflowBtnTxt: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  pendingNoticePill: {
+    marginHorizontal: spacing.md,
+    marginTop: spacing.xs,
+    marginBottom: 4,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pendingNoticePillTxt: {
+    fontSize: 11,
+    color: '#0F766E',
+    fontWeight: '600',
+    flex: 1,
+  },
+  pendingNoticePillLink: {
+    fontSize: 11,
+    color: '#0D9488',
+    fontWeight: '800',
+    textDecorationLine: 'underline',
   },
 });
