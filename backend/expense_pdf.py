@@ -101,9 +101,7 @@ except Exception:
     FONT_DEV = FONT_BOLD
 
 def _rupee(amt: float) -> str:
-    if FONT_REG == "Helvetica":
-        return f"Rs. {amt:,.2f}"
-    return f"₹{amt:,.2f}"
+    return f"Rs. {amt:,.2f}"
 
 def build_expense_pdf(exp: dict, customer: dict | None = None) -> bytes:
     """Return official PDF voucher bytes for an Expense."""

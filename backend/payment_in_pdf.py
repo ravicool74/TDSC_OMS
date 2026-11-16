@@ -108,9 +108,7 @@ except Exception:
     pass
 
 def _rupee(amt: float) -> str:
-    if FONT_REG == "Helvetica":
-        return f"Rs. {amt:,.2f}"
-    return f"₹{amt:,.2f}"
+    return f"Rs. {amt:,.2f}"
 
 def build_payment_in_pdf(inc: dict, customer: dict | None = None) -> bytes:
     """Return official PDF receipt bytes for a Payment-In voucher."""

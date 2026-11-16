@@ -4136,11 +4136,13 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
     # Process multiple payment splits (cash, upi, cheque, bank transfer, other)
     initial_payments = []
     if payload.payment_splits:
+        running_tot = 0.0
         for idx, ps in enumerate(payload.payment_splits):
             p_amt = float(ps.get("amount") or 0)
             if p_amt > 0:
                 p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
                 p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+                running_tot = round(running_tot + p_amt, 2)
                 initial_payments.append({
                     "payment_id": f"init_{no}_{idx+1}",
                     "payment_no": f"PAY-{no}-{idx+1}",
@@ -4151,6 +4153,7 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
                     "payment_type": "Initial / Split Payment",
                     "remarks": (f"Payment via {p_mode.replace('_', ' ').title()}" + (f" (Ref: {p_ref})" if p_ref else "")).strip(),
                     "created_at": now_utc().isoformat(),
+                    "balance_after": max(0.0, round(total - running_tot, 2)),
                 })
 
     if initial_payments:
@@ -4300,16 +4303,45 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
 
     existing_payments = list(d.get("payments") or [])
     
-    init_entry = None
+    init_entries = []
     for p in existing_payments:
         pno = str(p.get("payment_no") or "").upper()
         ptype = str(p.get("payment_type") or "").lower()
-        if "INITIAL" in pno or "initial" in ptype or "down" in ptype:
-            init_entry = dict(p)
-            break
+        pid = str(p.get("payment_id") or "").lower()
+        if (
+            "INITIAL" in pno or
+            "initial" in ptype or
+            "down" in ptype or
+            "split" in ptype or
+            pid.startswith("init_") or
+            (pno.startswith("PAY-") and "init_" in pid)
+        ):
+            init_entries.append(dict(p))
 
-    if not init_entry and float(d.get("paid_amount") or 0.0) > 0 and len(existing_payments) == 0:
-        init_entry = {
+    # If no initial entries in existing_payments, check payment_splits
+    if not init_entries and d.get("payment_splits"):
+        running_tot_splits = 0.0
+        for idx, ps in enumerate(d.get("payment_splits") or []):
+            p_amt = float(ps.get("amount") or 0)
+            if p_amt > 0:
+                p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
+                p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+                running_tot_splits = round(running_tot_splits + p_amt, 2)
+                init_entries.append({
+                    "payment_id": f"init_{inv_no}_{idx+1}",
+                    "payment_no": f"PAY-{inv_no}-{idx+1}",
+                    "date": ps.get("date") or d.get("date"),
+                    "amount": round(p_amt, 2),
+                    "payment_mode": p_mode,
+                    "reference": p_ref,
+                    "payment_type": "Initial / Split Payment",
+                    "remarks": (f"Payment via {p_mode.replace('_', ' ').title()}" + (f" (Ref: {p_ref})" if p_ref else "")).strip(),
+                    "created_at": str(d.get("created_at") or now_utc().isoformat()),
+                    "balance_after": max(0.0, round(total_amount - running_tot_splits, 2)),
+                })
+
+    if not init_entries and float(d.get("paid_amount") or 0.0) > 0 and len(existing_payments) == 0:
+        init_entries.append({
             "payment_id": f"init_{inv_id}",
             "payment_no": f"INITIAL-{inv_no}",
             "date": d.get("date") or "Initial",
@@ -4319,11 +4351,9 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
             "remarks": "Payment received at invoice generation",
             "created_at": str(d.get("created_at") or now_utc().isoformat()),
             "balance_after": max(0.0, round(total_amount - float(d.get("paid_amount")), 2)),
-        }
+        })
 
-    merged = []
-    if init_entry:
-        merged.append(init_entry)
+    merged = list(init_entries)
 
     if or_conds:
         incomes = await db.income.find({"$or": or_conds}, {"_id": 0}).sort("date", 1).to_list(100)
@@ -4337,7 +4367,11 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
                 "initial" in inc_remarks or
                 "auto-linked" in inc_remarks or
                 inc_no == "PAYIN-0001" or
-                (init_entry and inc.get("date") == d.get("date") and float(inc.get("amount") or 0.0) == float(init_entry.get("amount") or 0.0))
+                any(
+                    (float(inc.get("amount") or 0.0) == float(ie.get("amount") or 0.0) and inc.get("date") == d.get("date")) or
+                    (ie.get("payment_no") == inc_no or ie.get("payment_id") == inc_id)
+                    for ie in init_entries
+                )
             )
             if is_initial:
                 continue
@@ -4604,14 +4638,59 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
         raise HTTPException(status_code=404, detail="Invoice not found")
     items, subtotal, tdisc, ttax, ttotal = _recalc_invoice(payload.items or [])
     total = ttotal if ttotal > 0 else float(payload.total_amount or 0)
-    paid = float(payload.paid_amount or 0)
-    if payload.payment_type == "cash":
-        paid = total
-    balance = round(total - paid, 2)
+    no = existing.get("invoice_no") or iid
+
+    initial_payments = []
+    if payload.payment_splits:
+        running_tot = 0.0
+        for idx, ps in enumerate(payload.payment_splits):
+            p_amt = float(ps.get("amount") or 0)
+            if p_amt > 0:
+                p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
+                p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+                running_tot = round(running_tot + p_amt, 2)
+                initial_payments.append({
+                    "payment_id": f"init_{no}_{idx+1}",
+                    "payment_no": f"PAY-{no}-{idx+1}",
+                    "date": ps.get("date") or payload.date,
+                    "amount": round(p_amt, 2),
+                    "payment_mode": p_mode,
+                    "reference": p_ref,
+                    "payment_type": "Initial / Split Payment",
+                    "remarks": (f"Payment via {p_mode.replace('_', ' ').title()}" + (f" (Ref: {p_ref})" if p_ref else "")).strip(),
+                    "created_at": now_utc().isoformat(),
+                    "balance_after": max(0.0, round(total - running_tot, 2)),
+                })
+
+    if initial_payments:
+        paid = round(sum(p["amount"] for p in initial_payments), 2)
+        distinct_modes = list(dict.fromkeys(p["payment_mode"] for p in initial_payments))
+        inv_payment_mode = ", ".join(distinct_modes)
+    else:
+        paid = float(payload.paid_amount or 0)
+        if payload.payment_type == "cash":
+            paid = total
+        inv_payment_mode = payload.payment_mode or existing.get("payment_mode") or "cash"
+        if paid > 0:
+            initial_payments.append({
+                "payment_id": f"init_{no}",
+                "payment_no": f"INITIAL-{no}",
+                "date": payload.date,
+                "amount": paid,
+                "payment_mode": inv_payment_mode,
+                "payment_type": "Initial / Down Payment" if (round(total - paid, 2)) > 0 else "Full Payment",
+                "remarks": "Payment received at invoice generation",
+                "created_at": now_utc().isoformat(),
+                "balance_after": max(0.0, round(total - paid, 2)),
+            })
+
+    balance = max(0.0, round(total - paid, 2))
     status = "paid" if balance <= 0 and total > 0 else ("partial" if paid > 0 else "unpaid")
     updates = {
         "invoice_type": payload.invoice_type, "payment_type": payload.payment_type,
-        "payment_mode": payload.payment_mode or "cash",
+        "payment_mode": inv_payment_mode,
+        "payment_splits": payload.payment_splits,
+        "payments": initial_payments,
         "date": payload.date, "payment_terms": payload.payment_terms, "due_date": payload.due_date,
         "party_id": payload.party_id, "party_name": payload.party_name,
         "party_mobile": payload.party_mobile, "party_gst": payload.party_gst,

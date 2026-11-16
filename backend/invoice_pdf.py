@@ -118,9 +118,7 @@ except Exception:
 
 # ---- Table helpers --------------------------------------------------
 def _rupee(amt: float) -> str:
-    if FONT_REG == "Helvetica":
-        return f"Rs. {amt:,.2f}"
-    return f"₹{amt:,.2f}"
+    return f"Rs. {amt:,.2f}"
 
 
 def build_invoice_pdf(inv: dict, customer: dict | None = None) -> bytes:
