@@ -2808,6 +2808,499 @@ async def update_sale_invoice_settings_api(
     return await update_single_voucher_setting_api("sale_invoice", payload, current)
 
 
+class EditExistingVoucherInput(BaseModel):
+    voucher_no: Optional[str] = None
+    voucher_date: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+@api_router.get("/settings/vouchers/{voucher_type}/existing")
+async def get_existing_vouchers_api(
+    voucher_type: str,
+    limit: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(None),
+    current: User = Depends(get_current_user)
+):
+    """List existing vouchers for a specific voucher type with edit routes and details."""
+    if voucher_type not in VOUCHERS_CONFIG_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Unknown voucher type: {voucher_type}")
+
+    items = []
+    clean_search = search.strip() if search else None
+
+    if voucher_type == "sale_invoice":
+        q: Dict[str, Any] = {"invoice_type": "sale"}
+        if clean_search:
+            q["$or"] = [
+                {"invoice_no": {"$regex": clean_search, "$options": "i"}},
+                {"party_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.invoices.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "sale_invoice",
+                "voucher_no": doc.get("invoice_no") or doc.get("invoice_number"),
+                "date": doc.get("date") or doc.get("invoice_date"),
+                "party_name": doc.get("party_name"),
+                "amount": float(doc.get("total_amount") or 0.0),
+                "paid_amount": float(doc.get("paid_amount") or 0.0),
+                "balance": float(doc.get("balance") or 0.0),
+                "status": doc.get("status", "draft"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/invoices/new?edit_id={doc.get('id')}&type=sale",
+                "view_route": f"/accounting/invoices/{doc.get('id')}",
+            })
+
+    elif voucher_type == "payment_in":
+        q = {}
+        if clean_search:
+            q["$or"] = [
+                {"payment_no": {"$regex": clean_search, "$options": "i"}},
+                {"voucher_no": {"$regex": clean_search, "$options": "i"}},
+                {"customer_name": {"$regex": clean_search, "$options": "i"}},
+                {"party_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.income.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "payment_in",
+                "voucher_no": doc.get("payment_no") or doc.get("voucher_no") or doc.get("source"),
+                "date": doc.get("date"),
+                "party_name": doc.get("customer_name") or doc.get("party_name") or doc.get("source"),
+                "amount": float(doc.get("amount") or 0.0),
+                "paid_amount": float(doc.get("amount") or 0.0),
+                "balance": 0.0,
+                "status": "cleared" if doc.get("status") != "cancelled" else "cancelled",
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/income/{doc.get('id')}",
+                "view_route": f"/accounting/income/{doc.get('id')}",
+            })
+
+    elif voucher_type == "sale_return":
+        q = {"invoice_type": "sale_return"}
+        if clean_search:
+            q["$or"] = [
+                {"invoice_no": {"$regex": clean_search, "$options": "i"}},
+                {"party_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.invoices.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "sale_return",
+                "voucher_no": doc.get("invoice_no") or doc.get("invoice_number"),
+                "date": doc.get("date") or doc.get("invoice_date"),
+                "party_name": doc.get("party_name"),
+                "amount": float(doc.get("total_amount") or 0.0),
+                "paid_amount": float(doc.get("paid_amount") or 0.0),
+                "balance": float(doc.get("balance") or 0.0),
+                "status": doc.get("status", "draft"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/invoices/new?edit_id={doc.get('id')}&type=sale_return",
+                "view_route": f"/accounting/invoices/{doc.get('id')}",
+            })
+
+    elif voucher_type == "estimate":
+        q = {"status": {"$ne": "order"}}
+        if clean_search:
+            q["$or"] = [
+                {"estimate_no": {"$regex": clean_search, "$options": "i"}},
+                {"customer_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.estimates.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "estimate",
+                "voucher_no": doc.get("estimate_no"),
+                "date": doc.get("date"),
+                "party_name": doc.get("customer_name") or doc.get("party_name"),
+                "amount": float(doc.get("grand_total") or doc.get("total_amount") or 0.0),
+                "status": doc.get("status", "draft"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/estimates/new?edit_id={doc.get('id')}",
+                "view_route": f"/accounting/estimates",
+            })
+
+    elif voucher_type == "proforma":
+        q = {}
+        if clean_search:
+            q["$or"] = [
+                {"proforma_no": {"$regex": clean_search, "$options": "i"}},
+                {"customer_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.proforma_invoices.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "proforma",
+                "voucher_no": doc.get("proforma_no") or doc.get("invoice_no"),
+                "date": doc.get("date"),
+                "party_name": doc.get("customer_name") or doc.get("party_name"),
+                "amount": float(doc.get("grand_total") or doc.get("total_amount") or 0.0),
+                "status": doc.get("status", "draft"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/proforma/new?edit_id={doc.get('id')}",
+                "view_route": f"/accounting/proforma",
+            })
+
+    elif voucher_type == "sale_order":
+        q = {"status": "order"}
+        if clean_search:
+            q["$or"] = [
+                {"estimate_no": {"$regex": clean_search, "$options": "i"}},
+                {"order_no": {"$regex": clean_search, "$options": "i"}},
+                {"customer_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.estimates.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "sale_order",
+                "voucher_no": doc.get("estimate_no") or doc.get("order_no"),
+                "date": doc.get("date"),
+                "party_name": doc.get("customer_name") or doc.get("party_name"),
+                "amount": float(doc.get("grand_total") or doc.get("total_amount") or 0.0),
+                "status": doc.get("status", "order"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/estimates/new?edit_id={doc.get('id')}&type=order",
+                "view_route": f"/accounting/estimates",
+            })
+
+    elif voucher_type == "delivery_challan":
+        q = {}
+        if clean_search:
+            q["$or"] = [
+                {"challan_no": {"$regex": clean_search, "$options": "i"}},
+                {"customer_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.delivery_challans.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "delivery_challan",
+                "voucher_no": doc.get("challan_no"),
+                "date": doc.get("date"),
+                "party_name": doc.get("customer_name") or doc.get("party_name"),
+                "amount": float(doc.get("total_amount") or 0.0),
+                "status": doc.get("status", "issued"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/delivery-challans",
+                "view_route": f"/accounting/delivery-challans",
+            })
+
+    elif voucher_type == "mobile_pos":
+        q = {"invoice_type": {"$in": ["pos", "mobile_pos"]}}
+        if clean_search:
+            q["$or"] = [
+                {"invoice_no": {"$regex": clean_search, "$options": "i"}},
+                {"party_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.invoices.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "mobile_pos",
+                "voucher_no": doc.get("invoice_no") or doc.get("invoice_number"),
+                "date": doc.get("date") or doc.get("invoice_date"),
+                "party_name": doc.get("party_name") or "Counter Sale",
+                "amount": float(doc.get("total_amount") or 0.0),
+                "paid_amount": float(doc.get("paid_amount") or 0.0),
+                "balance": float(doc.get("balance") or 0.0),
+                "status": doc.get("status", "paid"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/invoices/new?edit_id={doc.get('id')}&pos=1",
+                "view_route": f"/accounting/invoices/{doc.get('id')}",
+            })
+
+    elif voucher_type == "new_expense_approval":
+        q = {"status": {"$in": ["submitted", "pending", "draft"]}}
+        if clean_search:
+            q["$or"] = [
+                {"voucher_no": {"$regex": clean_search, "$options": "i"}},
+                {"title": {"$regex": clean_search, "$options": "i"}},
+                {"requested_by_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.expense_approval_vouchers.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "new_expense_approval",
+                "voucher_no": doc.get("voucher_no"),
+                "date": doc.get("voucher_date") or doc.get("date"),
+                "party_name": doc.get("title") or doc.get("requested_by_name") or "Expense Request",
+                "amount": float(doc.get("total_expense_amount") or doc.get("amount") or 0.0),
+                "status": doc.get("status", "submitted"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/expenses/approval/{doc.get('id')}",
+                "view_route": f"/accounting/expenses/approval/{doc.get('id')}",
+            })
+
+    elif voucher_type == "expense_approval":
+        q = {}
+        if clean_search:
+            q["$or"] = [
+                {"voucher_no": {"$regex": clean_search, "$options": "i"}},
+                {"title": {"$regex": clean_search, "$options": "i"}},
+                {"requested_by_name": {"$regex": clean_search, "$options": "i"}},
+            ]
+        cursor = db.expense_approval_vouchers.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+        async for doc in cursor:
+            items.append({
+                "id": doc.get("id"),
+                "voucher_type": "expense_approval",
+                "voucher_no": doc.get("voucher_no"),
+                "date": doc.get("voucher_date") or doc.get("date"),
+                "party_name": doc.get("title") or doc.get("requested_by_name") or "Expense Voucher",
+                "amount": float(doc.get("total_expense_amount") or doc.get("amount") or 0.0),
+                "status": doc.get("status", "approved"),
+                "created_at": str(doc.get("created_at") or ""),
+                "edit_route": f"/accounting/expenses/approval/{doc.get('id')}",
+                "view_route": f"/accounting/expenses/approval/{doc.get('id')}",
+            })
+
+    return items
+
+
+@api_router.put("/settings/vouchers/{voucher_type}/{voucher_id}/edit")
+async def edit_single_existing_voucher_api(
+    voucher_type: str,
+    voucher_id: str,
+    payload: EditExistingVoucherInput,
+    current: User = Depends(require_admin)
+):
+    """Directly edit existing voucher number, date, and metadata with full referential integrity."""
+    if voucher_type not in VOUCHERS_CONFIG_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Unknown voucher type: {voucher_type}")
+
+    new_no = payload.voucher_no.strip() if payload.voucher_no else None
+    new_date = payload.voucher_date.strip() if payload.voucher_date else None
+    if not new_no and not new_date:
+        raise HTTPException(status_code=400, detail="Either voucher_no or voucher_date must be provided")
+
+    old_no = None
+    old_date = None
+
+    if voucher_type in ["sale_invoice", "sale_return", "mobile_pos"]:
+        doc = await db.invoices.find_one({"id": voucher_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Invoice voucher not found")
+        old_no = doc.get("invoice_no")
+        old_date = doc.get("date")
+
+        if new_no and new_no != old_no:
+            existing_dup = await db.invoices.find_one({"invoice_no": new_no, "id": {"$ne": voucher_id}})
+            if existing_dup:
+                raise HTTPException(status_code=400, detail=f"Invoice number '{new_no}' is already used by another invoice")
+
+        upd: Dict[str, Any] = {
+            "updated_at": now_utc().isoformat(),
+            "updated_by": current.user_id,
+        }
+        if new_no:
+            upd["invoice_no"] = new_no
+            upd["invoice_number"] = new_no
+        if new_date:
+            upd["date"] = new_date
+            upd["invoice_date"] = new_date
+
+        await db.invoices.update_one({"id": voucher_id}, {"$set": upd})
+
+        if new_no and new_no != old_no:
+            await db.income.update_many(
+                {"linked_vouchers.voucher_id": voucher_id},
+                {"$set": {"linked_vouchers.$[elem].voucher_no": new_no}},
+                array_filters=[{"elem.voucher_id": voucher_id}]
+            )
+            await db.income.update_many(
+                {"linked_voucher_no": old_no},
+                {"$set": {"linked_voucher_no": new_no}}
+            )
+
+    elif voucher_type == "payment_in":
+        doc = await db.income.find_one({"id": voucher_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Payment-In voucher not found")
+        old_no = doc.get("payment_no") or doc.get("voucher_no")
+        old_date = doc.get("date")
+
+        if new_no and new_no != old_no:
+            existing_dup = await db.income.find_one({
+                "$or": [{"payment_no": new_no}, {"voucher_no": new_no}],
+                "id": {"$ne": voucher_id}
+            })
+            if existing_dup:
+                raise HTTPException(status_code=400, detail=f"Payment-In number '{new_no}' is already in use")
+
+        upd = {
+            "updated_at": now_utc().isoformat(),
+            "updated_by": current.user_id,
+        }
+        if new_no:
+            upd["payment_no"] = new_no
+            upd["voucher_no"] = new_no
+        if new_date:
+            upd["date"] = new_date
+
+        await db.income.update_one({"id": voucher_id}, {"$set": upd})
+
+        if (new_no and new_no != old_no) or new_date:
+            sync_payment_set: Dict[str, Any] = {}
+            if new_no:
+                sync_payment_set["payments.$[elem].payment_no"] = new_no
+            if new_date:
+                sync_payment_set["payments.$[elem].date"] = new_date
+            if old_no:
+                await db.invoices.update_many(
+                    {"payments.payment_no": old_no},
+                    {"$set": sync_payment_set},
+                    array_filters=[{"elem.payment_no": old_no}]
+                )
+
+    elif voucher_type in ["estimate", "sale_order"]:
+        doc = await db.estimates.find_one({"id": voucher_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Estimate/Order voucher not found")
+        old_no = doc.get("estimate_no") or doc.get("order_no")
+        old_date = doc.get("date")
+
+        if new_no and new_no != old_no:
+            existing_dup = await db.estimates.find_one({
+                "$or": [{"estimate_no": new_no}, {"order_no": new_no}],
+                "id": {"$ne": voucher_id}
+            })
+            if existing_dup:
+                raise HTTPException(status_code=400, detail=f"Estimate/Order number '{new_no}' is already in use")
+
+        upd = {
+            "updated_at": now_utc().isoformat(),
+            "updated_by": current.user_id,
+        }
+        if new_no:
+            upd["estimate_no"] = new_no
+            if doc.get("status") == "order":
+                upd["order_no"] = new_no
+        if new_date:
+            upd["date"] = new_date
+
+        await db.estimates.update_one({"id": voucher_id}, {"$set": upd})
+
+    elif voucher_type == "proforma":
+        doc = await db.proforma_invoices.find_one({"id": voucher_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Proforma invoice not found")
+        old_no = doc.get("proforma_no") or doc.get("invoice_no")
+        old_date = doc.get("date")
+
+        if new_no and new_no != old_no:
+            existing_dup = await db.proforma_invoices.find_one({
+                "$or": [{"proforma_no": new_no}, {"invoice_no": new_no}],
+                "id": {"$ne": voucher_id}
+            })
+            if existing_dup:
+                raise HTTPException(status_code=400, detail=f"Proforma number '{new_no}' is already in use")
+
+        upd = {
+            "updated_at": now_utc().isoformat(),
+            "updated_by": current.user_id,
+        }
+        if new_no:
+            upd["proforma_no"] = new_no
+            upd["invoice_no"] = new_no
+        if new_date:
+            upd["date"] = new_date
+
+        await db.proforma_invoices.update_one({"id": voucher_id}, {"$set": upd})
+
+    elif voucher_type == "delivery_challan":
+        doc = await db.delivery_challans.find_one({"id": voucher_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Delivery challan not found")
+        old_no = doc.get("challan_no")
+        old_date = doc.get("date")
+
+        if new_no and new_no != old_no:
+            existing_dup = await db.delivery_challans.find_one({
+                "challan_no": new_no,
+                "id": {"$ne": voucher_id}
+            })
+            if existing_dup:
+                raise HTTPException(status_code=400, detail=f"Delivery challan number '{new_no}' is already in use")
+
+        upd = {
+            "updated_at": now_utc().isoformat(),
+            "updated_by": current.user_id,
+        }
+        if new_no:
+            upd["challan_no"] = new_no
+        if new_date:
+            upd["date"] = new_date
+
+        await db.delivery_challans.update_one({"id": voucher_id}, {"$set": upd})
+
+    elif voucher_type in ["new_expense_approval", "expense_approval"]:
+        doc = await db.expense_approval_vouchers.find_one({"id": voucher_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Expense approval voucher not found")
+        old_no = doc.get("voucher_no")
+        old_date = doc.get("voucher_date") or doc.get("date")
+
+        if new_no and new_no != old_no:
+            existing_dup = await db.expense_approval_vouchers.find_one({
+                "voucher_no": new_no,
+                "id": {"$ne": voucher_id}
+            })
+            if existing_dup:
+                raise HTTPException(status_code=400, detail=f"Expense voucher number '{new_no}' is already in use")
+
+        upd = {
+            "updated_at": now_utc().isoformat(),
+            "updated_by": current.user_id,
+        }
+        if new_no:
+            upd["voucher_no"] = new_no
+        if new_date:
+            upd["voucher_date"] = new_date
+            upd["date"] = new_date
+
+        await db.expense_approval_vouchers.update_one({"id": voucher_id}, {"$set": upd})
+
+        if new_no or new_date:
+            exp_upd = {}
+            if new_no:
+                exp_upd["voucher_no"] = new_no
+            if new_date:
+                exp_upd["date"] = new_date
+            await db.expenses.update_many({"approval_voucher_id": voucher_id}, {"$set": exp_upd})
+
+    # Record Audit Log
+    await db.audit_logs.insert_one({
+        "id": f"log_{uuid.uuid4().hex[:12]}",
+        "action": "edit_voucher_number_date",
+        "voucher_type": voucher_type,
+        "voucher_id": voucher_id,
+        "old_no": old_no,
+        "new_no": new_no or old_no,
+        "old_date": old_date,
+        "new_date": new_date or old_date,
+        "user_id": current.user_id,
+        "user_name": current.name,
+        "timestamp": now_utc().isoformat(),
+        "remarks": payload.remarks or "Edited from System Settings & Voucher Hub",
+    })
+
+    return {
+        "success": True,
+        "voucher_type": voucher_type,
+        "voucher_id": voucher_id,
+        "voucher_no": new_no or old_no,
+        "voucher_date": new_date or old_date,
+        "message": f"{VOUCHERS_CONFIG_REGISTRY[voucher_type]['title']} voucher #{new_no or old_no} updated successfully"
+    }
+
+
 @api_router.get("/vouchers/next-no")
 async def get_generic_voucher_next_no(
     voucher_type: str = Query("sale_invoice"),

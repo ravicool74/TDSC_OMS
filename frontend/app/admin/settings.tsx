@@ -1,6 +1,6 @@
-import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Alert, Pressable, TextInput } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, Alert, Pressable, TextInput, Modal, ActivityIndicator } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { ScreenHeader } from '@/src/ScreenHeader';
@@ -32,7 +32,23 @@ export type VoucherConfigItem = {
   financial_year?: string;
 };
 
+const inr = (n: any) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+const CREATION_ROUTES: Record<string, { route: string; params?: any }> = {
+  sale_invoice: { route: '/accounting/invoices/new' },
+  payment_in: { route: '/accounting/income/new' },
+  sale_return: { route: '/accounting/invoices/new', params: { type: 'sale_return' } },
+  estimate: { route: '/accounting/estimates/new' },
+  proforma: { route: '/accounting/proforma/new' },
+  sale_order: { route: '/accounting/estimates/new', params: { type: 'order' } },
+  delivery_challan: { route: '/accounting/delivery-challans' },
+  mobile_pos: { route: '/accounting/invoices/new', params: { pos: '1' } },
+  new_expense_approval: { route: '/accounting/expenses/approval/new' },
+  expense_approval: { route: '/accounting/expenses/approval' },
+};
+
 export default function SettingsScreen() {
+  const router = useRouter();
   const [stats, setStats] = useState<any>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [lastBackup, setLastBackup] = useState<any>(null);
@@ -41,6 +57,19 @@ export default function SettingsScreen() {
   const [activeTabKey, setActiveTabKey] = useState<string>('sale_invoice');
   const [vouchersMap, setVouchersMap] = useState<Record<string, VoucherConfigItem>>({});
   const [savingVoucher, setSavingVoucher] = useState(false);
+
+  // Existing Vouchers State for Active Tab
+  const [existingVouchers, setExistingVouchers] = useState<any[]>([]);
+  const [loadingExisting, setLoadingExisting] = useState<boolean>(false);
+  const [voucherSearch, setVoucherSearch] = useState<string>('');
+
+  // Quick Edit Modal State
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingVoucher, setEditingVoucher] = useState<any>(null);
+  const [editVoucherNo, setEditVoucherNo] = useState('');
+  const [editVoucherDate, setEditVoucherDate] = useState('');
+  const [editRemarks, setEditRemarks] = useState('');
+  const [updatingVoucher, setUpdatingVoucher] = useState(false);
 
   const activeTabMeta = useMemo(() => {
     return VOUCHER_CONFIG_TABS.find(t => t.key === activeTabKey) || VOUCHER_CONFIG_TABS[0];
@@ -117,6 +146,59 @@ export default function SettingsScreen() {
       setStats(null);
     }
   }, []);
+
+  const loadExistingVouchers = useCallback(async (tabKey: string, query?: string) => {
+    setLoadingExisting(true);
+    try {
+      const url = `/settings/vouchers/${tabKey}/existing` + (query ? `?search=${encodeURIComponent(query)}` : '');
+      const list = await api.get<any[]>(url);
+      setExistingVouchers(Array.isArray(list) ? list : []);
+    } catch {
+      setExistingVouchers([]);
+    } finally {
+      setLoadingExisting(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadExistingVouchers(activeTabKey, voucherSearch);
+  }, [activeTabKey, voucherSearch, loadExistingVouchers]);
+
+  const openQuickEdit = (voucher: any) => {
+    setEditingVoucher(voucher);
+    setEditVoucherNo(voucher.voucher_no || '');
+    setEditVoucherDate(voucher.date || '');
+    setEditRemarks('');
+    setEditModalVisible(true);
+  };
+
+  const handleSaveQuickEdit = async () => {
+    if (!editingVoucher) return;
+    if (!editVoucherNo.trim()) {
+      Alert.alert('Required', 'Voucher number cannot be empty.');
+      return;
+    }
+    if (!editVoucherDate.trim()) {
+      Alert.alert('Required', 'Voucher date cannot be empty.');
+      return;
+    }
+    setUpdatingVoucher(true);
+    try {
+      const res = await api.put<any>(`/settings/vouchers/${activeTabKey}/${editingVoucher.id}/edit`, {
+        voucher_no: editVoucherNo.trim(),
+        voucher_date: editVoucherDate.trim(),
+        remarks: editRemarks.trim() || undefined,
+      });
+      Alert.alert('Voucher Updated', res?.message || 'Voucher updated successfully!');
+      setEditModalVisible(false);
+      setEditingVoucher(null);
+      loadExistingVouchers(activeTabKey, voucherSearch);
+    } catch (e: any) {
+      Alert.alert('Update Failed', e?.message || 'Could not update voucher');
+    } finally {
+      setUpdatingVoucher(false);
+    }
+  };
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -422,6 +504,157 @@ export default function SettingsScreen() {
             </View>
           </Card>
 
+          {/* ================= EXISTING VOUCHERS LIST & DIRECT EDIT SECTION ================= */}
+          <Card>
+            <View style={styles.cardHeader}>
+              <View style={[styles.iconBox, { backgroundColor: '#3B82F615' }]}>
+                <Ionicons name="documents-outline" size={22} color="#2563EB" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.title}>Existing {activeTabMeta.label} Vouchers</Text>
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countBadgeTxt}>{existingVouchers.length}</Text>
+                  </View>
+                </View>
+                <Text style={styles.subText}>View, edit voucher number, edit date, or launch full editor</Text>
+              </View>
+              <Pressable
+                onPress={() => loadExistingVouchers(activeTabKey, voucherSearch)}
+                style={styles.refreshIconBtn}
+                hitSlop={8}
+              >
+                <Ionicons name="reload" size={18} color="#2563EB" />
+              </Pressable>
+            </View>
+
+            {/* Search Bar & Create Shortcut */}
+            <View style={styles.searchRow}>
+              <View style={styles.searchInputBox}>
+                <Ionicons name="search" size={16} color="#94A3B8" />
+                <TextInput
+                  value={voucherSearch}
+                  onChangeText={setVoucherSearch}
+                  placeholder={`Search ${activeTabMeta.label} by No or Party...`}
+                  placeholderTextColor="#94A3B8"
+                  style={styles.searchTextInput}
+                />
+                {voucherSearch ? (
+                  <Pressable onPress={() => setVoucherSearch('')} hitSlop={6}>
+                    <Ionicons name="close-circle" size={16} color="#94A3B8" />
+                  </Pressable>
+                ) : null}
+              </View>
+              {CREATION_ROUTES[activeTabKey] ? (
+                <Pressable
+                  onPress={() => {
+                    const c = CREATION_ROUTES[activeTabKey];
+                    router.push({ pathname: c.route, params: c.params } as any);
+                  }}
+                  style={styles.newVoucherShortcutBtn}
+                >
+                  <Ionicons name="add" size={16} color="#FFF" />
+                  <Text style={styles.newVoucherShortcutTxt}>New</Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Voucher List Content */}
+            {loadingExisting ? (
+              <View style={{ paddingVertical: spacing.xl, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color="#2563EB" />
+                <Text style={[styles.mutedText, { marginTop: spacing.sm }]}>Loading existing vouchers...</Text>
+              </View>
+            ) : existingVouchers.length === 0 ? (
+              <View style={styles.emptyVoucherBox}>
+                <Ionicons name="folder-open-outline" size={36} color="#94A3B8" />
+                <Text style={styles.emptyVoucherTitle}>No {activeTabMeta.label} Vouchers Found</Text>
+                <Text style={styles.emptyVoucherDesc}>
+                  {voucherSearch
+                    ? 'No vouchers matched your search filter.'
+                    : `No ${activeTabMeta.label} vouchers have been created yet. Any new vouchers will automatically initialize according to the configuration above.`}
+                </Text>
+                {CREATION_ROUTES[activeTabKey] ? (
+                  <Pressable
+                    onPress={() => {
+                      const c = CREATION_ROUTES[activeTabKey];
+                      router.push({ pathname: c.route, params: c.params } as any);
+                    }}
+                    style={styles.emptyCreateBtn}
+                  >
+                    <Ionicons name="add-circle-outline" size={16} color="#0D9488" />
+                    <Text style={styles.emptyCreateBtnTxt}>Create First {activeTabMeta.label}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : (
+              <View style={{ gap: 10, marginTop: spacing.sm }}>
+                {existingVouchers.map((v: any) => {
+                  const isPaid = v.status === 'paid' || v.status === 'cleared' || v.status === 'approved';
+                  const isPartial = v.status === 'partial';
+                  return (
+                    <View key={v.id || v.voucher_no} style={styles.voucherItemCard}>
+                      <View style={styles.voucherItemHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                          <Text style={styles.voucherItemNo}>#{v.voucher_no}</Text>
+                          <View style={[styles.statusPill, isPaid ? styles.statusPillPaid : isPartial ? styles.statusPillPartial : styles.statusPillDefault]}>
+                            <Text style={[styles.statusPillTxt, isPaid ? styles.statusPillTxtPaid : isPartial ? styles.statusPillTxtPartial : styles.statusPillTxtDefault]}>
+                              {String(v.status || 'Active').toUpperCase()}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.voucherItemDate}>📅 {v.date || 'No Date'}</Text>
+                      </View>
+
+                      <View style={styles.voucherItemBody}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.voucherItemParty} numberOfLines={1}>
+                            {v.party_name || 'No Party Assigned'}
+                          </Text>
+                          {v.balance > 0 ? (
+                            <Text style={styles.voucherItemBal}>Due Balance: {inr(v.balance)}</Text>
+                          ) : null}
+                        </View>
+                        <Text style={styles.voucherItemAmount}>{inr(v.amount)}</Text>
+                      </View>
+
+                      {/* Action Buttons Row */}
+                      <View style={styles.voucherActionRow}>
+                        <Pressable
+                          onPress={() => openQuickEdit(v)}
+                          style={styles.quickEditBtn}
+                        >
+                          <Ionicons name="pencil-outline" size={14} color="#0D9488" />
+                          <Text style={styles.quickEditBtnTxt}>Edit No & Date</Text>
+                        </Pressable>
+
+                        {v.edit_route ? (
+                          <Pressable
+                            onPress={() => router.push(v.edit_route as any)}
+                            style={styles.fullEditBtn}
+                          >
+                            <Ionicons name="create-outline" size={14} color="#2563EB" />
+                            <Text style={styles.fullEditBtnTxt}>Edit Full Voucher</Text>
+                          </Pressable>
+                        ) : null}
+
+                        {v.view_route ? (
+                          <Pressable
+                            onPress={() => router.push(v.view_route as any)}
+                            style={styles.viewVoucherBtn}
+                          >
+                            <Ionicons name="eye-outline" size={14} color="#475569" />
+                            <Text style={styles.viewVoucherBtnTxt}>View</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </Card>
+
           {/* Database Backup Card */}
           <Card>
             <View style={styles.cardHeader}>
@@ -496,6 +729,99 @@ export default function SettingsScreen() {
           </Card>
         </ScrollView>
       )}
+
+      {/* ================= QUICK EDIT VOUCHER MODAL ================= */}
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>Edit Existing Voucher</Text>
+                <Text style={styles.modalSubTitle}>
+                  {activeTabMeta.label} • Currently: #{editingVoucher?.voucher_no}
+                </Text>
+              </View>
+              <Pressable onPress={() => setEditModalVisible(false)} hitSlop={8}>
+                <Ionicons name="close" size={22} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <View style={{ gap: 12, marginTop: spacing.md }}>
+              <View>
+                <Text style={styles.modalFieldLabel}>Voucher Number</Text>
+                <TextInput
+                  value={editVoucherNo}
+                  onChangeText={setEditVoucherNo}
+                  placeholder="e.g. TDSC/2026-27/004632"
+                  placeholderTextColor="#94A3B8"
+                  style={styles.modalTextInput}
+                  autoCapitalize="characters"
+                />
+              </View>
+
+              <View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.modalFieldLabel}>Voucher Date</Text>
+                  <Pressable
+                    onPress={() => setEditVoucherDate(new Date().toISOString().slice(0, 10))}
+                    style={styles.quickTodayPill}
+                  >
+                    <Text style={styles.quickTodayPillTxt}>Set Today</Text>
+                  </Pressable>
+                </View>
+                <TextInput
+                  value={editVoucherDate}
+                  onChangeText={setEditVoucherDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#94A3B8"
+                  style={styles.modalTextInput}
+                />
+              </View>
+
+              <View>
+                <Text style={styles.modalFieldLabel}>Remarks / Note (Optional)</Text>
+                <TextInput
+                  value={editRemarks}
+                  onChangeText={setEditRemarks}
+                  placeholder="Reason for modifying voucher number or date..."
+                  placeholderTextColor="#94A3B8"
+                  style={styles.modalTextInput}
+                />
+              </View>
+            </View>
+
+            <View style={styles.modalActionRow}>
+              <Pressable
+                onPress={() => setEditModalVisible(false)}
+                disabled={updatingVoucher}
+                style={styles.modalCancelBtn}
+              >
+                <Text style={styles.modalCancelBtnTxt}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleSaveQuickEdit}
+                disabled={updatingVoucher}
+                style={[styles.modalSubmitBtn, updatingVoucher && { opacity: 0.6 }]}
+              >
+                {updatingVoucher ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle-outline" size={18} color="#FFF" />
+                    <Text style={styles.modalSubmitBtnTxt}>Save Changes</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -741,4 +1067,57 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#DC2626',
   },
+  mutedText: { fontSize: font.xs, color: colors.muted },
+  countBadge: { backgroundColor: '#DBEAFE', paddingHorizontal: 7, paddingVertical: 2, borderRadius: radius.pill },
+  countBadgeTxt: { fontSize: 11, fontWeight: '800', color: '#1D4ED8' },
+  refreshIconBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: spacing.md },
+  searchInputBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 6 },
+  searchTextInput: { flex: 1, fontSize: 12, color: '#0F172A', padding: 0 },
+  newVoucherShortcutBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#0D9488', paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md },
+  newVoucherShortcutTxt: { fontSize: 12, fontWeight: '800', color: '#FFF' },
+  emptyVoucherBox: { padding: spacing.xl, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', marginTop: spacing.md },
+  emptyVoucherTitle: { fontSize: 13, fontWeight: '800', color: '#334155', marginTop: spacing.sm },
+  emptyVoucherDesc: { fontSize: 11, color: '#64748B', textAlign: 'center', marginTop: 4, lineHeight: 16, maxWidth: 360 },
+  emptyCreateBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.md, backgroundColor: '#F0FDFA', borderWidth: 1, borderColor: '#99F6E4', paddingHorizontal: 14, paddingVertical: 7, borderRadius: radius.pill },
+  emptyCreateBtnTxt: { fontSize: 12, fontWeight: '800', color: '#0D9488' },
+  voucherItemCard: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: radius.md, padding: 12, gap: 8 },
+  voucherItemHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  voucherItemNo: { fontSize: 13, fontWeight: '800', color: '#0F172A', letterSpacing: 0.3 },
+  statusPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  statusPillPaid: { backgroundColor: '#DCFCE7' },
+  statusPillPartial: { backgroundColor: '#FEF3C7' },
+  statusPillDefault: { backgroundColor: '#F1F5F9' },
+  statusPillTxt: { fontSize: 9, fontWeight: '800' },
+  statusPillTxtPaid: { color: '#15803D' },
+  statusPillTxtPartial: { color: '#B45309' },
+  statusPillTxtDefault: { color: '#475569' },
+  voucherItemDate: { fontSize: 11, color: '#64748B', fontWeight: '600' },
+  voucherItemBody: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  voucherItemParty: { fontSize: 12, fontWeight: '700', color: '#334155' },
+  voucherItemBal: { fontSize: 10, color: '#DC2626', fontWeight: '700', marginTop: 2 },
+  voucherItemAmount: { fontSize: 14, fontWeight: '800', color: '#0F172A' },
+  voucherActionRow: { flexDirection: 'row', gap: 6, marginTop: 4, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#E2E8F0' },
+  quickEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#F0FDFA', borderWidth: 1, borderColor: '#99F6E4', paddingVertical: 6, borderRadius: radius.sm },
+  quickEditBtnTxt: { fontSize: 11, fontWeight: '800', color: '#0D9488' },
+  fullEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', paddingVertical: 6, borderRadius: radius.sm },
+  fullEditBtnTxt: { fontSize: 11, fontWeight: '800', color: '#2563EB' },
+  viewVoucherBtn: { paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingVertical: 6, borderRadius: radius.sm },
+  viewVoucherBtnTxt: { fontSize: 11, fontWeight: '700', color: '#475569' },
+
+  /* Modal Styles */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: spacing.lg },
+  modalCard: { width: '100%', maxWidth: 440, backgroundColor: '#FFF', borderRadius: radius.lg, padding: spacing.lg, gap: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
+  modalHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  modalTitle: { fontSize: font.base, fontWeight: '800', color: '#0F172A' },
+  modalSubTitle: { fontSize: 11, color: '#0D9488', fontWeight: '700', marginTop: 2 },
+  modalFieldLabel: { fontSize: 11, fontWeight: '800', color: '#334155', textTransform: 'uppercase', marginBottom: 4 },
+  modalTextInput: { backgroundColor: '#F8FAFC', borderWidth: 1.5, borderColor: '#CBD5E1', borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 8, fontSize: font.sm, color: '#0F172A', fontWeight: '700' },
+  quickTodayPill: { backgroundColor: '#F0FDFA', borderWidth: 1, borderColor: '#99F6E4', paddingHorizontal: 8, paddingVertical: 2, borderRadius: radius.pill },
+  quickTodayPillTxt: { fontSize: 10, fontWeight: '700', color: '#0D9488' },
+  modalActionRow: { flexDirection: 'row', gap: 10, marginTop: spacing.md },
+  modalCancelBtn: { flex: 1, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8FAFC' },
+  modalCancelBtnTxt: { fontSize: font.xs, fontWeight: '700', color: '#64748B' },
+  modalSubmitBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: radius.md, backgroundColor: '#0D9488' },
+  modalSubmitBtnTxt: { fontSize: font.xs, fontWeight: '800', color: '#FFF' },
 });
