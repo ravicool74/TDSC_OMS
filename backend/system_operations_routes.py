@@ -273,64 +273,382 @@ def make_system_operations_router(db, get_current_user, require_admin):
         to_date: Optional[str] = Query(None),
         current: any = Depends(get_current_user)
     ):
-        """Day book combining all Invoices, Expenses, Payments-in, and Cash transactions."""
-        from_d = from_date or (date.today() - timedelta(days=30)).isoformat()
-        to_d = to_date or date.today().isoformat()
+        """Comprehensive Vyapar/Tally style Day Book with Opening & Closing Balances, Sale Receipts, Payment In, and Reconciliation."""
+        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        today_ist = now_ist.strftime("%Y-%m-%d")
 
-        entries = []
-        # Sales & Purchases
-        all_invs = await db.invoices.find({}, {"_id": 0}).to_list(1000)
-        for s in all_invs:
-            d = s.get("date") or s.get("invoice_date")
-            if d and from_d <= d <= to_d:
-                is_sale = (s.get("invoice_type") == "sale")
-                entries.append({
-                    "date": d,
-                    "type": "Sale Invoice" if is_sale else "Purchase Bill",
-                    "reference": s.get("invoice_no") or s.get("invoice_number"),
-                    "party": s.get("party_name"),
-                    "debit": float(s.get("paid_amount") or s.get("total_amount") or 0.0) if is_sale else 0.0,
-                    "credit": float(s.get("paid_amount") or s.get("total_amount") or 0.0) if not is_sale else 0.0,
-                    "mode": s.get("payment_mode", "cash"),
-                })
+        from_d = from_date or today_ist
+        to_d = to_date or today_ist
 
-        # Expenses
-        expenses = await db.expenses.find({"date": {"$gte": from_d, "$lte": to_d}}).to_list(500)
+        # 1. Bank Accounts & Opening Balances
+        all_banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
+        if not all_banks:
+            all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
+
+        # Standard accounts mapping:
+        # (i) TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED (SBI)
+        # (ii) ANJU KUMARI (AXIS BANK)
+        # (iii) Other Accounts
+        # (iv) Cash in Hand
+
+        # Calculate opening balances before from_d
+        # We start with configured bank opening balance, adjusted by transactions prior to from_d
+        opening_balances = []
+        tot_bank_ob = 0.0
+
+        idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)", "(vii)"]
+        r_idx = 0
+
+        # Sort banks so SBI is (i), Axis is (ii), then others
+        def bank_sort_key(b):
+            acc = str(b.get("account_no") or "")
+            name = (b.get("name") or "").upper()
+            if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name:
+                return 0
+            if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name:
+                return 1
+            return 2
+
+        all_banks.sort(key=bank_sort_key)
+
+        for b in all_banks:
+            b_id = b.get("id")
+            base_bal = float(b.get("opening_balance") or b.get("balance") or 0.0)
+            account_no = b.get("account_no") or "—"
+            ifsc = b.get("ifsc") or "—"
+            name = b.get("name") or b.get("bank_name") or "Bank Account"
+            bank_name = b.get("bank_name") or "Bank"
+
+            opening_balances.append({
+                "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
+                "id": b_id,
+                "name": name,
+                "bank_name": bank_name,
+                "account_no": account_no,
+                "ifsc": ifsc,
+                "balance": round(base_bal, 2),
+                "formatted_balance": f"₹{base_bal:,.2f}",
+            })
+            tot_bank_ob += base_bal
+            r_idx += 1
+
+        # Cash in Hand opening balance calculation
+        # Sum of cash receipts minus cash disbursements prior to from_d
+        setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+        cash_base = float(setting.get("value", 0.0)) if setting else 0.0
+
+        # Fetch prior cash sales & prior cash income
+        prior_sales_cash = await db.invoices.find(
+            {"date": {"$lt": from_d}, "payment_mode": {"$regex": "cash", "$options": "i"}},
+            {"_id": 0, "paid_amount": 1, "total_amount": 1, "payment_splits": 1}
+        ).to_list(1000)
+        prior_cash_in = 0.0
+        for s in prior_sales_cash:
+            if s.get("payment_splits"):
+                prior_cash_in += sum(float(ps.get("amount") or 0) for ps in s["payment_splits"] if "cash" in str(ps.get("mode") or "").lower())
+            else:
+                prior_cash_in += float(s.get("paid_amount") or s.get("total_amount") or 0)
+
+        prior_inc_cash = await db.income.find(
+            {"date": {"$lt": from_d}, "payment_mode": {"$regex": "cash", "$options": "i"}},
+            {"_id": 0, "amount": 1, "payment_splits": 1}
+        ).to_list(1000)
+        for i in prior_inc_cash:
+            if i.get("payment_splits"):
+                prior_cash_in += sum(float(ps.get("amount") or 0) for ps in i["payment_splits"] if "cash" in str(ps.get("mode") or "").lower())
+            else:
+                prior_cash_in += float(i.get("amount") or 0)
+
+        prior_exp_cash = await db.expenses.find(
+            {"date": {"$lt": from_d}, "payment_mode": {"$regex": "cash", "$options": "i"}},
+            {"_id": 0, "amount": 1}
+        ).to_list(1000)
+        prior_cash_out = sum(float(e.get("amount") or 0) for e in prior_exp_cash)
+
+        cash_ob = max(0.0, round(cash_base + prior_cash_in - prior_cash_out, 2))
+
+        opening_balances.append({
+            "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
+            "id": "cash_in_hand",
+            "name": "Cash in Hand",
+            "bank_name": "Cash",
+            "account_no": "—",
+            "ifsc": "—",
+            "balance": cash_ob,
+            "formatted_balance": f"₹{cash_ob:,.2f}",
+        })
+
+        total_previous_ob = round(tot_bank_ob + cash_ob, 2)
+
+        # 2. Receipt Amount from Sale Voucher Table
+        sale_invoices = await db.invoices.find(
+            {"invoice_type": "sale", "date": {"$gte": from_d, "$lte": to_d}},
+            {"_id": 0}
+        ).sort("date", 1).to_list(1000)
+
+        sale_receipts = []
+        sale_running = 0.0
+        s_sl = 1
+        for s in sale_invoices:
+            paid_amt = float(s.get("paid_amount") or s.get("total_amount") or 0.0)
+            if paid_amt <= 0:
+                continue
+            sale_running += paid_amt
+            items_str = ", ".join([str(it.get("name") or it.get("item_name") or "") for it in (s.get("items") or []) if it.get("name") or it.get("item_name")])
+            if not items_str:
+                items_str = s.get("notes") or "Sale Invoice Services"
+
+            p_mode = (s.get("payment_mode") or "CASH").upper()
+
+            sale_receipts.append({
+                "sl_no": s_sl,
+                "date": s.get("date") or s.get("invoice_date") or from_d,
+                "voucher": s.get("invoice_no") or s.get("invoice_number") or f"INV-{s_sl}",
+                "ref_no": s.get("invoice_no") or s.get("invoice_number") or f"INV-{s_sl}",
+                "transaction_type": "Sale Receipt",
+                "party": s.get("party_name") or "Direct Customer",
+                "particulars": items_str,
+                "payment_mode": p_mode,
+                "receipt_in": round(paid_amt, 2),
+                "payment_out": 0.0,
+                "cumulative_bal": round(sale_running, 2),
+            })
+            s_sl += 1
+
+        total_sale_receipts = round(sale_running, 2)
+
+        # 3. Receipt Amount from Payment In Table
+        payment_incomes = await db.income.find(
+            {"date": {"$gte": from_d, "$lte": to_d}},
+            {"_id": 0}
+        ).sort("date", 1).to_list(1000)
+
+        payment_in_receipts = []
+        payment_running = 0.0
+        p_sl = 1
+        for inc in payment_incomes:
+            inc_amt = float(inc.get("amount") or 0.0)
+            if inc_amt <= 0:
+                continue
+            payment_running += inc_amt
+
+            linked_ref = inc.get("linked_voucher_no")
+            if not linked_ref and inc.get("linked_vouchers"):
+                linked_ref = ", ".join([lv.get("voucher_no") for lv in inc["linked_vouchers"] if lv.get("voucher_no")])
+            if not linked_ref:
+                linked_ref = "Direct Receipt"
+
+            part_desc = inc.get("service_name") or inc.get("category") or inc.get("source") or inc.get("remarks") or "Part Payment Received"
+
+            p_mode = (inc.get("payment_mode") or "CASH").upper()
+
+            payment_in_receipts.append({
+                "sl_no": p_sl,
+                "date": inc.get("date") or from_d,
+                "voucher": inc.get("voucher_no") or inc.get("income_no") or f"PAYIN-{p_sl}",
+                "ref_no": inc.get("reference") or inc.get("voucher_no") or f"PAYIN-{p_sl}",
+                "previous_voucher_ref": linked_ref,
+                "transaction_type": "Payment-In Receipt",
+                "party": inc.get("client_name") or inc.get("customer_name") or "Customer",
+                "particulars": part_desc,
+                "payment_mode": p_mode,
+                "receipt_in": round(inc_amt, 2),
+                "payment_out": 0.0,
+                "cumulative_bal": round(payment_running, 2),
+            })
+            p_sl += 1
+
+        total_payment_in_receipts = round(payment_running, 2)
+
+        # Total O.B with Receipts during the period
+        total_day_receipts = round(total_sale_receipts + total_payment_in_receipts, 2)
+        total_ob_with_receipts = round(total_previous_ob + total_day_receipts, 2)
+
+        # 4. Expenses Breakdown (Online vs Cash)
+        expenses = await db.expenses.find(
+            {"date": {"$gte": from_d, "$lte": to_d}, "status": {"$ne": "rejected"}},
+            {"_id": 0}
+        ).sort("date", 1).to_list(1000)
+
+        expenses_online = 0.0
+        expenses_cash = 0.0
         for e in expenses:
-            entries.append({
-                "date": e.get("date"),
-                "type": "Expense",
-                "reference": e.get("category", "Expense"),
-                "party": e.get("item_name") or e.get("note") or "General",
-                "debit": 0.0,
-                "credit": float(e.get("amount") or 0.0),
-                "mode": e.get("payment_mode", "cash"),
-            })
+            e_amt = float(e.get("amount") or 0.0)
+            e_mode = str(e.get("payment_mode") or "cash").lower()
+            if any(kw in e_mode for kw in ["bank", "online", "upi", "cheque", "neft", "rtgs", "card"]):
+                expenses_online += e_amt
+            else:
+                expenses_cash += e_amt
 
-        # Income / Payment In
-        incomes = await db.income.find({"date": {"$gte": from_d, "$lte": to_d}}).to_list(500)
-        for inc in incomes:
-            entries.append({
-                "date": inc.get("date"),
-                "type": "Payment-In",
-                "reference": inc.get("source", "Receipt"),
-                "party": inc.get("customer_name") or inc.get("source") or "Customer",
-                "debit": float(inc.get("amount") or 0.0),
+        expenses_online = round(expenses_online, 2)
+        expenses_cash = round(expenses_cash, 2)
+        total_expenses = round(expenses_online + expenses_cash, 2)
+
+        # 5. Closing Balances Calculation
+        # For each bank account: Closing Balance = Opening Balance + Receipts into Bank - Expenses from Bank
+        # Default allocation: online sales/incomes go to SBI / designated bank, online expenses go from bank
+        # Cash in Hand: cash_ob + cash sales + cash income - cash expenses
+
+        # Calculate cash receipts during the period
+        cash_sales_period = sum(
+            r["receipt_in"] for r in sale_receipts if "CASH" in r["payment_mode"]
+        )
+        cash_income_period = sum(
+            r["receipt_in"] for r in payment_in_receipts if "CASH" in r["payment_mode"]
+        )
+        cash_cb = max(0.0, round(cash_ob + cash_sales_period + cash_income_period - expenses_cash, 2))
+
+        # Calculate bank movements:
+        # Bank Inflow = total_day_receipts - (cash_sales_period + cash_income_period)
+        bank_inflow_period = round(total_day_receipts - (cash_sales_period + cash_income_period), 2)
+        bank_net_closing = round(tot_bank_ob + bank_inflow_period - expenses_online, 2)
+
+        closing_balances = []
+        c_idx = 0
+        allocated_bank_cb = 0.0
+
+        for b in all_banks:
+            b_id = b.get("id")
+            account_no = b.get("account_no") or "—"
+            ifsc = b.get("ifsc") or "—"
+            name = b.get("name") or b.get("bank_name") or "Bank Account"
+            bank_name = b.get("bank_name") or "Bank"
+
+            # Allocate bank net movement to primary business account (SBI) if not individually split
+            b_ob = float(b.get("opening_balance") or b.get("balance") or 0.0)
+            if "42137607814" in account_no or "TRIVENI" in name.upper():
+                b_cb = round(b_ob + bank_inflow_period - expenses_online, 2)
+            else:
+                b_cb = round(b_ob, 2)
+            allocated_bank_cb += b_cb
+
+            closing_balances.append({
+                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+                "id": b_id,
+                "name": name,
+                "bank_name": bank_name,
+                "account_no": account_no,
+                "ifsc": ifsc,
+                "balance": b_cb,
+                "formatted_balance": f"₹{b_cb:,.2f}",
+            })
+            c_idx += 1
+
+        closing_balances.append({
+            "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+            "id": "exp_online",
+            "name": "Total Expenses Online",
+            "bank_name": "Online / Bank",
+            "account_no": "—",
+            "ifsc": "—",
+            "balance": expenses_online,
+            "formatted_balance": f"₹{expenses_online:,.2f}",
+        })
+        c_idx += 1
+
+        closing_balances.append({
+            "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+            "id": "exp_cash",
+            "name": "Total Expenses by Cash",
+            "bank_name": "Cash",
+            "account_no": "—",
+            "ifsc": "—",
+            "balance": expenses_cash,
+            "formatted_balance": f"₹{expenses_cash:,.2f}",
+        })
+        c_idx += 1
+
+        closing_balances.append({
+            "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+            "id": "cash_in_hand",
+            "name": "Cash in Hand",
+            "bank_name": "Cash",
+            "account_no": "—",
+            "ifsc": "—",
+            "balance": cash_cb,
+            "formatted_balance": f"₹{cash_cb:,.2f}",
+        })
+
+        # Total C.B Formula: (i)+(ii)+(iii)+(iv)+(v)+(vi)
+        # Sum of all closing items (closing banks + closing cash + total online expenses + total cash expenses)
+        total_cb = round(allocated_bank_cb + expenses_online + expenses_cash + cash_cb, 2)
+
+        # 6. Verification / Reconciliation Check: Total O.B == Total C.B
+        diff = round(abs(total_ob_with_receipts - total_cb), 2)
+        is_balanced = (diff == 0.0 or diff < 0.01)
+
+        # Combined chronologic list for backward compatibility with existing FlatList
+        combined_entries = []
+        for sr in sale_receipts:
+            combined_entries.append({
+                "date": sr["date"],
+                "type": "Sale Invoice",
+                "reference": sr["voucher"],
+                "party": sr["party"],
+                "debit": sr["receipt_in"],
                 "credit": 0.0,
-                "mode": inc.get("payment_mode", "cash"),
+                "mode": sr["payment_mode"].lower(),
+                "particulars": sr["particulars"],
             })
-
-        entries.sort(key=lambda x: x.get("date") or "", reverse=True)
-        total_debit = sum(e["debit"] for e in entries)
-        total_credit = sum(e["credit"] for e in entries)
+        for pr in payment_in_receipts:
+            combined_entries.append({
+                "date": pr["date"],
+                "type": "Payment-In",
+                "reference": pr["voucher"],
+                "party": pr["party"],
+                "debit": pr["receipt_in"],
+                "credit": 0.0,
+                "mode": pr["payment_mode"].lower(),
+                "particulars": pr["particulars"],
+            })
+        for exp in expenses:
+            combined_entries.append({
+                "date": exp.get("date"),
+                "type": f"Expense ({exp.get('category') or 'General'})",
+                "reference": exp.get("expense_no") or "EXP",
+                "party": exp.get("vendor") or exp.get("item_name") or exp.get("category") or "Expense",
+                "debit": 0.0,
+                "credit": float(exp.get("amount") or 0.0),
+                "mode": str(exp.get("payment_mode") or "cash").lower(),
+                "particulars": exp.get("note") or exp.get("category") or "",
+            })
+        combined_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
 
         return {
             "from_date": from_d,
             "to_date": to_d,
-            "total_debit": round(total_debit, 2),
-            "total_credit": round(total_credit, 2),
-            "net_flow": round(total_debit - total_credit, 2),
-            "entries": entries,
+            "opening_balances": opening_balances,
+            "total_opening_balance": total_previous_ob,
+            "total_previous_ob": total_previous_ob,
+
+            "sale_receipts": sale_receipts,
+            "total_sale_receipts": total_sale_receipts,
+
+            "payment_in_receipts": payment_in_receipts,
+            "total_payment_in_receipts": total_payment_in_receipts,
+
+            "total_day_receipts": total_day_receipts,
+            "total_ob_with_receipts": total_ob_with_receipts,
+
+            "expenses_online": expenses_online,
+            "expenses_cash": expenses_cash,
+            "total_expenses": total_expenses,
+
+            "closing_balances": closing_balances,
+            "total_closing_balance": total_cb,
+            "total_cb": total_cb,
+
+            "is_balanced": is_balanced,
+            "reconciliation_status": "ok" if is_balanced else "mismatch",
+            "reconciliation_message": "Account is ok." if is_balanced else "Account Mismatch",
+            "difference": diff,
+
+            # Compatibility fields
+            "entries": combined_entries,
+            "transactions": combined_entries,
+            "total_debit": total_day_receipts,
+            "total_credit": total_expenses,
+            "net_flow": round(total_day_receipts - total_expenses, 2),
         }
 
     # ====== DATABASE BACKUP ======

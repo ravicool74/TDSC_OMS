@@ -11,6 +11,7 @@ import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput, OptionRow } from '@/src/forms';
 import { PrimaryButton } from '@/src/ui';
 import { api } from '@/src/api';
+import { useAuth } from '@/src/AuthContext';
 import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
 import { CustomerSearchModal, AddPartyModal, EditPartyModal, PickedParty } from '@/src/CustomerSearchModal';
 
@@ -92,10 +93,16 @@ export default function NewPaymentIn() {
   const [linkedVouchers, setLinkedVouchers] = useState<LinkedVoucher[]>([]);
 
   // Multi-Mode Payment Splits state
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+
   const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([
     { id: 'pay_1', mode: 'cash', amount: '', reference: '', bank_account_id: '' }
   ]);
   const [activePickingSplitId, setActivePickingSplitId] = useState<string | null>(null);
+  const [showAddCategoryModal, setShowAddCategoryModal] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [savingCategory, setSavingCategory] = useState(false);
 
   // "Link Voucher" Modal State
   const [linkModalVisible, setLinkModalVisible] = useState(false);
@@ -1011,7 +1018,7 @@ export default function NewPaymentIn() {
             <View style={{ gap: 8 }}>
               {paymentSplits.map((sp, idx) => {
                 const currentModeObj = PAY_MODES.find(m => m.key === sp.mode) || PAY_MODES[0];
-                const isBankOrCheque = sp.mode === 'bank_transfer' || sp.mode === 'cheque' || sp.mode === 'bank';
+                const isBankOrCheque = ['bank_transfer', 'upi', 'cheque', 'bank', 'online'].includes(sp.mode);
                 return (
                   <View key={sp.id} style={styles.splitCard}>
                     <View style={styles.splitHeaderRow}>
@@ -1100,7 +1107,18 @@ export default function NewPaymentIn() {
             </Pressable>
 
             <View style={{ gap: 6, marginTop: 8 }}>
-              <Text style={styles.fieldLabel}>Service Category</Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={styles.fieldLabel}>Service Category</Text>
+                {isAdmin && (
+                  <Pressable
+                    onPress={() => setShowAddCategoryModal(true)}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }}
+                  >
+                    <Ionicons name="add" size={14} color="#2563EB" />
+                    <Text style={{ fontSize: 11, fontWeight: '800', color: '#2563EB' }}>+ Add Category</Text>
+                  </Pressable>
+                )}
+              </View>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                 {(meta.income_categories || []).map((cat: string) => (
                   <Pressable
@@ -1116,9 +1134,9 @@ export default function NewPaymentIn() {
 
             {employees.length > 0 && (
               <View style={{ gap: 6, marginTop: 4 }}>
-                <Text style={styles.fieldLabel}>Received By (Employee)</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                  {employees.slice(0, 10).map(e => (
+                <Text style={styles.fieldLabel}>Received By (Employee) — {employees.length} Staff Available</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, maxHeight: 180, overflow: 'scroll' }}>
+                  {employees.map(e => (
                     <Pressable
                       key={e.id}
                       onPress={() => { setEmployeeId(e.id); setEmployeeName(e.name); }}
@@ -1559,6 +1577,137 @@ export default function NewPaymentIn() {
             </View>
           </View>
         </View>
+      </Modal>
+
+
+      {/* ============================================================== */}
+      {/* Modal: Payment Mode Picker                                     */}
+      {/* ============================================================== */}
+      <Modal
+        visible={activePickingSplitId !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActivePickingSplitId(null)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setActivePickingSplitId(null)}>
+          <Pressable style={[styles.modalCard, { maxWidth: 420 }]} onPress={e => e.stopPropagation()}>
+            <View style={styles.modalHead}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="wallet-outline" size={20} color="#059669" />
+                <Text style={styles.modalTitle}>Choose Payment Mode</Text>
+              </View>
+              <Pressable onPress={() => setActivePickingSplitId(null)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </Pressable>
+            </View>
+            <View style={{ gap: 8, paddingVertical: 10 }}>
+              {PAY_MODES.map(m => (
+                <Pressable
+                  key={m.key}
+                  onPress={() => {
+                    if (activePickingSplitId) {
+                      handleUpdatePaymentSplit(activePickingSplitId, 'mode', m.key);
+                    }
+                    setActivePickingSplitId(null);
+                  }}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: 12,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: '#E2E8F0',
+                    backgroundColor: '#F8FAFC'
+                  }}
+                >
+                  <Ionicons name={m.icon as any} size={20} color="#059669" />
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#1E293B', flex: 1 }}>{m.label}</Text>
+                  <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+                </Pressable>
+              ))}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ============================================================== */}
+      {/* Modal: Add Service Category (Admin Only)                       */}
+      {/* ============================================================== */}
+      <Modal
+        visible={showAddCategoryModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddCategoryModal(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowAddCategoryModal(false)}>
+          <Pressable style={[styles.modalCard, { maxWidth: 420 }]} onPress={e => e.stopPropagation()}>
+            <View style={styles.modalHead}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="add-circle" size={20} color="#2563EB" />
+                <Text style={styles.modalTitle}>Add Custom Service Category</Text>
+              </View>
+              <Pressable onPress={() => setShowAddCategoryModal(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </Pressable>
+            </View>
+            <View style={{ gap: 12, paddingVertical: 12 }}>
+              <Text style={{ fontSize: 13, color: '#64748B' }}>
+                Enter custom service category name to be added to system:
+              </Text>
+              <TextInput
+                style={{
+                  borderWidth: 1,
+                  borderColor: '#CBD5E1',
+                  borderRadius: 8,
+                  padding: 10,
+                  fontSize: 14,
+                  color: '#0F172A',
+                  backgroundColor: '#FFF'
+                }}
+                placeholder="e.g. Gem Registration, Trademark Services"
+                placeholderTextColor="#94A3B8"
+                value={newCategoryName}
+                onChangeText={setNewCategoryName}
+              />
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                <Pressable
+                  onPress={() => setShowAddCategoryModal(false)}
+                  style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: '#F1F5F9' }}
+                >
+                  <Text style={{ fontWeight: '700', color: '#475569' }}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={async () => {
+                    const trimmed = newCategoryName.trim();
+                    if (!trimmed) return;
+                    setSavingCategory(true);
+                    try {
+                      const res = await api.post<any>('/settings/service-categories', { name: trimmed });
+                      if (res?.categories) {
+                        setMeta((p: any) => ({ ...p, income_categories: res.categories }));
+                      } else {
+                        setMeta((p: any) => ({ ...p, income_categories: [...(p.income_categories || []), trimmed] }));
+                      }
+                      setServiceCategory(trimmed);
+                      setNewCategoryName('');
+                      setShowAddCategoryModal(false);
+                      Alert.alert('Category Added', `Service category "${trimmed}" added successfully.`);
+                    } catch (err: any) {
+                      Alert.alert('Error', err?.message || 'Failed to add category');
+                    } finally {
+                      setSavingCategory(false);
+                    }
+                  }}
+                  disabled={savingCategory}
+                  style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: '#2563EB' }}
+                >
+                  <Text style={{ fontWeight: '700', color: '#FFF' }}>{savingCategory ? 'Saving...' : 'Add Category'}</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Pressable>
+        </Pressable>
       </Modal>
 
     </View>

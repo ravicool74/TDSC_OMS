@@ -10,7 +10,12 @@ import { ItemSearchModal, PickedItem } from '@/src/ItemSearchModal';
 import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
 import { notify } from '@/src/dialog';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => {
+  const d = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(d.getTime() + istOffset + (d.getTimezoneOffset() * 60 * 1000));
+  return istDate.toISOString().slice(0, 10);
+};
 const addDays = (d: string, days: number) => { const t = new Date(d); t.setDate(t.getDate() + days); return t.toISOString().slice(0, 10); };
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
@@ -155,8 +160,8 @@ export default function NewInvoice() {
           if (next.voucher_mode) {
             setIsManualVoucherNo(next.voucher_mode === 'manual');
           }
-          if (next.date_start_from && !dateInitializedRef.current) {
-            setDate(next.date_start_from);
+          if (next.server_date && !dateInitializedRef.current) {
+            setDate(next.server_date);
             dateInitializedRef.current = true;
           }
         } else {

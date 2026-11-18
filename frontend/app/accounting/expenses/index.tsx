@@ -106,6 +106,10 @@ export default function ExpensesList() {
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [showSortModal, setShowSortModal] = useState(false);
   const [viewingExp, setViewingExp] = useState<any | null>(null);
+  const [customCats, setCustomCats] = useState<string[]>([]);
+  const [showAddCatModal, setShowAddCatModal] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [savingCat, setSavingCat] = useState(false);
 
   // Edit Form State
   const [editingExp, setEditingExp] = useState<any | null>(null);
@@ -136,6 +140,12 @@ export default function ExpensesList() {
 
   // Load Data
   const load = useCallback(async () => {
+    try {
+      const meta = await api.get<any>('/settings/expense-categories').catch(() => null);
+      if (meta?.categories) {
+        setCustomCats(meta.categories);
+      }
+    } catch {}
     try {
       setLoading(true);
       const [expData, custList] = await Promise.all([
@@ -626,7 +636,7 @@ export default function ExpensesList() {
                 All Categories
               </Text>
             </Pressable>
-            {EXPENSE_CATEGORIES.map((c) => (
+            {Array.from(new Set([...EXPENSE_CATEGORIES, ...customCats])).map((c) => (
               <Pressable
                 key={c}
                 onPress={() => setSelectedCategory(selectedCategory === c ? 'all' : c)}
@@ -642,6 +652,15 @@ export default function ExpensesList() {
                 </Text>
               </Pressable>
             ))}
+            {isAdmin && (
+              <Pressable
+                onPress={() => setShowAddCatModal(true)}
+                style={[styles.catPillItem, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+              >
+                <Ionicons name="add" size={14} color="#2563EB" />
+                <Text style={[styles.catPillItemTxt, { color: '#2563EB', fontWeight: '800' }]}>+ Add Category</Text>
+              </Pressable>
+            )}
           </View>
         </ScrollView>
 
@@ -1679,6 +1698,82 @@ export default function ExpensesList() {
           </View>
         </View>
       </Modal>
+
+      {/* Modal: Add Expense Category (Admin Only) */}
+      <Modal
+        visible={showAddCatModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddCatModal(false)}
+      >
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 }} onPress={() => setShowAddCatModal(false)}>
+          <Pressable style={{ width: '100%', maxWidth: 420, backgroundColor: '#FFF', borderRadius: 12, padding: 20 }} onPress={e => e.stopPropagation()}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="add-circle" size={20} color="#2563EB" />
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#0F172A' }}>Add Expense Category</Text>
+              </View>
+              <Pressable onPress={() => setShowAddCatModal(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </Pressable>
+            </View>
+            <Text style={{ fontSize: 13, color: '#64748B', marginBottom: 8 }}>
+              Enter custom expense category name to add to the system:
+            </Text>
+            <TextInput
+              style={{
+                borderWidth: 1,
+                borderColor: '#CBD5E1',
+                borderRadius: 8,
+                padding: 10,
+                fontSize: 14,
+                color: '#0F172A',
+                backgroundColor: '#FFF'
+              }}
+              placeholder="e.g. Legal Retainer, Cloud Hosting"
+              placeholderTextColor="#94A3B8"
+              value={newCatName}
+              onChangeText={setNewCatName}
+            />
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <Pressable
+                onPress={() => setShowAddCatModal(false)}
+                style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: '#F1F5F9' }}
+              >
+                <Text style={{ fontWeight: '700', color: '#475569' }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={async () => {
+                  const trimmed = newCatName.trim();
+                  if (!trimmed) return;
+                  setSavingCat(true);
+                  try {
+                    const res = await api.post<any>('/settings/expense-categories', { name: trimmed });
+                    if (res?.categories) {
+                      setCustomCats(res.categories);
+                    } else {
+                      setCustomCats((p: string[]) => [...p, trimmed]);
+                    }
+                    setSelectedCategory(trimmed);
+                    setNewCatName('');
+                    setShowAddCatModal(false);
+                    notify('Category Added', `Expense category "${trimmed}" added successfully.`);
+                  } catch (err: any) {
+                    notify('Error', err?.message || 'Failed to add category');
+                  } finally {
+                    setSavingCat(false);
+                  }
+                }}
+                disabled={savingCat}
+                style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: '#2563EB' }}
+              >
+                <Text style={{ fontWeight: '700', color: '#FFF' }}>{savingCat ? 'Saving...' : 'Add Category'}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
     </View>
   );
 }

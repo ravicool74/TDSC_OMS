@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform,
-  Pressable, ActivityIndicator, Alert, TextInput
+  Pressable, ActivityIndicator, Alert, TextInput, Modal
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +11,7 @@ import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput, OptionRow } from '@/src/forms';
 import { PrimaryButton } from '@/src/ui';
 import { api } from '@/src/api';
+import { useAuth } from '@/src/AuthContext';
 import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
 import { CustomerSearchModal, PickedParty } from '@/src/CustomerSearchModal';
 
@@ -82,6 +83,11 @@ export default function NewExpense() {
     });
   }, [selectedPassOnItems, itemSpentAmounts]);
 
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const [showAddCatModal, setShowAddCatModal] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [savingCat, setSavingCat] = useState(false);
   const [meta, setMeta] = useState<any>({ expense_categories: [], payment_modes: ['cash', 'bank', 'upi', 'cheque'] });
   const [banks, setBanks] = useState<any[]>([]);
   const [f, setF] = useState({
@@ -716,7 +722,18 @@ export default function NewExpense() {
           {/* ========================================================================= */}
           {expenseMode === 'general' && (
             <View style={{ gap: 6 }}>
-              <Text style={styles.label}>Expense Category *</Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={styles.label}>Expense Category *</Text>
+                {isAdmin && (
+                  <Pressable
+                    onPress={() => setShowAddCatModal(true)}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }}
+                  >
+                    <Ionicons name="add" size={14} color="#2563EB" />
+                    <Text style={{ fontSize: 11, fontWeight: '800', color: '#2563EB' }}>+ Add Category</Text>
+                  </Pressable>
+                )}
+              </View>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                 {(meta.expense_categories || []).map((c: string) => (
                   <Pressable
@@ -843,6 +860,82 @@ export default function NewExpense() {
           title="Select Customer / Party"
         />
       )}
+
+      {/* Modal: Add Custom Expense Category (Admin Only) */}
+      <Modal
+        visible={showAddCatModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddCatModal(false)}
+      >
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 }} onPress={() => setShowAddCatModal(false)}>
+          <Pressable style={{ width: '100%', maxWidth: 420, backgroundColor: '#FFF', borderRadius: 12, padding: 20 }} onPress={e => e.stopPropagation()}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="add-circle" size={20} color="#2563EB" />
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#0F172A' }}>Add Expense Category</Text>
+              </View>
+              <Pressable onPress={() => setShowAddCatModal(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </Pressable>
+            </View>
+            <Text style={{ fontSize: 13, color: '#64748B', marginBottom: 8 }}>
+              Enter custom expense category name to add to the system:
+            </Text>
+            <TextInput
+              style={{
+                borderWidth: 1,
+                borderColor: '#CBD5E1',
+                borderRadius: 8,
+                padding: 10,
+                fontSize: 14,
+                color: '#0F172A',
+                backgroundColor: '#FFF'
+              }}
+              placeholder="e.g. Legal Retainer, Cloud Hosting"
+              placeholderTextColor="#94A3B8"
+              value={newCatName}
+              onChangeText={setNewCatName}
+            />
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <Pressable
+                onPress={() => setShowAddCatModal(false)}
+                style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: '#F1F5F9' }}
+              >
+                <Text style={{ fontWeight: '700', color: '#475569' }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={async () => {
+                  const trimmed = newCatName.trim();
+                  if (!trimmed) return;
+                  setSavingCat(true);
+                  try {
+                    const res = await api.post<any>('/settings/expense-categories', { name: trimmed });
+                    if (res?.categories) {
+                      setMeta((p: any) => ({ ...p, expense_categories: res.categories }));
+                    } else {
+                      setMeta((p: any) => ({ ...p, expense_categories: [...(p.expense_categories || []), trimmed] }));
+                    }
+                    setF(p => ({ ...p, category: trimmed }));
+                    setNewCatName('');
+                    setShowAddCatModal(false);
+                    Alert.alert('Category Added', `Expense category "${trimmed}" added successfully.`);
+                  } catch (err: any) {
+                    Alert.alert('Error', err?.message || 'Failed to add category');
+                  } finally {
+                    setSavingCat(false);
+                  }
+                }}
+                disabled={savingCat}
+                style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: '#2563EB' }}
+              >
+                <Text style={{ fontWeight: '700', color: '#FFF' }}>{savingCat ? 'Saving...' : 'Add Category'}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
     </View>
   );
 }

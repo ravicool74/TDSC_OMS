@@ -712,7 +712,23 @@ class AccountEntry(BaseModel):
 
 # ============ Accounting Phase 1 Models ============
 INCOME_CATEGORIES = ["DSC Services", "E-Tender Services", "Railway Registration", "Contractor Registration", "GST/Tax Services", "Other Services"]
-EXPENSE_CATEGORIES = ["Office Rent", "Salary", "Electricity", "Internet", "Travel", "Marketing", "Software/Subscription", "Office Expenses", "Other"]
+EXPENSE_CATEGORIES = [
+    "Office Rent",
+    "Electricity",
+    "Internet",
+    "Travel",
+    "Salary",
+    "Office Consumables",
+    "Printing & Stationery",
+    "Audit & Legal Fees",
+    "CA Fees",
+    "Tender Fee",
+    "Cost of BOQ",
+    "EMD",
+    "Registration Fee",
+    "Software & Subscriptions",
+    "Other Expenses",
+]
 PAYMENT_MODES = ["cash", "bank", "upi", "cheque"]
 
 
@@ -2455,9 +2471,13 @@ async def delete_bank_account(bid: str, current: User = Depends(require_admin)):
 # ============ Accounting: Income ============
 @api_router.get("/accounting/meta")
 async def accounting_meta(current: User = Depends(get_current_user)):
+    custom_inc = await db.app_settings.find_one({"_id": "custom_service_categories"}, {"_id": 0})
+    custom_exp = await db.app_settings.find_one({"_id": "custom_expense_categories"}, {"_id": 0})
+    inc_cats = list(dict.fromkeys(INCOME_CATEGORIES + ((custom_inc or {}).get("categories") or [])))
+    exp_cats = list(dict.fromkeys(EXPENSE_CATEGORIES + ((custom_exp or {}).get("categories") or [])))
     return {
-        "income_categories": INCOME_CATEGORIES,
-        "expense_categories": EXPENSE_CATEGORIES,
+        "income_categories": inc_cats,
+        "expense_categories": exp_cats,
         "payment_modes": PAYMENT_MODES,
     }
 
@@ -2476,15 +2496,25 @@ async def _peek_next_no(counter_key: str, prefix: str) -> str:
     return f"{prefix}-{seq:04d}"
 
 
+KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
+
+def kolkata_now() -> datetime:
+    """Return current wall-clock datetime in Asia/Kolkata (IST: UTC+05:30)."""
+    return datetime.now(KOLKATA_TZ)
+
+def kolkata_date_str() -> str:
+    """Return current date string in Asia/Kolkata (YYYY-MM-DD)."""
+    return kolkata_now().strftime("%Y-%m-%d")
+
 def get_indian_financial_year(date_str: Optional[str] = None) -> str:
     """Return Indian Financial Year format like '2026-27' for a given ISO date (Apr 1 - Mar 31)."""
     try:
         if date_str:
             d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
         else:
-            d = datetime.now(timezone.utc).date()
+            d = kolkata_now().date()
     except Exception:
-        d = datetime.now(timezone.utc).date()
+        d = kolkata_now().date()
 
     year = d.year
     if d.month >= 4:
@@ -2659,6 +2689,23 @@ async def _next_voucher_no(voucher_type: str, date_str: Optional[str] = None) ->
     if seq < start_seq:
         seq = start_seq
         await db.counters.update_one({"_id": counter_key}, {"$set": {"seq": seq}})
+
+    # Forward sequential safety: ensure seq is strictly greater than any existing voucher number
+    if voucher_type == "sale_invoice":
+        fy = get_indian_financial_year(date_str)
+        prefix_pattern = f"^{re.escape(prefix)}/{re.escape(fy)}/"
+        latest = await db.invoices.find(
+            {"invoice_type": "sale", "invoice_no": {"$regex": prefix_pattern}},
+            {"_id": 0, "invoice_no": 1}
+        ).sort("invoice_no", -1).to_list(1)
+        if latest:
+            m = re.search(r"/(\d+)$", latest[0].get("invoice_no", ""))
+            if m:
+                highest_existing = int(m.group(1))
+                if highest_existing >= seq:
+                    seq = highest_existing + 1
+                    await db.counters.update_one({"_id": counter_key}, {"$set": {"seq": seq}})
+
     return _format_voucher_code(voucher_type, prefix, seq, date_str)
 
 
@@ -2674,6 +2721,22 @@ async def _peek_next_voucher_no(voucher_type: str, date_str: Optional[str] = Non
     else:
         current_seq = int(counter.get("seq") or 0)
         seq = max(current_seq + 1, start_seq)
+
+    # Forward sequential check: ensure preview matches forward sequence
+    if voucher_type == "sale_invoice":
+        fy = get_indian_financial_year(date_str)
+        prefix_pattern = f"^{re.escape(prefix)}/{re.escape(fy)}/"
+        latest = await db.invoices.find(
+            {"invoice_type": "sale", "invoice_no": {"$regex": prefix_pattern}},
+            {"_id": 0, "invoice_no": 1}
+        ).sort("invoice_no", -1).to_list(1)
+        if latest:
+            m = re.search(r"/(\d+)$", latest[0].get("invoice_no", ""))
+            if m:
+                highest_existing = int(m.group(1))
+                if highest_existing >= seq:
+                    seq = highest_existing + 1
+
     return _format_voucher_code(voucher_type, prefix, seq, date_str)
 
 
@@ -3330,9 +3393,10 @@ async def get_next_invoice_no(
     date: Optional[str] = Query(None),
     current: User = Depends(get_current_user)
 ):
+    today_kolkata = kolkata_date_str()
+    effective_date = date or today_kolkata
     if invoice_type == "sale":
         s = await _get_voucher_settings("sale_invoice")
-        effective_date = date or s.get("date_start_from")
         next_no = await _peek_next_voucher_no("sale_invoice", effective_date)
         fy = get_indian_financial_year(effective_date)
         return {
@@ -3342,6 +3406,8 @@ async def get_next_invoice_no(
             "voucher_mode": s.get("voucher_mode", "auto"),
             "start_seq": s.get("start_seq", 1),
             "date_start_from": s.get("date_start_from"),
+            "server_date": today_kolkata,
+            "default_date": today_kolkata,
             "prefix": s.get("prefix", "TDSC"),
         }
     elif invoice_type == "sale_return":
@@ -3384,17 +3450,136 @@ async def get_next_payment_in_no(
     date: Optional[str] = Query(None),
     current: User = Depends(get_current_user)
 ):
+    today_kolkata = kolkata_date_str()
+    effective_date = date or today_kolkata
     s = await _get_voucher_settings("payment_in")
-    effective_date = date or s.get("date_start_from")
     next_no = await _peek_next_voucher_no("payment_in", effective_date)
     return {
         "next_no": next_no,
         "voucher_mode": s.get("voucher_mode", "auto"),
         "start_seq": s.get("start_seq", 1),
         "date_start_from": s.get("date_start_from"),
+        "server_date": today_kolkata,
+        "default_date": today_kolkata,
         "prefix": s.get("prefix", "PAYIN"),
     }
 
+
+
+async def _record_payment_receipt_ledgers(
+    voucher_type: str,
+    voucher_no: str,
+    party_name: str,
+    date_str: str,
+    splits_or_payments: list,
+    current_user_id: str,
+    default_bank_id: Optional[str] = None
+):
+    """Auto-update bank accounts, bank transactions, and cheques ledgers when payments are received."""
+    if not splits_or_payments:
+        return
+
+    banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
+    bank_map = {b["id"]: b for b in banks}
+    default_bank = bank_map.get("bnk_sbi_01") or (banks[0] if banks else None)
+
+    for item in splits_or_payments:
+        amt = float(item.get("amount") or 0.0)
+        if amt <= 0:
+            continue
+        mode = str(item.get("payment_mode") or item.get("mode") or "cash").lower()
+        ref = str(item.get("reference") or item.get("ref") or "").strip()
+        b_id = item.get("bank_account_id") or default_bank_id
+
+        # 1. Bank Transfer / Online / UPI
+        if any(kw in mode for kw in ["bank", "online", "upi", "neft", "rtgs", "imps", "card"]):
+            target_bank = bank_map.get(b_id) or default_bank
+            if target_bank:
+                target_bank_id = target_bank["id"]
+                target_bank_name = f"{target_bank.get('name')} ({target_bank.get('bank_name', 'Bank')})"
+                await db.bank_accounts.update_one(
+                    {"id": target_bank_id},
+                    {"$inc": {"opening_balance": amt}}
+                )
+                tx_record = {
+                    "id": f"tx_{new_id()}",
+                    "transfer_type": "receipt",
+                    "direction": "deposit",
+                    "transfer_date": date_str,
+                    "deposit_to": target_bank_id,
+                    "deposit_to_name": target_bank_name,
+                    "withdraw_from": party_name,
+                    "amount": amt,
+                    "description": f"Receipt against {voucher_no} ({party_name}) via {mode.upper()}" + (f" Ref: {ref}" if ref else ""),
+                    "reference": ref or voucher_no,
+                    "source_voucher": voucher_no,
+                    "created_at": now_utc(),
+                    "created_by": current_user_id,
+                }
+                await db.bank_transactions.insert_one(tx_record)
+
+        # 2. Cheque
+        elif "cheque" in mode:
+            chq_record = {
+                "id": f"chq_{new_id()}",
+                "type": "received",
+                "customer_name": party_name,
+                "amount": amt,
+                "cheque_no": ref or f"CHQ-{voucher_no}",
+                "bank_name": "Customer Bank",
+                "cheque_date": date_str,
+                "status": "received",
+                "reference": voucher_no,
+                "created_at": now_utc(),
+                "created_by": current_user_id,
+            }
+            await db.cheques.insert_one(chq_record)
+
+
+@api_router.get("/settings/service-categories")
+async def get_service_categories_api(current: User = Depends(get_current_user)):
+    custom_doc = await db.app_settings.find_one({"_id": "custom_service_categories"}, {"_id": 0})
+    custom_cats = (custom_doc or {}).get("categories", [])
+    all_cats = list(dict.fromkeys(INCOME_CATEGORIES + custom_cats))
+    return {"categories": all_cats, "custom": custom_cats}
+
+
+@api_router.post("/settings/service-categories")
+async def add_service_category_api(payload: dict = Body(...), current: User = Depends(require_admin)):
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name cannot be empty")
+    await db.app_settings.update_one(
+        {"_id": "custom_service_categories"},
+        {"$addToSet": {"categories": name}},
+        upsert=True
+    )
+    custom_doc = await db.app_settings.find_one({"_id": "custom_service_categories"}, {"_id": 0})
+    custom_cats = (custom_doc or {}).get("categories", [])
+    return {"categories": list(dict.fromkeys(INCOME_CATEGORIES + custom_cats)), "added": name}
+
+
+@api_router.get("/settings/expense-categories")
+async def get_expense_categories_api(current: User = Depends(get_current_user)):
+    custom_doc = await db.app_settings.find_one({"_id": "custom_expense_categories"}, {"_id": 0})
+    custom_cats = (custom_doc or {}).get("categories", [])
+    all_cats = list(dict.fromkeys(EXPENSE_CATEGORIES + custom_cats))
+    return {"categories": all_cats, "custom": custom_cats}
+
+
+@api_router.post("/settings/expense-categories")
+async def add_expense_category_api(payload: dict = Body(...), current: User = Depends(require_admin)):
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name cannot be empty")
+    await db.app_settings.update_one(
+        {"_id": "custom_expense_categories"},
+        {"$addToSet": {"categories": name}},
+        upsert=True
+    )
+    custom_doc = await db.app_settings.find_one({"_id": "custom_expense_categories"}, {"_id": 0})
+    custom_cats = (custom_doc or {}).get("categories", [])
+    return {"categories": list(dict.fromkeys(EXPENSE_CATEGORIES + custom_cats)), "added": name}
 
 @api_router.post("/income", response_model=Income)
 async def create_income(payload: IncomeInput, current: User = Depends(get_current_user)):
@@ -3564,6 +3749,27 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
                 }
             }
         )
+
+    # Auto-update cash & bank ledgers
+    try:
+        raw_splits = getattr(payload, "payment_splits", None) or inc_dict.get("payment_splits")
+        splits_list = raw_splits if raw_splits else [{
+            "payment_mode": payload.payment_mode or "cash",
+            "amount": payload.amount,
+            "bank_account_id": getattr(payload, "bank_account_id", None) or inc_dict.get("bank_account_id"),
+            "reference": getattr(payload, "reference", None) or inc_dict.get("reference") or payload.remarks,
+        }]
+        await _record_payment_receipt_ledgers(
+            voucher_type="payment_in",
+            voucher_no=no,
+            party_name=payload.client_name or "Customer",
+            date_str=payload.date or kolkata_date_str(),
+            splits_or_payments=splits_list,
+            current_user_id=current.user_id,
+            default_bank_id=getattr(payload, "bank_account_id", None) or inc_dict.get("bank_account_id"),
+        )
+    except Exception as e:
+        logger.exception("Failed to update ledgers for payment in %s: %s", no, e)
 
     return inc
 
@@ -4735,6 +4941,23 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
         created_by=current.user_id, created_by_name=current.name,
     )
     await db.invoices.insert_one(inv.dict())
+
+    # Auto-update cash & bank ledgers for payment received on invoice
+    try:
+        if payload.invoice_type == "sale":
+            splits_to_record = initial_payments or payload.payment_splits
+            if splits_to_record:
+                await _record_payment_receipt_ledgers(
+                    voucher_type="sale_invoice",
+                    voucher_no=no,
+                    party_name=payload.party_name,
+                    date_str=payload.date or kolkata_date_str(),
+                    splits_or_payments=splits_to_record,
+                    current_user_id=current.user_id,
+                )
+    except Exception as e:
+        logger.exception("Failed to update ledgers for sale invoice %s: %s", no, e)
+
     # Auto-create tasks (best-effort — do not fail invoice on error)
     try:
         if payload.invoice_type == "sale":
