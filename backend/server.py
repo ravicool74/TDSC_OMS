@@ -12,7 +12,7 @@ import certifi
 import httpx
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query, Request
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query, Request, Body
 from fastapi.responses import Response, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from invoice_pdf import build_invoice_pdf
