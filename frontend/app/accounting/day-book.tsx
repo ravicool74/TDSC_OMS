@@ -139,7 +139,541 @@ export default function DayBookReport() {
 
   const handlePrint = () => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      window.print();
+      const generatedOn = new Date().toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: true
+      });
+
+      // 1. Opening Balance Table HTML
+      let obRowsHtml = '';
+      openingBalances.forEach((acc: any) => {
+        obRowsHtml += `
+          <tr>
+            <td style="font-weight: 700; width: 60px;">${acc.index}</td>
+            <td>
+              <strong>${acc.name}</strong>
+              ${acc.account_no && acc.account_no !== '—' ? `<div style="font-size: 8px; color: #64748B;">${acc.bank_name} &bull; A/c ${acc.account_no} &bull; IFSC: ${acc.ifsc}</div>` : ''}
+            </td>
+            <td style="text-align: right; font-weight: 700; width: 140px;">${inr(acc.balance)}</td>
+          </tr>
+        `;
+      });
+
+      // 2. Sale Receipts Table HTML
+      let saleRowsHtml = '';
+      if (saleReceipts.length === 0) {
+        saleRowsHtml = `<tr><td colspan="10" style="text-align: center; color: #94A3B8; padding: 10px;">No Sale Receipts recorded in selected date range.</td></tr>`;
+      } else {
+        saleReceipts.forEach((sr: any) => {
+          saleRowsHtml += `
+            <tr>
+              <td style="text-align: center; font-weight: 700;">${sr.sl_no}</td>
+              <td>${sr.date}</td>
+              <td style="font-weight: 700; color: #1D4ED8;">${sr.voucher}</td>
+              <td>${sr.ref_no}</td>
+              <td>${sr.transaction_type}</td>
+              <td><strong>${sr.party}</strong></td>
+              <td>${sr.particulars}</td>
+              <td><span class="badge badge-sale">${sr.payment_mode}</span></td>
+              <td style="text-align: right; font-weight: 700; color: #059669;">${inr(sr.receipt_in)}</td>
+              <td style="text-align: right; color: #64748B;">—</td>
+              <td style="text-align: right; font-weight: 700;">${inr(sr.cumulative_bal)}</td>
+            </tr>
+          `;
+        });
+      }
+
+      // 3. Payment In Table HTML
+      let payInRowsHtml = '';
+      if (paymentInReceipts.length === 0) {
+        payInRowsHtml = `<tr><td colspan="10" style="text-align: center; color: #94A3B8; padding: 10px;">No Payment In receipts recorded in selected date range.</td></tr>`;
+      } else {
+        paymentInReceipts.forEach((pr: any) => {
+          payInRowsHtml += `
+            <tr>
+              <td style="text-align: center; font-weight: 700;">${pr.sl_no}</td>
+              <td>${pr.date}</td>
+              <td style="font-weight: 700; color: #7E22CE;">${pr.voucher}</td>
+              <td>${pr.ref_no}</td>
+              <td style="color: #2563EB;">${pr.previous_voucher_ref || 'Direct'}</td>
+              <td><strong>${pr.party}</strong></td>
+              <td>${pr.particulars}</td>
+              <td><span class="badge badge-payin">${pr.payment_mode}</span></td>
+              <td style="text-align: right; font-weight: 700; color: #059669;">${inr(pr.receipt_in)}</td>
+              <td style="text-align: right; color: #64748B;">—</td>
+              <td style="text-align: right; font-weight: 700;">${inr(pr.cumulative_bal)}</td>
+            </tr>
+          `;
+        });
+      }
+
+      // 3.5 Contra Deposits Table HTML
+      let contraRowsHtml = '';
+      if (contraDeposits.length === 0) {
+        contraRowsHtml = `<tr><td colspan="8" style="text-align: center; color: #94A3B8; padding: 10px;">No Cash Deposited to Bank (Contra) recorded in selected date range.</td></tr>`;
+      } else {
+        contraDeposits.forEach((cd: any) => {
+          contraRowsHtml += `
+            <tr>
+              <td style="text-align: center; font-weight: 700;">${cd.sl_no}</td>
+              <td>${cd.date}</td>
+              <td style="font-weight: 700; color: #2563EB;">${cd.voucher}</td>
+              <td style="color: #B45309; font-weight: 600;">${cd.withdrawn_from}</td>
+              <td><strong>${cd.deposited_to_bank}</strong></td>
+              <td>${cd.deposited_by}</td>
+              <td style="text-align: right; font-weight: 700; color: #2563EB;">${inr(cd.amount)}</td>
+              <td>${cd.attachment_name || '—'} ${cd.note ? `<div style="font-size: 8px; color: #64748B;">${cd.note}</div>` : ''}</td>
+            </tr>
+          `;
+        });
+      }
+
+      // 3.8 Expense Details Table HTML
+      let expRowsHtml = '';
+      if (expenseDetails.length === 0) {
+        expRowsHtml = `<tr><td colspan="9" style="text-align: center; color: #94A3B8; padding: 10px;">No Expenses / Payment Out recorded in selected date range.</td></tr>`;
+      } else {
+        expenseDetails.forEach((e: any) => {
+          expRowsHtml += `
+            <tr>
+              <td style="text-align: center; font-weight: 700;">${e.sl_no}</td>
+              <td>${e.date}</td>
+              <td style="font-weight: 700; color: #DC2626;">${e.voucher}</td>
+              <td><strong>${e.category}</strong></td>
+              <td>${e.particulars}</td>
+              <td>${e.paid_to}</td>
+              <td><span class="badge badge-exp">${e.payment_mode}</span></td>
+              <td style="text-align: right; font-weight: 700; color: #DC2626;">${inr(e.payment_out)}</td>
+              <td style="text-align: right; font-weight: 700;">${inr(e.cumulative_bal)}</td>
+            </tr>
+          `;
+        });
+      }
+
+      // 5. Closing Balances Table HTML
+      let cbRowsHtml = '';
+      closingBalances.forEach((item: any) => {
+        const isExp = item.id?.startsWith('exp_');
+        cbRowsHtml += `
+          <tr>
+            <td style="font-weight: 700; width: 60px;">${item.index}</td>
+            <td>
+              <strong>${item.name}</strong>
+              ${item.account_no && item.account_no !== '—' ? `<div style="font-size: 8px; color: #64748B;">${item.bank_name} &bull; A/c ${item.account_no} &bull; IFSC: ${item.ifsc}</div>` : ''}
+            </td>
+            <td style="text-align: right; font-weight: 700; width: 140px; color: ${isExp ? '#DC2626' : '#0F172A'};">${inr(item.balance)}</td>
+          </tr>
+        `;
+      });
+
+      const printableHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Day Book Report - TRIVENI DSC AND ETENDER SERVICE PVT. LTD</title>
+  <style>
+    @media print {
+      @page {
+        size: A4 landscape;
+        margin: 8mm;
+      }
+      body {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 10px;
+      color: #0F172A;
+      font-size: 9.5px;
+      line-height: 1.35;
+      background: #FFF;
+    }
+    .header-box {
+      border-bottom: 2px solid #00104A;
+      padding-bottom: 8px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .company-title {
+      font-size: 16px;
+      font-weight: 900;
+      color: #00104A;
+      margin: 0 0 2px 0;
+    }
+    .company-sub {
+      font-size: 8.5px;
+      color: #475569;
+    }
+    .report-banner {
+      background: #F1F5F9;
+      border: 1px solid #CBD5E1;
+      border-radius: 4px;
+      padding: 6px 12px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .report-title {
+      font-size: 13px;
+      font-weight: 900;
+      color: #0F172A;
+    }
+    .status-stamp-ok {
+      background: #ECFDF5;
+      border: 1px solid #A7F3D0;
+      color: #065F46;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-weight: 800;
+      font-size: 9.5px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 900;
+      color: #1E293B;
+      margin: 8px 0 3px 0;
+      display: flex;
+      justify-content: space-between;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 8px;
+      page-break-inside: auto;
+    }
+    tr {
+      page-break-inside: avoid;
+    }
+    thead {
+      display: table-header-group;
+    }
+    th {
+      background: #F8FAFC !important;
+      border: 1px solid #CBD5E1;
+      padding: 4px 5px;
+      font-size: 8.5px;
+      font-weight: 800;
+      text-align: left;
+      color: #334155;
+    }
+    td {
+      border: 1px solid #E2E8F0;
+      padding: 4px 5px;
+      font-size: 8.5px;
+    }
+    .table-footer-row td {
+      background: #F8FAFC !important;
+      font-weight: 800;
+      border-top: 2px solid #CBD5E1;
+    }
+    .badge {
+      display: inline-block;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 7.5px;
+      font-weight: 800;
+    }
+    .badge-sale { background: #DCFCE7; color: #166534; }
+    .badge-payin { background: #F3E8FF; color: #7E22CE; }
+    .badge-exp { background: #FEE2E2; color: #991B1B; }
+    .summary-card {
+      background: #F0FDF4;
+      border: 1px solid #BBF7D0;
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      page-break-inside: avoid;
+    }
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 9.5px;
+      margin: 2px 0;
+    }
+    .signatory-box {
+      margin-top: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      page-break-inside: avoid;
+      border-top: 1px solid #E2E8F0;
+      padding-top: 8px;
+    }
+    .stamp-badge {
+      border: 2px solid #059669;
+      color: #059669;
+      font-weight: 900;
+      font-size: 9px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+  </style>
+</head>
+<body>
+  <div class="header-box">
+    <div>
+      <div class="company-title">TRIVENI DSC AND ETENDER SERVICE PVT. LTD</div>
+      <div class="company-sub">MOH-BHAISHASUR HOSPITAL MORE NEAR EYE CARE HOSPITAL SRI DILCHANDRA MAHTO WARD NO-17 RANCHI ROAD BIHARSHARIF</div>
+      <div class="company-sub"><strong>GSTIN:</strong> 10AAGCT3865R1ZU &bull; <strong>State:</strong> 10-Bihar &bull; <strong>Phone:</strong> 9334344708 &bull; <strong>Email:</strong> tdscservice@gmail.com</div>
+    </div>
+    <div style="text-align: right;">
+      <div class="status-stamp-ok">${isBalanced ? '&#10004; Account is ok. (VERIFIED)' : 'Account Mismatch'}</div>
+      <div style="font-size: 8px; color: #64748B; margin-top: 3px;">Printed On: ${generatedOn}</div>
+    </div>
+  </div>
+
+  <div class="report-banner">
+    <div>
+      <span class="report-title">DAY BOOK REPORT (CASH &amp; BANK REGISTER)</span>
+      <span style="font-size: 9.5px; color: #64748B; margin-left: 8px;">&bull; Official Management Ledger</span>
+    </div>
+    <div style="font-size: 9.5px; font-weight: 700;">
+      Period: ${fromDate} to ${toDate}
+    </div>
+  </div>
+
+  <!-- 1. Opening Balance -->
+  <div class="section-title">
+    <span>1. Opening Balance:- (As of ${fromDate})</span>
+    <span style="color: #2563EB;">Total OB: Rs. ${inr(data?.total_previous_ob || 0).replace('₹', '')}</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 60px;">Index</th>
+        <th>Account Name &amp; Details</th>
+        <th style="text-align: right; width: 140px;">Current Balance in Rs.</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${obRowsHtml}
+      <tr class="table-footer-row">
+        <td colspan="2"><strong>Total OB = (i)+(ii)+(iii)+(iv) + ... =</strong></td>
+        <td style="text-align: right; color: #2563EB; font-weight: 900;">${inr(data?.total_previous_ob || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 2. Sale Receipts -->
+  <div class="section-title">
+    <span>2. Receipt Amount from Sale Voucher:</span>
+    <span style="color: #059669;">${saleReceipts.length} Vouchers &bull; Total: ${inr(data?.total_sale_receipts || 0)}</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 35px; text-align: center;">Sl.</th>
+        <th style="width: 70px;">Date</th>
+        <th style="width: 120px;">Voucher</th>
+        <th style="width: 110px;">Ref #</th>
+        <th style="width: 100px;">Type</th>
+        <th style="width: 130px;">Party</th>
+        <th>Particulars</th>
+        <th style="width: 65px;">Mode</th>
+        <th style="width: 75px; text-align: right;">Receipt (In)</th>
+        <th style="width: 65px; text-align: right;">Payment (Out)</th>
+        <th style="width: 80px; text-align: right;">Cumulative</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${saleRowsHtml}
+      <tr class="table-footer-row">
+        <td colspan="8"><strong>Total Receipt Amount against Sale Vouchers:</strong></td>
+        <td style="text-align: right; color: #059669;">${inr(data?.total_sale_receipts || 0)}</td>
+        <td style="text-align: right;">₹0.00</td>
+        <td style="text-align: right; color: #059669;">${inr(data?.total_sale_receipts || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 3. Payment In Receipts -->
+  <div class="section-title">
+    <span>3. Receipt Amount From Payment In:</span>
+    <span style="color: #7E22CE;">${paymentInReceipts.length} Receipts &bull; Total: ${inr(data?.total_payment_in_receipts || 0)}</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 35px; text-align: center;">Sl.</th>
+        <th style="width: 70px;">Date</th>
+        <th style="width: 110px;">Voucher</th>
+        <th style="width: 110px;">Previous Ref.</th>
+        <th style="width: 100px;">Type</th>
+        <th style="width: 130px;">Party</th>
+        <th>Particulars</th>
+        <th style="width: 65px;">Mode</th>
+        <th style="width: 75px; text-align: right;">Receipt (In)</th>
+        <th style="width: 65px; text-align: right;">Payment (Out)</th>
+        <th style="width: 80px; text-align: right;">Cumulative</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${payInRowsHtml}
+      <tr class="table-footer-row">
+        <td colspan="8"><strong>Total Receipt Amount from Payment In:</strong></td>
+        <td style="text-align: right; color: #059669;">${inr(data?.total_payment_in_receipts || 0)}</td>
+        <td style="text-align: right;">₹0.00</td>
+        <td style="text-align: right; color: #059669;">${inr(data?.total_payment_in_receipts || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 3.5 Contra Deposits -->
+  <div class="section-title">
+    <span>3.5. Cash Deposited to Bank (Contra Transfers):</span>
+    <span style="color: #1D4ED8;">${contraDeposits.length} Contra &bull; Total: ${inr(data?.total_contra_deposits || 0)}</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 35px; text-align: center;">Sl.</th>
+        <th style="width: 70px;">Date</th>
+        <th style="width: 110px;">Voucher #</th>
+        <th style="width: 90px;">Withdrawn From</th>
+        <th>Deposited To Bank</th>
+        <th style="width: 100px;">Deposited By</th>
+        <th style="width: 85px; text-align: right;">Amount (₹)</th>
+        <th>Slip / Remarks</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${contraRowsHtml}
+      <tr class="table-footer-row">
+        <td colspan="6"><strong>Total Cash Deposited into Bank (Contra):</strong></td>
+        <td style="text-align: right; color: #1D4ED8;">${inr(data?.total_contra_deposits || 0)}</td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 3.8 Payment Out / Expenses Detail Table -->
+  <div class="section-title">
+    <span>3.8. Payment Out / Expenses Detail:</span>
+    <span style="color: #DC2626;">${expenseDetails.length} Expenses &bull; Total: ${inr(data?.total_expenses || 0)}</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 35px; text-align: center;">Sl.</th>
+        <th style="width: 70px;">Date</th>
+        <th style="width: 90px;">Expense #</th>
+        <th style="width: 140px;">Expense Category</th>
+        <th>Particulars / Narration</th>
+        <th style="width: 130px;">Paid To (Vendor/Payee)</th>
+        <th style="width: 80px;">Mode</th>
+        <th style="width: 85px; text-align: right;">Payment (Out)</th>
+        <th style="width: 85px; text-align: right;">Cumulative</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${expRowsHtml}
+      <tr class="table-footer-row">
+        <td colspan="7"><strong>Total Payment Out (Expenses):</strong></td>
+        <td style="text-align: right; color: #DC2626;">${inr(data?.total_expenses || 0)}</td>
+        <td style="text-align: right; color: #DC2626;">${inr(data?.total_expenses || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 4. Day Summary & Total O.B -->
+  <div class="summary-card">
+    <div style="font-weight: 900; font-size: 11px; color: #065F46; margin-bottom: 4px;">4. Day Book Summary &amp; Total O.B =</div>
+    <div class="summary-row">
+      <span>Total previous OB = (i)+(ii)+(iii)+(iv) + ... =</span>
+      <span style="font-weight: 700;">Rs. ${inr(data?.total_previous_ob || 0).replace('₹', '')}</span>
+    </div>
+    <div style="font-weight: 800; color: #059669; margin: 1px 0;">And</div>
+    <div class="summary-row">
+      <span>Total Receipt amount against Sale during the day in Rs.</span>
+      <span style="font-weight: 700; color: #059669;">${inr(data?.total_sale_receipts || 0).replace('₹', '')}</span>
+    </div>
+    <div style="font-weight: 800; color: #059669; margin: 1px 0;">And</div>
+    <div class="summary-row">
+      <span>Total Receipt amount against Payment in during the day in Rs.</span>
+      <span style="font-weight: 700; color: #059669;">${inr(data?.total_payment_in_receipts || 0).replace('₹', '')}</span>
+    </div>
+    <div style="border-top: 1px dashed #86EFAC; margin-top: 4px; padding-top: 4px;" class="summary-row">
+      <span style="font-weight: 900; color: #065F46; font-size: 11px;">Total O.B</span>
+      <span style="font-weight: 900; color: #059669; font-size: 13px;">Rs. ${inr(data?.total_ob_with_receipts || 0).replace('₹', '')}</span>
+    </div>
+  </div>
+
+  <!-- 5. Closing Balances -->
+  <div class="section-title">
+    <span>5. Closing Balance: (As of ${toDate})</span>
+    <span style="color: #0F172A;">Total CB: Rs. ${inr(data?.total_closing_balance || 0).replace('₹', '')}</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 60px;">Index</th>
+        <th>Account / Component Name</th>
+        <th style="text-align: right; width: 140px;">Current Balance in Rs.</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${cbRowsHtml}
+      <tr class="table-footer-row">
+        <td colspan="2"><strong>Total C.B = (i)+(ii)+(iii)+(iv)+(v)+(vi) =</strong></td>
+        <td style="text-align: right; color: #0F172A; font-weight: 900;">${inr(data?.total_closing_balance || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Footer with Digital Signature -->
+  <div class="signatory-box">
+    <div>
+      <div style="font-weight: 800; font-size: 9px;">Triveni DSC &amp; E-Tender Management System</div>
+      <div style="font-size: 8px; color: #64748B;">Computer generated financial statement. Page layout automatically adjusted for multi-page export.</div>
+      <div style="font-size: 8px; color: #64748B;">Generated on: ${generatedOn}</div>
+    </div>
+    <div style="text-align: right;">
+      <div class="stamp-badge">&#10004; DIGITALLY VERIFIED</div>
+      <div style="font-size: 11px; font-weight: 800; color: #0F172A; margin-top: 2px;">अंजू कुमारी</div>
+      <div style="font-size: 8px; color: #64748B;">Authorized Signatory<br/>For TRIVENI DSC AND ETENDER SERVICE PVT. LTD</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+      // Render into hidden iframe and print cleanly without window cropping
+      try {
+        let iframe = document.getElementById('tdsc-daybook-print-frame') as HTMLIFrameElement;
+        if (!iframe) {
+          iframe = document.createElement('iframe');
+          iframe.id = 'tdsc-daybook-print-frame';
+          iframe.style.position = 'fixed';
+          iframe.style.right = '0';
+          iframe.style.bottom = '0';
+          iframe.style.width = '0';
+          iframe.style.height = '0';
+          iframe.style.border = '0';
+          document.body.appendChild(iframe);
+        }
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (doc) {
+          doc.open();
+          doc.write(printableHtml);
+          doc.close();
+          setTimeout(() => {
+            try {
+              iframe.contentWindow?.focus();
+              iframe.contentWindow?.print();
+            } catch {
+              window.print();
+            }
+          }, 350);
+        }
+      } catch {
+        window.print();
+      }
     } else {
       Share.share({
         message: `TRIVENI DSC & ETENDER SERVICE PVT. LTD. - Day Book Report (${fromDate} to ${toDate})\nTotal OB: ${inr(data?.total_ob_with_receipts)}\nTotal CB: ${inr(data?.total_cb)}\nStatus: ${data?.reconciliation_message || 'OK'}`,
@@ -152,6 +686,7 @@ export default function DayBookReport() {
   const saleReceipts: any[] = data?.sale_receipts || [];
   const paymentInReceipts: any[] = data?.payment_in_receipts || [];
   const contraDeposits: any[] = data?.contra_deposits || [];
+  const expenseDetails: any[] = data?.expense_details || [];
   const closingBalances: any[] = data?.closing_balances || [];
   const isBalanced: boolean = data?.is_balanced !== false;
   const diffAmt = data?.difference || 0;
@@ -193,12 +728,30 @@ export default function DayBookReport() {
 
         <View style={styles.dateInputsRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.dateLbl}>From Date</Text>
-            <TextInput style={styles.dateInput} value={fromDate} onChangeText={setFromDate} placeholder="YYYY-MM-DD" />
+            <Text style={styles.dateLbl}>From Date (Calendar)</Text>
+            {Platform.OS === 'web' ? (
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e: any) => setFromDate(e.target.value)}
+                style={webDateInputStyle}
+              />
+            ) : (
+              <TextInput style={styles.dateInput} value={fromDate} onChangeText={setFromDate} placeholder="YYYY-MM-DD" />
+            )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.dateLbl}>To Date</Text>
-            <TextInput style={styles.dateInput} value={toDate} onChangeText={setToDate} placeholder="YYYY-MM-DD" />
+            <Text style={styles.dateLbl}>To Date (Calendar)</Text>
+            {Platform.OS === 'web' ? (
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e: any) => setToDate(e.target.value)}
+                style={webDateInputStyle}
+              />
+            ) : (
+              <TextInput style={styles.dateInput} value={toDate} onChangeText={setToDate} placeholder="YYYY-MM-DD" />
+            )}
           </View>
           <Pressable onPress={load} style={styles.goBtn}>
             <Ionicons name="refresh" size={18} color="#FFF" />
@@ -526,6 +1079,83 @@ export default function DayBookReport() {
           </View>
 
           {/* ============================================================== */}
+          {/* 3.8. Payment Out / Expenses Detail Table                      */}
+          {/* ============================================================== */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="card-outline" size={20} color="#DC2626" />
+                <Text style={styles.cardTitle}>Payment Out / Expenses Detail:</Text>
+              </View>
+              <View style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 }}>
+                <Text style={{ color: '#B91C1C', fontSize: 11, fontWeight: '800' }}>
+                  {expenseDetails.length} Expenses • Total: {inr(data?.total_expenses || 0)}
+                </Text>
+              </View>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={true} style={{ marginTop: 8 }}>
+              <View>
+                {/* Table Header */}
+                <View style={styles.tableHeaderRow}>
+                  <Text style={[styles.thCell, { width: 50 }]}>Sl. No.</Text>
+                  <Text style={[styles.thCell, { width: 95 }]}>Date</Text>
+                  <Text style={[styles.thCell, { width: 120 }]}>Expense #</Text>
+                  <Text style={[styles.thCell, { width: 160 }]}>Expense Category</Text>
+                  <Text style={[styles.thCell, { width: 180 }]}>Particulars / Note</Text>
+                  <Text style={[styles.thCell, { width: 160 }]}>Paid To (Vendor/Payee)</Text>
+                  <Text style={[styles.thCell, { width: 110 }]}>Payment Mode</Text>
+                  <Text style={[styles.thCell, { width: 110, textAlign: 'right' }]}>Receipt (In)</Text>
+                  <Text style={[styles.thCell, { width: 110, textAlign: 'right' }]}>Payment (Out)</Text>
+                  <Text style={[styles.thCell, { width: 120, textAlign: 'right' }]}>Cumulative Bal.</Text>
+                </View>
+
+                {/* Table Body */}
+                {expenseDetails.length === 0 ? (
+                  <View style={styles.tableEmptyRow}>
+                    <Text style={styles.tableEmptyText}>No Expenses / Payment Out recorded in selected date range.</Text>
+                  </View>
+                ) : (
+                  expenseDetails.map((exp: any, idx: number) => (
+                    <View key={idx} style={[styles.tableDataRow, idx % 2 === 1 && styles.tableRowAlt]}>
+                      <Text style={[styles.tdCell, { width: 50, fontWeight: '700' }]}>{exp.sl_no}</Text>
+                      <Text style={[styles.tdCell, { width: 95 }]}>{exp.date}</Text>
+                      <Text style={[styles.tdCell, { width: 120, fontWeight: '700', color: '#DC2626' }]}>{exp.voucher}</Text>
+                      <Text style={[styles.tdCell, { width: 160, fontWeight: '600' }]} numberOfLines={1}>{exp.category}</Text>
+                      <Text style={[styles.tdCell, { width: 180 }]} numberOfLines={1}>{exp.particulars}</Text>
+                      <Text style={[styles.tdCell, { width: 160, fontWeight: '600' }]} numberOfLines={1}>{exp.paid_to}</Text>
+                      <View style={{ width: 110, paddingHorizontal: 6, justifyContent: 'center' }}>
+                        <View style={[styles.modeBadge, { backgroundColor: '#FEE2E2' }]}>
+                          <Text style={[styles.modeBadgeText, { color: '#B91C1C' }]}>{exp.payment_mode}</Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.tdCell, { width: 110, textAlign: 'right', color: '#64748B' }]}>—</Text>
+                      <Text style={[styles.tdCell, { width: 110, textAlign: 'right', fontWeight: '800', color: '#DC2626' }]}>
+                        {inr(exp.payment_out)}
+                      </Text>
+                      <Text style={[styles.tdCell, { width: 120, textAlign: 'right', fontWeight: '800', color: '#0F172A' }]}>
+                        {inr(exp.cumulative_bal)}
+                      </Text>
+                    </View>
+                  ))
+                )}
+
+                {/* Table Footer */}
+                <View style={styles.tableFooterRow}>
+                  <Text style={[styles.tfCell, { width: 875 }]}>Total Payment Out (Expenses):</Text>
+                  <Text style={[styles.tfCell, { width: 110, textAlign: 'right' }]}>₹0.00</Text>
+                  <Text style={[styles.tfCell, { width: 110, textAlign: 'right', color: '#DC2626' }]}>
+                    {inr(data?.total_expenses || 0)}
+                  </Text>
+                  <Text style={[styles.tfCell, { width: 120, textAlign: 'right', color: '#DC2626' }]}>
+                    {inr(data?.total_expenses || 0)}
+                  </Text>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+
+          {/* ============================================================== */}
           {/* 4. Day Summary & Total O.B.                                    */}
           {/* ============================================================== */}
           <View style={[styles.card, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}>
@@ -808,6 +1438,20 @@ export default function DayBookReport() {
     </View>
   );
 }
+
+const webDateInputStyle: any = {
+  border: '1px solid #CBD5E1',
+  borderRadius: 6,
+  padding: '6px 10px',
+  fontSize: 13,
+  backgroundColor: '#FFFFFF',
+  fontFamily: 'inherit',
+  color: '#0F172A',
+  width: '100%',
+  outline: 'none',
+  boxSizing: 'border-box',
+  cursor: 'pointer',
+};
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F8FAFC' },

@@ -556,7 +556,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
                 src_bank_id = ct.get("withdraw_from")
                 bank_contra_outflow[src_bank_id] = bank_contra_outflow.get(src_bank_id, 0.0) + amt
 
-        # 4. Expenses Breakdown (Online vs Cash)
+        # 4. Expenses Breakdown (Online vs Cash) & Details Table
         expenses = await db.expenses.find(
             {"date": {"$gte": from_d, "$lte": to_d}, "status": {"$ne": "rejected"}},
             {"_id": 0}
@@ -564,13 +564,51 @@ def make_system_operations_router(db, get_current_user, require_admin):
 
         expenses_online = 0.0
         expenses_cash = 0.0
+        expense_details = []
+        exp_running = 0.0
+        e_sl = 1
+
         for e in expenses:
             e_amt = float(e.get("amount") or 0.0)
+            if e_amt <= 0:
+                continue
             e_mode = str(e.get("payment_mode") or "cash").lower()
-            if any(kw in e_mode for kw in ["bank", "online", "upi", "cheque", "neft", "rtgs", "card"]):
+            is_online = any(kw in e_mode for kw in ["bank", "online", "upi", "cheque", "neft", "rtgs", "card"])
+            if is_online:
                 expenses_online += e_amt
             else:
                 expenses_cash += e_amt
+
+            exp_running += e_amt
+            cat = e.get("category") or "General Expense"
+            vendor = e.get("vendor") or e.get("item_name") or "Various"
+            note = e.get("note") or e.get("description") or cat
+            p_mode_display = "ONLINE / BANK" if is_online else "CASH"
+            if "upi" in e_mode:
+                p_mode_display = "UPI"
+            elif "cheque" in e_mode:
+                p_mode_display = "CHEQUE"
+            elif "bank" in e_mode:
+                p_mode_display = "BANK TRANSFER"
+            elif "cash" in e_mode:
+                p_mode_display = "CASH"
+
+            e_no = e.get("expense_no") or e.get("reference") or f"EXP-{e_sl:04d}"
+
+            expense_details.append({
+                "sl_no": e_sl,
+                "date": e.get("date") or from_d,
+                "voucher": e_no,
+                "ref_no": e_no,
+                "category": cat,
+                "particulars": note,
+                "paid_to": vendor,
+                "payment_mode": p_mode_display,
+                "receipt_in": 0.0,
+                "payment_out": round(e_amt, 2),
+                "cumulative_bal": round(exp_running, 2),
+            })
+            e_sl += 1
 
         expenses_online = round(expenses_online, 2)
         expenses_cash = round(expenses_cash, 2)
@@ -728,6 +766,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
             "expenses_online": expenses_online,
             "expenses_cash": expenses_cash,
             "total_expenses": total_expenses,
+            "expense_details": expense_details,
 
             "closing_balances": closing_balances,
             "total_closing_balance": total_cb,

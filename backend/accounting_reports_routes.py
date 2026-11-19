@@ -423,6 +423,160 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "balance": inr(running),
                 })
 
+            # Compute Opening & Closing Balances for Day Book / Master Register
+            all_banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
+            if not all_banks:
+                all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
+
+            def b_sort(b):
+                acc = str(b.get("account_no") or "")
+                name = (b.get("name") or "").upper()
+                if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name:
+                    return 0
+                if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name:
+                    return 1
+                return 2
+            all_banks.sort(key=b_sort)
+
+            idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)"]
+            opening_balances = []
+            tot_bank_ob = 0.0
+            r_idx = 0
+            for b in all_banks:
+                b_bal = float(b.get("opening_balance") or b.get("balance") or 0.0)
+                tot_bank_ob += b_bal
+                opening_balances.append({
+                    "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
+                    "id": b.get("id"),
+                    "name": b.get("name") or b.get("bank_name") or "Bank Account",
+                    "bank_name": b.get("bank_name") or "Bank",
+                    "account_no": b.get("account_no") or "—",
+                    "ifsc": b.get("ifsc") or "—",
+                    "balance": round(b_bal, 2),
+                    "formatted_balance": f"₹{b_bal:,.2f}",
+                })
+                r_idx += 1
+
+            c_setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+            base_cash_ob = float(c_setting.get("value", 0.0)) if c_setting else 0.0
+
+            prior_cash_in = 0.0
+            prior_cash_out = 0.0
+            if from_date:
+                prior_sales = await db.invoices.find(
+                    {"date": {"$lt": from_date}, "payment_mode": {"$regex": "cash", "$options": "i"}},
+                    {"_id": 0, "paid_amount": 1, "total_amount": 1}
+                ).to_list(1000)
+                prior_cash_in += sum(float(s.get("paid_amount") or s.get("total_amount") or 0) for s in prior_sales)
+                prior_inc = await db.income.find(
+                    {"date": {"$lt": from_date}, "payment_mode": {"$regex": "cash", "$options": "i"}},
+                    {"_id": 0, "amount": 1}
+                ).to_list(1000)
+                prior_cash_in += sum(float(i.get("amount") or 0) for i in prior_inc)
+                prior_exp = await db.expenses.find(
+                    {"date": {"$lt": from_date}, "payment_mode": {"$regex": "cash", "$options": "i"}},
+                    {"_id": 0, "amount": 1}
+                ).to_list(1000)
+                prior_cash_out += sum(float(e.get("amount") or 0) for e in prior_exp)
+                prior_contra = await db.bank_transactions.find({"transfer_date": {"$lt": from_date}}, {"_id": 0}).to_list(1000)
+                prior_cash_out += sum(float(t.get("amount") or 0) for t in prior_contra if t.get("withdraw_from") == "Cash in Hand")
+                prior_cash_in += sum(float(t.get("amount") or 0) for t in prior_contra if t.get("deposit_to") == "Cash in Hand")
+
+            cash_ob = max(0.0, round(base_cash_ob + prior_cash_in - prior_cash_out, 2))
+            opening_balances.append({
+                "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
+                "id": "cash_in_hand",
+                "name": "Cash in Hand",
+                "bank_name": "Cash",
+                "account_no": "—",
+                "ifsc": "—",
+                "balance": cash_ob,
+                "formatted_balance": f"₹{cash_ob:,.2f}",
+            })
+            total_previous_ob = round(tot_bank_ob + cash_ob, 2)
+
+            cash_in_period = sum(x["in_amount"] for x in entries if "CASH" in str(x.get("mode") or "").upper())
+            bank_in_period = round(tot_in - cash_in_period, 2)
+            cash_out_period = sum(x["out_amount"] for x in entries if "CASH" in str(x.get("mode") or "").upper())
+            bank_out_period = round(tot_out - cash_out_period, 2)
+
+            contra_query = {}
+            if from_date and to_date:
+                contra_query["transfer_date"] = {"$gte": from_date, "$lte": to_date}
+            elif from_date:
+                contra_query["transfer_date"] = {"$gte": from_date}
+            elif to_date:
+                contra_query["transfer_date"] = {"$lte": to_date}
+            contra_period = await db.bank_transactions.find(contra_query, {"_id": 0}).to_list(1000)
+            contra_cash_dep = sum(float(t.get("amount") or 0) for t in contra_period if t.get("withdraw_from") == "Cash in Hand")
+            contra_cash_with = sum(float(t.get("amount") or 0) for t in contra_period if t.get("deposit_to") == "Cash in Hand")
+
+            cash_cb = max(0.0, round(cash_ob + cash_in_period + contra_cash_with - cash_out_period - contra_cash_dep, 2))
+
+            closing_balances = []
+            c_idx = 0
+            allocated_bank_cb = 0.0
+            for b in all_banks:
+                b_ob = float(b.get("opening_balance") or b.get("balance") or 0.0)
+                acc = str(b.get("account_no") or "")
+                name = (b.get("name") or "").upper()
+                if "42137607814" in acc or "TRIVENI" in name:
+                    b_cb = round(b_ob + bank_in_period - bank_out_period + contra_cash_dep - contra_cash_with, 2)
+                else:
+                    b_cb = round(b_ob, 2)
+                allocated_bank_cb += b_cb
+                closing_balances.append({
+                    "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+                    "id": b.get("id"),
+                    "name": b.get("name") or b.get("bank_name") or "Bank Account",
+                    "bank_name": b.get("bank_name") or "Bank",
+                    "account_no": b.get("account_no") or "—",
+                    "ifsc": b.get("ifsc") or "—",
+                    "balance": b_cb,
+                    "formatted_balance": f"₹{b_cb:,.2f}",
+                })
+                c_idx += 1
+
+            closing_balances.append({
+                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+                "id": "exp_online",
+                "name": "Total Expenses Online",
+                "bank_name": "Online / Bank",
+                "account_no": "—",
+                "ifsc": "—",
+                "balance": bank_out_period,
+                "formatted_balance": f"₹{bank_out_period:,.2f}",
+            })
+            c_idx += 1
+
+            closing_balances.append({
+                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+                "id": "exp_cash",
+                "name": "Total Expenses by Cash",
+                "bank_name": "Cash",
+                "account_no": "—",
+                "ifsc": "—",
+                "balance": cash_out_period,
+                "formatted_balance": f"₹{cash_out_period:,.2f}",
+            })
+            c_idx += 1
+
+            closing_balances.append({
+                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
+                "id": "cash_in_hand",
+                "name": "Cash in Hand",
+                "bank_name": "Cash",
+                "account_no": "—",
+                "ifsc": "—",
+                "balance": cash_cb,
+                "formatted_balance": f"₹{cash_cb:,.2f}",
+            })
+
+            total_cb = round(allocated_bank_cb + bank_out_period + cash_out_period + cash_cb, 2)
+            total_ob_with_receipts = round(total_previous_ob + tot_in, 2)
+            diff = round(abs(total_ob_with_receipts - total_cb), 2)
+            is_balanced = (diff == 0.0 or diff < 0.01)
+
             return {
                 "report_type": report_type,
                 "report_title": "Day Book (Cash & Bank Ledger)" if report_type == "day_book" else "All Transactions Master Register",
@@ -443,7 +597,20 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"key": "credit", "label": "Payment (Out)"},
                     {"key": "balance", "label": "Cumulative Bal."},
                 ],
-                "rows": rows
+                "rows": rows,
+                "opening_balances": opening_balances,
+                "closing_balances": closing_balances,
+                "total_previous_ob": total_previous_ob,
+                "total_opening_balance": total_previous_ob,
+                "total_closing_balance": total_cb,
+                "total_cb": total_cb,
+                "total_ob_with_receipts": total_ob_with_receipts,
+                "expenses_online": bank_out_period,
+                "expenses_cash": cash_out_period,
+                "is_balanced": is_balanced,
+                "reconciliation_status": "ok" if is_balanced else "mismatch",
+                "reconciliation_message": "Account is ok." if is_balanced else "Account Mismatch",
+                "difference": diff,
             }
 
         elif report_type == "bill_profit":

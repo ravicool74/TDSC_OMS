@@ -108,7 +108,15 @@ export default function AccountingReportsHub() {
   const [activeReportId, setActiveReportId] = useState<string | null>(params?.report || null);
   const [reportData, setReportData] = useState<any | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
-  const [dateFilter, setDateFilter] = useState<'today' | 'month' | 'quarter' | 'fy' | 'all'>('month');
+  const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | 'month' | 'quarter' | 'fy' | 'all' | 'custom'>('month');
+  const [customFromDate, setCustomFromDate] = useState<string>(() => {
+    const d = new Date();
+    return d.toISOString().split('T')[0];
+  });
+  const [customToDate, setCustomToDate] = useState<string>(() => {
+    const d = new Date();
+    return d.toISOString().split('T')[0];
+  });
   const [tableSearch, setTableSearch] = useState('');
 
   // Load Catalog & Summary
@@ -194,7 +202,12 @@ export default function AccountingReportsHub() {
   };
 
   // Open specific report
-  const openReport = async (repId: string, customDateFilter?: 'today' | 'month' | 'quarter' | 'fy' | 'all') => {
+  const openReport = async (
+    repId: string,
+    customDateFilter?: 'today' | 'yesterday' | 'month' | 'quarter' | 'fy' | 'all' | 'custom',
+    fromDateOverride?: string,
+    toDateOverride?: string
+  ) => {
     setActiveReportId(repId);
     setReportLoading(true);
     setTableSearch('');
@@ -208,6 +221,15 @@ export default function AccountingReportsHub() {
     if (dFilter === 'today') {
       fromDate = todayStr;
       toDate = todayStr;
+    } else if (dFilter === 'yesterday') {
+      const y = new Date();
+      y.setDate(y.getDate() - 1);
+      const yStr = y.toISOString().split('T')[0];
+      fromDate = yStr;
+      toDate = yStr;
+    } else if (dFilter === 'custom') {
+      fromDate = fromDateOverride || customFromDate || todayStr;
+      toDate = toDateOverride || customToDate || todayStr;
     } else if (dFilter === 'month') {
       fromDate = `${todayStr.slice(0, 7)}-01`;
       toDate = todayStr;
@@ -231,7 +253,7 @@ export default function AccountingReportsHub() {
     }
   };
 
-  const changeDateFilter = (filter: 'today' | 'month' | 'quarter' | 'fy' | 'all') => {
+  const changeDateFilter = (filter: 'today' | 'yesterday' | 'month' | 'quarter' | 'fy' | 'all' | 'custom') => {
     setDateFilter(filter);
     if (activeReportId) {
       openReport(activeReportId, filter);
@@ -300,7 +322,19 @@ export default function AccountingReportsHub() {
 
     const title = reportData?.report_title || 'Financial Summary Report';
     const category = reportData?.category || 'Accounting & Billing';
-    const dateLabel = dateFilter === 'today' ? 'Today' : dateFilter === 'month' ? 'This Month' : dateFilter === 'quarter' ? 'Quarter' : dateFilter === 'fy' ? 'FY 2026-27' : 'All Time';
+    const dateLabel = dateFilter === 'today'
+      ? 'Today'
+      : dateFilter === 'yesterday'
+      ? 'Yesterday'
+      : dateFilter === 'custom'
+      ? `${customFromDate} to ${customToDate}`
+      : dateFilter === 'month'
+      ? 'This Month'
+      : dateFilter === 'quarter'
+      ? 'Quarter'
+      : dateFilter === 'fy'
+      ? 'FY 2026-27'
+      : 'All Time';
     const generatedOn = new Date().toLocaleString('en-IN', {
       day: '2-digit', month: 'short', year: 'numeric',
       hour: '2-digit', minute: '2-digit', hour12: true,
@@ -310,6 +344,61 @@ export default function AccountingReportsHub() {
     const rows = filteredReportRows || [];
     const kpis = reportData?.kpis || [];
     const isLandscape = cols.length > 6;
+
+    const obList = reportData?.opening_balances || [];
+    const cbList = reportData?.closing_balances || [];
+
+    let obHtml = '';
+    if (obList.length > 0) {
+      obHtml = `
+        <div style="margin-bottom: 12px; border: 1px solid #CBD5E1; border-radius: 4px; padding: 8px 12px; background: #F8FAFC;">
+          <div style="font-weight: 800; font-size: 10.5px; color: #00104A; margin-bottom: 6px; letter-spacing: 0.3px;">OPENING BALANCE:</div>
+          <table style="width: 100%; font-size: 9px; border-collapse: collapse;">
+            ${obList.map((b: any) => `
+              <tr style="border-bottom: 1px dashed #E2E8F0;">
+                <td style="width: 32px; font-weight: 700; padding: 3px 4px;">${b.index}</td>
+                <td style="padding: 3px 4px;"><strong>${b.name}</strong> ${b.account_no && b.account_no !== '—' ? `<span style="color: #64748B;">(${b.bank_name} &bull; A/c ${b.account_no} &bull; IFSC: ${b.ifsc})</span>` : ''}</td>
+                <td style="width: 170px; text-align: right; font-weight: 700; padding: 3px 4px;">Current Balance in ${inr(b.balance)}</td>
+              </tr>
+            `).join('')}
+            <tr style="border-top: 1.5px solid #00104A; font-weight: 800; color: #00104A; background: #F1F5F9;">
+              <td colspan="2" style="padding: 5px 4px;">Total OB = (i)+(ii)+(iii)+(iv)+... =</td>
+              <td style="text-align: right; padding: 5px 4px; font-weight: 900; color: #059669;">${inr(reportData?.total_previous_ob || 0)}</td>
+            </tr>
+          </table>
+        </div>
+      `;
+    }
+
+    let cbHtml = '';
+    if (cbList.length > 0) {
+      cbHtml = `
+        <div style="margin-top: 12px; margin-bottom: 12px; border: 1px solid #CBD5E1; border-radius: 4px; padding: 8px 12px; background: #F8FAFC;">
+          <div style="font-weight: 800; font-size: 10.5px; color: #00104A; margin-bottom: 6px; letter-spacing: 0.3px;">CLOSING BALANCE:</div>
+          <table style="width: 100%; font-size: 9px; border-collapse: collapse;">
+            ${cbList.map((b: any) => {
+              const isExp = b.id?.startsWith('exp_');
+              return `
+              <tr style="border-bottom: 1px dashed #E2E8F0;">
+                <td style="width: 32px; font-weight: 700; padding: 3px 4px;">${b.index}</td>
+                <td style="padding: 3px 4px;"><strong>${b.name}</strong> ${b.account_no && b.account_no !== '—' ? `<span style="color: #64748B;">(${b.bank_name} &bull; A/c ${b.account_no} &bull; IFSC: ${b.ifsc})</span>` : ''}</td>
+                <td style="width: 170px; text-align: right; font-weight: 700; padding: 3px 4px; color: ${isExp ? '#DC2626' : '#0F172A'};">
+                  ${isExp ? `Total: ${inr(b.balance)}` : `Current Balance in ${inr(b.balance)}`}
+                </td>
+              </tr>
+              `;
+            }).join('')}
+            <tr style="border-top: 1.5px solid #00104A; font-weight: 800; color: #00104A; background: #F1F5F9;">
+              <td colspan="2" style="padding: 5px 4px;">Total CB = (i)+(ii)+(iii)+(iv)+(v)+(vi) =</td>
+              <td style="text-align: right; padding: 5px 4px; font-weight: 900; color: #00104A;">${inr(reportData?.total_closing_balance || 0)}</td>
+            </tr>
+          </table>
+          <div style="margin-top: 6px; padding: 5px 8px; border-radius: 4px; font-weight: 800; font-size: 9.5px; background: ${reportData?.is_balanced !== false ? '#ECFDF5' : '#FEF2F2'}; color: ${reportData?.is_balanced !== false ? '#065F46' : '#DC2626'}; border: 1px solid ${reportData?.is_balanced !== false ? '#A7F3D0' : '#FECACA'};">
+            ${reportData?.is_balanced !== false ? '&#10004; Account is ok. Total O.B matches Total C.B perfectly.' : '&#9888; Account Mismatch - Difference: ' + inr(reportData?.difference || 0)}
+          </div>
+        </div>
+      `;
+    }
 
     const kpiHtml = kpis.length > 0 ? `
       <div class="kpi-grid">
@@ -674,10 +763,14 @@ export default function AccountingReportsHub() {
 
     ${kpiHtml}
 
+    ${obHtml}
+
     <table class="report-table">
       ${theadHtml}
       ${tbodyHtml}
     </table>
+
+    ${cbHtml}
 
     <div class="report-footer">
       <div class="footer-left">
@@ -802,18 +895,69 @@ export default function AccountingReportsHub() {
         <View style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
           {/* Date Filter Bar */}
           <View style={styles.dateFilterBar}>
-            {(['today', 'month', 'quarter', 'fy', 'all'] as const).map(df => (
+            {(['today', 'yesterday', 'month', 'quarter', 'fy', 'all', 'custom'] as const).map(df => (
               <Pressable
                 key={df}
                 onPress={() => changeDateFilter(df)}
                 style={[styles.dateChip, dateFilter === df && styles.dateChipActive]}
               >
                 <Text style={[styles.dateChipTxt, dateFilter === df && styles.dateChipTxtActive]}>
-                  {df === 'today' ? 'Today' : df === 'month' ? 'This Month' : df === 'quarter' ? 'Quarter' : df === 'fy' ? 'FY 2026-27' : 'All Time'}
+                  {df === 'today' ? 'Today' : df === 'yesterday' ? 'Yesterday' : df === 'month' ? 'This Month' : df === 'quarter' ? 'Quarter' : df === 'fy' ? 'FY 2026-27' : df === 'all' ? 'All Time' : 'Custom Date'}
                 </Text>
               </Pressable>
             ))}
           </View>
+
+          {/* Custom Date Input Bar with Native Calendar Pickers */}
+          {dateFilter === 'custom' && (
+            <View style={styles.customDateBar}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.customDateLbl}>From Date (Calendar)</Text>
+                {Platform.OS === 'web' ? (
+                  <input
+                    type="date"
+                    value={customFromDate}
+                    onChange={(e: any) => setCustomFromDate(e.target.value)}
+                    style={webDateInputStyle}
+                  />
+                ) : (
+                  <TextInput
+                    style={styles.customDateInput}
+                    value={customFromDate}
+                    onChangeText={setCustomFromDate}
+                    placeholder="YYYY-MM-DD"
+                  />
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.customDateLbl}>To Date (Calendar)</Text>
+                {Platform.OS === 'web' ? (
+                  <input
+                    type="date"
+                    value={customToDate}
+                    onChange={(e: any) => setCustomToDate(e.target.value)}
+                    style={webDateInputStyle}
+                  />
+                ) : (
+                  <TextInput
+                    style={styles.customDateInput}
+                    value={customToDate}
+                    onChangeText={setCustomToDate}
+                    placeholder="YYYY-MM-DD"
+                  />
+                )}
+              </View>
+              <Pressable
+                onPress={() => {
+                  if (activeReportId) openReport(activeReportId, 'custom', customFromDate, customToDate);
+                }}
+                style={styles.customApplyBtn}
+              >
+                <Ionicons name="refresh" size={16} color="#FFF" />
+                <Text style={styles.customApplyBtnTxt}>Apply Range</Text>
+              </Pressable>
+            </View>
+          )}
 
           {reportLoading ? (
             <View style={styles.loadingBox}>
@@ -869,6 +1013,38 @@ export default function AccountingReportsHub() {
                   </Pressable>
                 ) : null}
               </View>
+
+              {/* Opening Balance (For Day Book & Ledger Statements) */}
+              {reportData.opening_balances && reportData.opening_balances.length > 0 && (
+                <View style={styles.obCbCard}>
+                  <View style={styles.obCbHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="wallet-outline" size={16} color={BLUE} />
+                      <Text style={styles.obCbTitle}>Opening Balance</Text>
+                    </View>
+                    <Text style={styles.obCbBadge}>Initial Balance as of {reportData.from_date || 'Period Start'}</Text>
+                  </View>
+                  <View style={{ gap: 6, marginTop: 8 }}>
+                    {reportData.opening_balances.map((b: any, idx: number) => (
+                      <View key={idx} style={styles.obCbRow}>
+                        <Text style={styles.obCbIdx}>{b.index}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.obCbName}>{b.name}</Text>
+                          {b.account_no && b.account_no !== '—' && (
+                            <Text style={styles.obCbSub}>{b.bank_name} • A/c {b.account_no} • IFSC: {b.ifsc}</Text>
+                          )}
+                        </View>
+                        <View style={styles.dottedLeader} />
+                        <Text style={styles.obCbVal}>Current Balance in {inr(b.balance)}</Text>
+                      </View>
+                    ))}
+                    <View style={styles.obCbTotalRow}>
+                      <Text style={styles.obCbTotalLabel}>Total OB = (i)+(ii)+(iii)+(iv)+... =</Text>
+                      <Text style={[styles.obCbTotalValue, { color: '#059669' }]}>{inr(reportData.total_previous_ob)}</Text>
+                    </View>
+                  </View>
+                </View>
+              )}
 
               {/* Tabular Statement View */}
               <View style={styles.tableCard}>
@@ -933,6 +1109,71 @@ export default function AccountingReportsHub() {
                   </View>
                 </ScrollView>
               </View>
+
+              {/* Closing Balance (For Day Book & Ledger Statements) */}
+              {reportData.closing_balances && reportData.closing_balances.length > 0 && (
+                <View style={styles.obCbCard}>
+                  <View style={styles.obCbHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="lock-closed-outline" size={16} color="#059669" />
+                      <Text style={styles.obCbTitle}>Closing Balance</Text>
+                    </View>
+                    <Text style={styles.obCbBadge}>Reconciled Balance as of {reportData.to_date || 'Period End'}</Text>
+                  </View>
+                  <View style={{ gap: 6, marginTop: 8 }}>
+                    {reportData.closing_balances.map((b: any, idx: number) => {
+                      const isExp = b.id?.startsWith('exp_');
+                      return (
+                        <View key={idx} style={styles.obCbRow}>
+                          <Text style={styles.obCbIdx}>{b.index}</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.obCbName}>{b.name}</Text>
+                            {b.account_no && b.account_no !== '—' && (
+                              <Text style={styles.obCbSub}>{b.bank_name} • A/c {b.account_no} • IFSC: {b.ifsc}</Text>
+                            )}
+                          </View>
+                          <View style={styles.dottedLeader} />
+                          <Text style={[styles.obCbVal, isExp && { color: '#DC2626' }]}>
+                            {isExp ? `Total: ${inr(b.balance)}` : `Current Balance in ${inr(b.balance)}`}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                    <View style={styles.obCbTotalRow}>
+                      <Text style={styles.obCbTotalLabel}>Total CB = (i)+(ii)+(iii)+(iv)+(v)+(vi) =</Text>
+                      <Text style={[styles.obCbTotalValue, { color: '#00104A' }]}>{inr(reportData.total_closing_balance)}</Text>
+                    </View>
+                  </View>
+
+                  {/* Reconciliation Banner */}
+                  <View style={[
+                    styles.recBanner,
+                    reportData.is_balanced !== false ? styles.recBannerOk : styles.recBannerErr
+                  ]}>
+                    <Ionicons
+                      name={reportData.is_balanced !== false ? "checkmark-circle" : "alert-circle"}
+                      size={18}
+                      color={reportData.is_balanced !== false ? "#059669" : "#DC2626"}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[
+                        styles.recBannerTitle,
+                        { color: reportData.is_balanced !== false ? "#065F46" : "#DC2626" }
+                      ]}>
+                        {reportData.is_balanced !== false ? "Account is ok." : "Account Mismatch"}
+                      </Text>
+                      <Text style={[
+                        styles.recBannerSub,
+                        { color: reportData.is_balanced !== false ? "#047857" : "#B91C1C" }
+                      ]}>
+                        {reportData.is_balanced !== false
+                          ? "Total O.B matches Total C.B perfectly."
+                          : `Difference: ${inr(reportData.difference || 0)}`}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              )}
 
               {/* Action Toolbar */}
               <View style={styles.reportActionsRow}>
@@ -1098,6 +1339,20 @@ export default function AccountingReportsHub() {
   );
 }
 
+const webDateInputStyle: any = {
+  border: '1px solid #CBD5E1',
+  borderRadius: 6,
+  padding: '6px 10px',
+  fontSize: 13,
+  backgroundColor: '#FFFFFF',
+  fontFamily: 'inherit',
+  color: '#0F172A',
+  width: '100%',
+  outline: 'none',
+  boxSizing: 'border-box',
+  cursor: 'pointer',
+};
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#F1F5F9' },
   headerSafe: { backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
@@ -1174,4 +1429,30 @@ const styles = StyleSheet.create({
 
   loadingBox: { padding: 48, alignItems: 'center', justifyContent: 'center', gap: 10 },
   loadingTxt: { color: '#64748B', fontSize: font.sm, fontWeight: '600' },
+
+  customDateBar: { flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: spacing.md, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', alignItems: 'flex-end', gap: 8 },
+  customDateLbl: { fontSize: 10, fontWeight: '700', color: '#64748B', marginBottom: 2 },
+  customDateInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, fontSize: 13, backgroundColor: '#FFF' },
+  customApplyBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: BLUE, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6, height: 34 },
+  customApplyBtnTxt: { fontSize: 12, fontWeight: '700', color: '#FFF' },
+
+  obCbCard: { backgroundColor: '#FFF', borderRadius: radius.md, borderWidth: 1, borderColor: '#CBD5E1', padding: spacing.md, ...shadow.card },
+  obCbHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', paddingBottom: 8 },
+  obCbTitle: { fontSize: 14, fontWeight: '800', color: '#0F172A' },
+  obCbBadge: { fontSize: 11, fontWeight: '600', color: '#64748B', backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
+  obCbRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6, paddingVertical: 3 },
+  obCbIdx: { width: 28, fontSize: 12, fontWeight: '700', color: '#475569' },
+  obCbName: { fontSize: 12, fontWeight: '700', color: '#1E293B' },
+  obCbSub: { fontSize: 10, color: '#64748B', marginTop: 1 },
+  dottedLeader: { flex: 1, height: 1, borderBottomWidth: 1, borderBottomColor: '#CBD5E1', borderStyle: 'dotted', marginHorizontal: 6 },
+  obCbVal: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
+  obCbTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#CBD5E1', paddingTop: 8, marginTop: 4 },
+  obCbTotalLabel: { fontSize: 12, fontWeight: '800', color: '#1E293B' },
+  obCbTotalValue: { fontSize: 15, fontWeight: '900' },
+
+  recBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, marginTop: 10 },
+  recBannerOk: { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' },
+  recBannerErr: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
+  recBannerTitle: { fontSize: 13, fontWeight: '800' },
+  recBannerSub: { fontSize: 11, marginTop: 1 },
 });
