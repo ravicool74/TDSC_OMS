@@ -46,6 +46,7 @@ function AuthGate() {
       <Stack.Screen name="login" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="customer" />
+      <Stack.Screen name="+not-found" />
     </Stack>
   );
 }

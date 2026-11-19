@@ -1202,7 +1202,7 @@ export default function CashBankScreen() {
                             Auto-recorded from {tx.type}
                           </Text>
                           {tx.badge === 'CASH SALE' ? (
-                            <Pressable onPress={() => router.push('/accounting/sales' as any)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Pressable onPress={() => router.push('/accounting/invoices' as any)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                               <Text style={{ fontSize: 11, fontWeight: '700', color: BLUE }}>View Invoice</Text>
                               <Ionicons name="chevron-forward" size={12} color={BLUE} />
                             </Pressable>
