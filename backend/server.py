@@ -1326,9 +1326,24 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
 
     def has_module_action(module_name: str, act: str) -> bool:
         mod_list = perms.get(module_name, [])
+        if act == "delete":
+            return "delete" in mod_list
         if act in mod_list or "write" in mod_list:
             return True
         if act == "view" and "view" in mod_list:
+            return True
+        return False
+
+    def item_matches_action(item: dict, act: str) -> bool:
+        if not item or not isinstance(item, dict):
+            return False
+        if act == "delete":
+            return bool(item.get("delete") or ("delete" in (item.get("actions") or [])))
+        if item.get(act):
+            return True
+        if act in ("add", "edit") and item.get("write"):
+            return True
+        if act == "view" and (item.get("view") or item.get("search")):
             return True
         return False
 
@@ -1337,7 +1352,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("customers", action):
             return True
         cust_item = (matrix.get("business") or {}).get("customers") or (matrix.get("more", {}).get("operations_services") or {}).get("customers")
-        if cust_item and (cust_item.get(action) or cust_item.get("write") or (action == "view" and cust_item.get("view"))):
+        if item_matches_action(cust_item, action):
             return True
 
     # 2. Invoices / Sales / Estimates / Proforma / Challans
@@ -1345,7 +1360,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("sales", action):
             return True
         acc_item = (matrix.get("business") or {}).get("accounts") or (matrix.get("more", {}).get("operations_services") or {}).get("accounting")
-        if acc_item and (acc_item.get(action) or acc_item.get("write") or (action == "view" and acc_item.get("view"))):
+        if item_matches_action(acc_item, action):
             return True
 
     # 3. Cash & Bank
@@ -1353,7 +1368,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("banking", action):
             return True
         acc_item = (matrix.get("business") or {}).get("accounts") or (matrix.get("more", {}).get("operations_services") or {}).get("accounting")
-        if acc_item and (acc_item.get(action) or acc_item.get("write") or (action == "view" and acc_item.get("view"))):
+        if item_matches_action(acc_item, action):
             return True
 
     # 4. Expenses
@@ -1361,7 +1376,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("expenses", action):
             return True
         acc_item = (matrix.get("business") or {}).get("accounts") or (matrix.get("more", {}).get("operations_services") or {}).get("accounting")
-        if acc_item and (acc_item.get(action) or acc_item.get("write") or (action == "view" and acc_item.get("view"))):
+        if item_matches_action(acc_item, action):
             return True
 
     # 5. Tasks & Workflows
@@ -1369,7 +1384,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("tasks", action):
             return True
         task_item = (matrix.get("task") or {}).get("task_followup") or (matrix.get("task") or {}).get("payment_followup")
-        if task_item and (task_item.get(action) or task_item.get("write") or (action == "view" and task_item.get("view"))):
+        if item_matches_action(task_item, action):
             return True
 
     # 6. Documents Library
@@ -1377,7 +1392,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("documents", action):
             return True
         doc_item = (matrix.get("more", {}).get("operations_services") or {}).get("documents")
-        if doc_item and (doc_item.get(action) or doc_item.get("write") or (action == "view" and doc_item.get("view"))):
+        if item_matches_action(doc_item, action):
             return True
 
     # 7. Tenders & Calling
@@ -1385,7 +1400,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("tenders", action):
             return True
         t_item = (matrix.get("more", {}).get("operations_services") or {}).get("tenders") or (matrix.get("more", {}).get("operations_services") or {}).get("tender_calling")
-        if t_item and (t_item.get(action) or t_item.get("write") or (action == "view" and t_item.get("view"))):
+        if item_matches_action(t_item, action):
             return True
 
     # 8. Employees / HR / Staff
@@ -1395,7 +1410,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
                 return True
         hr_items = (matrix.get("more", {}).get("human_resources") or {})
         for k, item in hr_items.items():
-            if (item.get(action) or item.get("write")) and any(mod in path for mod in ("employees", "attendance", "leaves", "payroll")):
+            if item_matches_action(item, action) and any(mod in path for mod in ("employees", "attendance", "leaves", "payroll")):
                 return True
 
     # 9. Services Master
@@ -1403,7 +1418,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("services", action):
             return True
         srv_item = (matrix.get("more", {}).get("operations_services") or {}).get("services")
-        if srv_item and (srv_item.get(action) or srv_item.get("write")):
+        if item_matches_action(srv_item, action):
             return True
 
     # 10. Reports
@@ -1411,7 +1426,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
         if has_module_action("reports", "view"):
             return True
         rep_item = (matrix.get("more", {}).get("operations_services") or {}).get("reports")
-        if rep_item and (rep_item.get("view") or rep_item.get("write")):
+        if item_matches_action(rep_item, "view"):
             return True
 
     # 11. GPS Tracking
@@ -1426,7 +1441,7 @@ def check_user_has_route_permission(current: User, request: Request, require_adm
                 return True
         admin_items = (matrix.get("more", {}).get("enterprise_administration") or {})
         for k, item in admin_items.items():
-            if (item.get(action) or item.get("write")):
+            if item_matches_action(item, action):
                 return True
 
     return False
