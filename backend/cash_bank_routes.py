@@ -169,6 +169,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
                     "attachment_name": payload.attachment_name,
                     "created_at": now,
                     "created_by": current.user_id,
+                    "created_by_name": getattr(current, "name", "") or getattr(current, "username", "") or "Admin",
                 }
             else:
                 # Withdraw from Cash, Deposit to Bank
@@ -187,6 +188,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
                     "attachment_name": payload.attachment_name,
                     "created_at": now,
                     "created_by": current.user_id,
+                    "created_by_name": getattr(current, "name", "") or getattr(current, "username", "") or "Admin",
                 }
             await db.bank_transactions.insert_one(tx_record)
             return clean_doc(tx_record)
@@ -221,6 +223,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
                     "attachment_name": payload.attachment_name,
                     "created_at": now,
                     "created_by": current.user_id,
+                    "created_by_name": getattr(current, "name", "") or getattr(current, "username", "") or "Admin",
                 }
             else:
                 # Withdrawn from Bank into Cash
@@ -239,6 +242,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
                     "attachment_name": payload.attachment_name,
                     "created_at": now,
                     "created_by": current.user_id,
+                    "created_by_name": getattr(current, "name", "") or getattr(current, "username", "") or "Admin",
                 }
             await db.bank_transactions.insert_one(tx_record)
             return clean_doc(tx_record)
@@ -321,67 +325,222 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
     async def get_cash_summary(current: Any = Depends(get_current_user)):
         await _ensure_seed_records()
 
-        # Calculate cash receipts from sales and payments in
-        sales_cash = await db.invoices.find({"invoice_type": "sale", "payment_mode": "cash"}, {"_id": 0}).to_list(1000)
-        tot_sales_cash = sum(float(s.get("paid_amount") or s.get("total_amount") or 0) for s in sales_cash)
+        # 1. Cash from Sales (invoices with cash mode or cash splits)
+        all_sales = await db.invoices.find(
+            {"invoice_type": {"$in": ["sale", None]}},
+            {"_id": 0}
+        ).to_list(1000)
 
-        income_cash = await db.income.find({"payment_mode": "cash"}, {"_id": 0}).to_list(1000)
-        tot_income_cash = sum(float(i.get("amount") or 0) for i in income_cash)
+        tot_sales_cash = 0.0
+        cash_sale_entries = []
+        for s in all_sales:
+            c_mode = str(s.get("payment_mode") or "").lower()
+            splits = s.get("payment_splits") or []
+            s_cash = 0.0
+            if splits:
+                s_cash = sum(float(ps.get("amount") or 0) for ps in splits if "cash" in str(ps.get("mode") or "").lower())
+            elif "cash" in c_mode:
+                s_cash = float(s.get("paid_amount") or s.get("total_amount") or 0.0)
 
-        # Cash disbursements
-        exp_cash = await db.expenses.find({"payment_mode": "cash"}, {"_id": 0}).to_list(1000)
-        tot_exp_cash = sum(float(e.get("amount") or 0) for e in exp_cash)
+            if s_cash > 0:
+                tot_sales_cash += s_cash
+                party = s.get("party_name") or "Direct Customer"
+                inv_no = s.get("invoice_no") or s.get("invoice_number") or "Invoice"
+                d = s.get("date") or s.get("invoice_date") or ""
+                items_str = ", ".join([str(it.get("name") or it.get("item_name") or "") for it in (s.get("items") or []) if it.get("name") or it.get("item_name")])
+                cash_sale_entries.append({
+                    "id": f"c_sale_{inv_no}",
+                    "date": d,
+                    "type": "Cash Sale Receipt",
+                    "badge": "CASH SALE",
+                    "direction": "inflow",
+                    "title": f"Cash Received from {party}",
+                    "party_or_bank": party,
+                    "particulars": f"Receipt against Sale Invoice #{inv_no}" + (f" ({items_str})" if items_str else ""),
+                    "voucher_ref": inv_no,
+                    "handled_by": s.get("created_by_name") or "Staff",
+                    "inflow": inr(s_cash),
+                    "outflow": "—",
+                    "amount_num": s_cash,
+                    "mode": "Cash Receipt"
+                })
 
-        # Bank transfers to/from cash
-        contra_txs = await db.bank_transactions.find({"$or": [{"deposit_to": "Cash in Hand"}, {"withdraw_from": "Cash in Hand"}]}, {"_id": 0}).to_list(1000)
-        cash_added_from_bank = sum(float(t.get("amount") or 0) for t in contra_txs if t.get("deposit_to") == "Cash in Hand")
-        cash_deposited_to_bank = sum(float(t.get("amount") or 0) for t in contra_txs if t.get("withdraw_from") == "Cash in Hand")
+        # 2. Cash from Payment-In
+        all_incomes = await db.income.find({}, {"_id": 0}).to_list(1000)
+        tot_income_cash = 0.0
+        cash_income_entries = []
+        for inc in all_incomes:
+            i_mode = str(inc.get("payment_mode") or "").lower()
+            splits = inc.get("payment_splits") or []
+            i_cash = 0.0
+            if splits:
+                i_cash = sum(float(ps.get("amount") or 0) for ps in splits if "cash" in str(ps.get("mode") or "").lower())
+            elif "cash" in i_mode:
+                i_cash = float(inc.get("amount") or 0.0)
 
-        # Cheques deposited into Cash in Hand
+            if i_cash > 0:
+                tot_income_cash += i_cash
+                party = inc.get("client_name") or inc.get("customer_name") or "Customer"
+                v_no = inc.get("voucher_no") or inc.get("income_no") or "Payment-In"
+                d = inc.get("date") or ""
+                cash_income_entries.append({
+                    "id": f"c_inc_{v_no}",
+                    "date": d,
+                    "type": "Payment-In (Cash)",
+                    "badge": "PAYMENT IN",
+                    "direction": "inflow",
+                    "title": f"Cash Received from {party}",
+                    "party_or_bank": party,
+                    "particulars": f"Payment-In #{v_no} ({inc.get('service_name') or inc.get('category') or 'Receipt'})",
+                    "voucher_ref": v_no,
+                    "handled_by": inc.get("created_by_name") or inc.get("employee_name") or "Staff",
+                    "inflow": inr(i_cash),
+                    "outflow": "—",
+                    "amount_num": i_cash,
+                    "mode": "Cash Receipt"
+                })
+
+        # 3. Cash Disbursements (Expenses)
+        all_exp = await db.expenses.find({"status": {"$ne": "rejected"}}, {"_id": 0}).to_list(1000)
+        tot_exp_cash = 0.0
+        cash_exp_entries = []
+        for e in all_exp:
+            e_mode = str(e.get("payment_mode") or "").lower()
+            if "cash" in e_mode:
+                e_amt = float(e.get("amount") or 0.0)
+                tot_exp_cash += e_amt
+                cat = e.get("category") or "Expense"
+                vendor = e.get("vendor") or e.get("item_name") or "Vendor"
+                e_no = e.get("expense_no") or "EXP"
+                d = e.get("date") or ""
+                cash_exp_entries.append({
+                    "id": f"c_exp_{e.get('id') or e_no}",
+                    "date": d,
+                    "type": "Cash Expense",
+                    "badge": "EXPENSE",
+                    "direction": "outflow",
+                    "title": f"Cash Paid for {cat} ({vendor})",
+                    "party_or_bank": vendor,
+                    "particulars": e.get("description") or e.get("note") or f"Expense #{e_no} ({cat})",
+                    "voucher_ref": e_no,
+                    "handled_by": e.get("created_by_name") or "Staff",
+                    "inflow": "—",
+                    "outflow": inr(e_amt),
+                    "amount_num": e_amt,
+                    "mode": "Cash Payment"
+                })
+
+        # 4. Bank transfers to/from cash (Contra)
+        contra_txs = await db.bank_transactions.find(
+            {"$or": [{"deposit_to": "Cash in Hand"}, {"withdraw_from": "Cash in Hand"}]},
+            {"_id": 0}
+        ).to_list(1000)
+
+        # Batch map user names for created_by
+        u_ids = list({t.get("created_by") for t in contra_txs if t.get("created_by")})
+        u_map = {}
+        if u_ids:
+            users_doc = await db.users.find({"user_id": {"$in": u_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(u_ids))
+            u_map = {u["user_id"]: u.get("name") for u in users_doc}
+
+        cash_added_from_bank = 0.0
+        cash_deposited_to_bank = 0.0
+        contra_entries = []
+
+        for t in contra_txs:
+            t_amt = float(t.get("amount") or 0.0)
+            is_in = (t.get("deposit_to") == "Cash in Hand")
+            d = t.get("transfer_date") or ""
+            depositor = t.get("created_by_name") or u_map.get(t.get("created_by")) or "Admin"
+            att_name = t.get("attachment_name")
+
+            if is_in:
+                cash_added_from_bank += t_amt
+                bank_name = t.get("withdraw_from_name") or "Bank Account"
+                contra_entries.append({
+                    "id": t.get("id"),
+                    "date": d,
+                    "type": "Bank Withdrawal to Cash",
+                    "badge": "BANK TO CASH",
+                    "direction": "inflow",
+                    "title": f"Cash Withdrawn from {bank_name}",
+                    "party_or_bank": bank_name,
+                    "particulars": t.get("description") or f"Cash withdrawn from {bank_name}",
+                    "voucher_ref": t.get("id"),
+                    "handled_by": depositor,
+                    "attachment_name": att_name,
+                    "attachment_path": t.get("attachment_path"),
+                    "inflow": inr(t_amt),
+                    "outflow": "—",
+                    "amount_num": t_amt,
+                    "mode": "Contra / Bank Transfer",
+                    "is_contra": True,
+                })
+            else:
+                cash_deposited_to_bank += t_amt
+                bank_name = t.get("deposit_to_name") or "Bank Account"
+                contra_entries.append({
+                    "id": t.get("id"),
+                    "date": d,
+                    "type": "Cash Deposited to Bank",
+                    "badge": "CASH TO BANK",
+                    "direction": "outflow",
+                    "title": f"Deposited Cash into {bank_name}",
+                    "party_or_bank": bank_name,
+                    "particulars": t.get("description") or f"Cash deposited into {bank_name}",
+                    "voucher_ref": t.get("id"),
+                    "handled_by": depositor,
+                    "attachment_name": att_name,
+                    "attachment_path": t.get("attachment_path"),
+                    "inflow": "—",
+                    "outflow": inr(t_amt),
+                    "amount_num": t_amt,
+                    "mode": "Contra / Bank Transfer",
+                    "is_contra": True,
+                })
+
+        # 5. Cheques deposited into Cash in Hand
         chq_cash = await db.cheques.find({"status": "closed", "deposit_to": "cash"}, {"_id": 0}).to_list(1000)
         cash_from_cheques = sum(float(c.get("amount") or 0) for c in chq_cash)
+        for c in chq_cash:
+            c_amt = float(c.get("amount") or 0.0)
+            contra_entries.append({
+                "id": c.get("id"),
+                "date": c.get("deposit_date") or c.get("cheque_date"),
+                "type": "Cheque Encashment",
+                "badge": "CHEQUE IN",
+                "direction": "inflow",
+                "title": f"Cheque Encashed from {c.get('customer_name')}",
+                "party_or_bank": c.get("customer_name"),
+                "particulars": f"Cheque #{c.get('cheque_no')} ({c.get('bank_name')})",
+                "voucher_ref": c.get("cheque_no"),
+                "handled_by": "Staff",
+                "inflow": inr(c_amt),
+                "outflow": "—",
+                "amount_num": c_amt,
+                "mode": f"Cheque ({c.get('bank_name')})"
+            })
 
-        # Check if there is an explicit cash opening balance configured in db.settings (defaults to 0.0 in real mode)
+        # Base cash opening
         setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
         base_opening = float(setting.get("value", 0.0)) if setting else 0.0
         total_inflow = base_opening + tot_sales_cash + tot_income_cash + cash_added_from_bank + cash_from_cheques
         total_outflow = tot_exp_cash + cash_deposited_to_bank
         net_cash_in_hand = round(total_inflow - total_outflow, 2)
 
-        # Recent transactions
-        recent = []
-        for t in contra_txs[-10:]:
-            is_in = (t.get("deposit_to") == "Cash in Hand")
-            recent.append({
-                "id": t.get("id"),
-                "date": t.get("transfer_date"),
-                "type": "Bank Contra",
-                "particulars": t.get("description") or ("Cash added from Bank" if is_in else "Cash sent to Bank"),
-                "inflow": inr(t.get("amount")) if is_in else "—",
-                "outflow": inr(t.get("amount")) if not is_in else "—",
-                "mode": "Contra / Bank Transfer"
-            })
-
-        for c in chq_cash[-10:]:
-            recent.append({
-                "id": c.get("id"),
-                "date": c.get("deposit_date") or c.get("cheque_date"),
-                "type": "Cheque Deposited",
-                "particulars": f"Cheque #{c.get('cheque_no')} from {c.get('customer_name')}",
-                "inflow": inr(c.get("amount")),
-                "outflow": "—",
-                "mode": f"Cheque ({c.get('bank_name')})"
-            })
+        # Merge all into one comprehensive chronological ledger
+        all_cash_entries = cash_sale_entries + cash_income_entries + cash_exp_entries + contra_entries
+        all_cash_entries.sort(key=lambda x: str(x.get("date") or "9999-99-99"), reverse=True)
 
         return {
             "cash_in_hand": net_cash_in_hand,
             "opening_cash": base_opening,
-            "total_cash_sales": tot_sales_cash,
-            "total_cash_expenses": tot_exp_cash,
-            "cash_from_banks": cash_added_from_bank,
-            "cash_to_banks": cash_deposited_to_bank,
-            "cash_from_cheques": cash_from_cheques,
-            "recent_entries": recent
+            "total_cash_sales": round(tot_sales_cash + tot_income_cash, 2),
+            "total_cash_expenses": round(tot_exp_cash, 2),
+            "cash_from_banks": round(cash_added_from_bank, 2),
+            "cash_to_banks": round(cash_deposited_to_bank, 2),
+            "cash_from_cheques": round(cash_from_cheques, 2),
+            "recent_entries": all_cash_entries[:100]
         }
 
     # =========================================================================
@@ -442,6 +601,7 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
                     "description": payload.description or f"Cheque #{cheque.get('cheque_no')} deposited from {cheque.get('customer_name')}",
                     "created_at": now_utc(),
                     "created_by": current.user_id,
+                    "created_by_name": getattr(current, "name", "") or getattr(current, "username", "") or "Admin",
                 }
                 await db.bank_transactions.insert_one(tx_record)
 

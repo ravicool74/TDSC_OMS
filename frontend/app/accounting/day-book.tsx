@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Platform, Share } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Platform, Share, Modal } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
@@ -32,6 +32,83 @@ export default function DayBookReport() {
   const [toDate, setToDate] = useState(todayKolkata());
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Quick Deposit Cash to Bank Modal states
+  const [showDepositModal, setShowDepositModal] = useState(false);
+  const [banksList, setBanksList] = useState<any[]>([]);
+  const [cashInHandVal, setCashInHandVal] = useState<number>(0);
+  const [depositBankId, setDepositBankId] = useState('');
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositDate, setDepositDate] = useState(todayKolkata());
+  const [depositedBy, setDepositedBy] = useState('');
+  const [depositSlip, setDepositSlip] = useState('');
+  const [depositNote, setDepositNote] = useState('');
+  const [depositBusy, setDepositBusy] = useState(false);
+  const [depositErr, setDepositErr] = useState<string | null>(null);
+  const [depositSuccessMsg, setDepositSuccessMsg] = useState<string | null>(null);
+
+  const openDepositModal = async () => {
+    setDepositErr(null);
+    setDepositAmount('');
+    setDepositDate(todayKolkata());
+    setDepositSlip('');
+    setDepositNote('');
+    setShowDepositModal(true);
+    try {
+      const [banksRes, cashRes] = await Promise.all([
+        api.getCashBankAccounts(),
+        api.getCashSummary()
+      ]);
+      setBanksList(banksRes || []);
+      if (banksRes && banksRes.length > 0) {
+        setDepositBankId(banksRes[0].id);
+      }
+      setCashInHandVal(cashRes?.cash_in_hand || 0);
+    } catch (err: any) {
+      console.warn('Failed to load banks for deposit modal', err);
+    }
+  };
+
+  const handleExecuteDeposit = async () => {
+    const amt = parseFloat(depositAmount);
+    if (isNaN(amt) || amt <= 0) {
+      setDepositErr('Please enter a valid deposit amount.');
+      return;
+    }
+    if (!depositBankId) {
+      setDepositErr('Please select a destination bank account.');
+      return;
+    }
+    setDepositBusy(true);
+    setDepositErr(null);
+    try {
+      const selectedBank = banksList.find(b => b.id === depositBankId);
+      const bankTitle = selectedBank ? `${selectedBank.name} (${selectedBank.bank_name})` : 'Bank';
+      const desc = depositNote.trim() 
+        ? `${depositNote.trim()} (Deposited by ${depositedBy || 'Staff'})` 
+        : `Cash deposited into ${bankTitle} by ${depositedBy || 'Staff'}` + (depositSlip.trim() ? ` [Slip: ${depositSlip.trim()}]` : '');
+
+      await api.executeCashBankTransfer({
+        transfer_type: 'cash_to_bank',
+        direction: 'deposit',
+        withdraw_from: 'Cash in Hand',
+        deposit_to: depositBankId,
+        amount: amt,
+        transfer_date: depositDate || todayKolkata(),
+        description: desc,
+        attachment_name: depositSlip.trim() || undefined,
+      });
+
+      setShowDepositModal(false);
+      setDepositSuccessMsg(`Successfully deposited ₹${amt.toLocaleString('en-IN')} into ${bankTitle}!`);
+      setTimeout(() => setDepositSuccessMsg(null), 6000);
+      await load();
+    } catch (e: any) {
+      setDepositErr(e?.message || 'Failed to execute cash deposit');
+    } finally {
+      setDepositBusy(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -74,6 +151,7 @@ export default function DayBookReport() {
   const openingBalances: any[] = data?.opening_balances || [];
   const saleReceipts: any[] = data?.sale_receipts || [];
   const paymentInReceipts: any[] = data?.payment_in_receipts || [];
+  const contraDeposits: any[] = data?.contra_deposits || [];
   const closingBalances: any[] = data?.closing_balances || [];
   const isBalanced: boolean = data?.is_balanced !== false;
   const diffAmt = data?.difference || 0;
@@ -83,10 +161,16 @@ export default function DayBookReport() {
       <ScreenHeader
         title="Day Book Report"
         right={
-          <Pressable onPress={handlePrint} style={styles.printBtn} testID="btn-print-day-book">
-            <Ionicons name="print-outline" size={18} color="#2563EB" />
-            <Text style={styles.printBtnTxt}>Print / PDF</Text>
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Pressable onPress={openDepositModal} style={styles.depositBtn} testID="btn-deposit-cash">
+              <Ionicons name="arrow-up-circle-outline" size={16} color="#059669" />
+              <Text style={styles.depositBtnTxt}>+ Deposit Cash to Bank</Text>
+            </Pressable>
+            <Pressable onPress={handlePrint} style={styles.printBtn} testID="btn-print-day-book">
+              <Ionicons name="print-outline" size={18} color="#2563EB" />
+              <Text style={styles.printBtnTxt}>Print / PDF</Text>
+            </Pressable>
+          </View>
         }
       />
 
@@ -363,6 +447,84 @@ export default function DayBookReport() {
             </ScrollView>
           </View>
 
+          {/* Success banner if quick cash deposit just succeeded */}
+          {depositSuccessMsg && (
+            <View style={styles.successToast}>
+              <Ionicons name="checkmark-circle" size={18} color="#059669" />
+              <Text style={styles.successToastText}>{depositSuccessMsg}</Text>
+            </View>
+          )}
+
+          {/* ============================================================== */}
+          {/* 3.5. Cash Deposited to Bank (Contra Transfers) Table           */}
+          {/* ============================================================== */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="swap-horizontal-outline" size={20} color="#2563EB" />
+                <Text style={styles.cardTitle}>Cash Deposited to Bank (Contra Transfers):</Text>
+              </View>
+              <View style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 }}>
+                <Text style={{ color: '#1D4ED8', fontSize: 11, fontWeight: '800' }}>
+                  {contraDeposits.length} Contra Transfers • Total: {inr(data?.total_contra_deposits || 0)}
+                </Text>
+              </View>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={true} style={{ marginTop: 8 }}>
+              <View>
+                {/* Table Header */}
+                <View style={styles.tableHeaderRow}>
+                  <Text style={[styles.thCell, { width: 50 }]}>Sl. No.</Text>
+                  <Text style={[styles.thCell, { width: 95 }]}>Date</Text>
+                  <Text style={[styles.thCell, { width: 140 }]}>Voucher / Ref #</Text>
+                  <Text style={[styles.thCell, { width: 140 }]}>Withdrawn From</Text>
+                  <Text style={[styles.thCell, { width: 220 }]}>Deposited To Bank</Text>
+                  <Text style={[styles.thCell, { width: 140 }]}>Deposited By</Text>
+                  <Text style={[styles.thCell, { width: 120, textAlign: 'right' }]}>Amount (₹)</Text>
+                  <Text style={[styles.thCell, { width: 140 }]}>Slip / Challan Ref</Text>
+                  <Text style={[styles.thCell, { width: 220 }]}>Note / Remarks</Text>
+                </View>
+
+                {/* Table Body */}
+                {contraDeposits.length === 0 ? (
+                  <View style={styles.tableEmptyRow}>
+                    <Text style={styles.tableEmptyText}>No Cash Deposited to Bank recorded in selected date range.</Text>
+                  </View>
+                ) : (
+                  contraDeposits.map((cd, idx) => (
+                    <View key={idx} style={[styles.tableDataRow, idx % 2 === 1 && styles.tableRowAlt]}>
+                      <Text style={[styles.tdCell, { width: 50, fontWeight: '700' }]}>{cd.sl_no}</Text>
+                      <Text style={[styles.tdCell, { width: 95 }]}>{cd.date}</Text>
+                      <Text style={[styles.tdCell, { width: 140, fontWeight: '700', color: '#2563EB' }]}>{cd.voucher}</Text>
+                      <Text style={[styles.tdCell, { width: 140, fontWeight: '600', color: '#B45309' }]}>{cd.withdrawn_from}</Text>
+                      <Text style={[styles.tdCell, { width: 220, fontWeight: '700', color: '#1E293B' }]} numberOfLines={1}>
+                        {cd.deposited_to_bank}
+                      </Text>
+                      <Text style={[styles.tdCell, { width: 140 }]} numberOfLines={1}>{cd.deposited_by}</Text>
+                      <Text style={[styles.tdCell, { width: 120, textAlign: 'right', fontWeight: '800', color: '#2563EB' }]}>
+                        {inr(cd.amount)}
+                      </Text>
+                      <Text style={[styles.tdCell, { width: 140, color: '#475569' }]} numberOfLines={1}>
+                        {cd.attachment_name || '—'}
+                      </Text>
+                      <Text style={[styles.tdCell, { width: 220 }]} numberOfLines={1}>{cd.note}</Text>
+                    </View>
+                  ))
+                )}
+
+                {/* Table Footer */}
+                <View style={styles.tableFooterRow}>
+                  <Text style={[styles.tfCell, { width: 785 }]}>Total Cash Deposited into Bank (Contra):</Text>
+                  <Text style={[styles.tfCell, { width: 120, textAlign: 'right', color: '#2563EB' }]}>
+                    {inr(data?.total_contra_deposits || 0)}
+                  </Text>
+                  <Text style={[styles.tfCell, { width: 360 }]}></Text>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+
           {/* ============================================================== */}
           {/* 4. Day Summary & Total O.B.                                    */}
           {/* ============================================================== */}
@@ -497,6 +659,152 @@ export default function DayBookReport() {
 
         </ScrollView>
       )}
+
+      {/* ============================================================== */}
+      {/* Quick Modal: Deposit Cash into Bank (Contra Entry)              */}
+      {/* ============================================================== */}
+      <Modal visible={showDepositModal} transparent animationType="fade" onRequestClose={() => setShowDepositModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="arrow-up-circle" size={24} color="#059669" />
+                <View>
+                  <Text style={styles.modalTitle}>Deposit Cash into Bank</Text>
+                  <Text style={styles.modalSubtitle}>Contra Transfer: Cash in Hand → Company Bank Account</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setShowDepositModal(false)}>
+                <Ionicons name="close-circle-outline" size={24} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <ScrollView style={{ padding: spacing.md, maxHeight: 500 }} contentContainerStyle={{ gap: 14 }}>
+              {depositErr && (
+                <View style={styles.errBox}>
+                  <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                  <Text style={styles.errText}>{depositErr}</Text>
+                </View>
+              )}
+
+              {/* Cash in Hand available preview */}
+              <View style={styles.cashPreviewBox}>
+                <Ionicons name="wallet" size={20} color="#059669" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 11, color: '#047857', fontWeight: '700' }}>CURRENT CASH IN HAND</Text>
+                  <Text style={{ fontSize: 18, color: '#065F46', fontWeight: '900' }}>{inr(cashInHandVal)}</Text>
+                </View>
+              </View>
+
+              {/* Target Bank Account Selector */}
+              <View style={{ gap: 6 }}>
+                <Text style={styles.inputLabel}>Select Destination Bank Account <Text style={{ color: '#DC2626' }}>*</Text></Text>
+                <View style={{ gap: 8 }}>
+                  {banksList.map((b: any) => {
+                    const isSelected = depositBankId === b.id;
+                    return (
+                      <Pressable
+                        key={b.id}
+                        onPress={() => setDepositBankId(b.id)}
+                        style={[styles.bankChoiceCard, isSelected && styles.bankChoiceCardActive]}
+                      >
+                        <Ionicons
+                          name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                          size={18}
+                          color={isSelected ? '#2563EB' : '#94A3B8'}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.bankChoiceName, isSelected && { color: '#1D4ED8' }]}>{b.name}</Text>
+                          <Text style={styles.bankChoiceSub}>
+                            {b.bank_name} • A/c {b.account_no} • IFSC: {b.ifsc}
+                          </Text>
+                        </View>
+                        <Text style={styles.bankChoiceBal}>{inr(b.opening_balance || 0)}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Amount input */}
+              <View style={{ gap: 6 }}>
+                <Text style={styles.inputLabel}>Deposit Amount (₹) <Text style={{ color: '#DC2626' }}>*</Text></Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="e.g. 40000"
+                  keyboardType="numeric"
+                  value={depositAmount}
+                  onChangeText={setDepositAmount}
+                />
+              </View>
+
+              {/* Date & Deposited By Row */}
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.inputLabel}>Deposit Date</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="YYYY-MM-DD"
+                    value={depositDate}
+                    onChangeText={setDepositDate}
+                  />
+                </View>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.inputLabel}>Deposited By (Staff)</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="Staff name"
+                    value={depositedBy}
+                    onChangeText={setDepositedBy}
+                  />
+                </View>
+              </View>
+
+              {/* Slip Ref & Note */}
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.inputLabel}>Deposit Slip / Challan #</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="e.g. SLIP-8942"
+                    value={depositSlip}
+                    onChangeText={setDepositSlip}
+                  />
+                </View>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.inputLabel}>Note / Remarks</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="e.g. Cash deposit to SBI"
+                    value={depositNote}
+                    onChangeText={setDepositNote}
+                  />
+                </View>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Pressable onPress={() => setShowDepositModal(false)} style={styles.cancelBtn}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleExecuteDeposit}
+                disabled={depositBusy}
+                style={[styles.confirmBtn, depositBusy && { opacity: 0.7 }]}
+              >
+                {depositBusy ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-done" size={16} color="#FFF" />
+                    <Text style={styles.confirmBtnText}>Confirm Deposit to Bank</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -560,4 +868,35 @@ const styles = StyleSheet.create({
   auditStampCard: { padding: spacing.md, borderRadius: radius.md, borderWidth: 1 },
   stampPill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginTop: 4 },
   stampPillText: { fontSize: 10, fontWeight: '900', color: '#FFF', letterSpacing: 0.5 },
+
+  depositBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.md, backgroundColor: '#ECFDF5', borderWidth: 1, borderColor: '#A7F3D0' },
+  depositBtnTxt: { fontSize: 12, fontWeight: '800', color: '#059669' },
+
+  successToast: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, backgroundColor: '#ECFDF5', borderRadius: radius.md, borderWidth: 1, borderColor: '#A7F3D0' },
+  successToastText: { fontSize: 12, fontWeight: '700', color: '#065F46' },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center', padding: spacing.md },
+  modalCard: { width: '100%', maxWidth: 540, backgroundColor: '#FFFFFF', borderRadius: radius.lg, overflow: 'hidden', ...shadow.card },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: spacing.md, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  modalTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
+  modalSubtitle: { fontSize: 11, color: '#64748B', marginTop: 2 },
+
+  cashPreviewBox: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, backgroundColor: '#ECFDF5', borderRadius: radius.md, borderWidth: 1, borderColor: '#A7F3D0' },
+  bankChoiceCard: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  bankChoiceCardActive: { borderColor: '#2563EB', backgroundColor: '#EFF6FF' },
+  bankChoiceName: { fontSize: 12, fontWeight: '800', color: '#1E293B' },
+  bankChoiceSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  bankChoiceBal: { fontSize: 12, fontWeight: '800', color: '#059669' },
+
+  inputLabel: { fontSize: 11, fontWeight: '700', color: '#475569' },
+  modalInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, backgroundColor: '#FFF' },
+
+  modalFooter: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, padding: spacing.md, borderTopWidth: 1, borderTopColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  cancelBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.md, backgroundColor: '#F1F5F9' },
+  cancelBtnText: { fontSize: 12, fontWeight: '700', color: '#475569' },
+  confirmBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 8, borderRadius: radius.md, backgroundColor: '#059669' },
+  confirmBtnText: { fontSize: 12, fontWeight: '800', color: '#FFF' },
+
+  errBox: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, backgroundColor: '#FEF2F2', borderRadius: radius.md, borderWidth: 1, borderColor: '#FECACA' },
+  errText: { fontSize: 11, color: '#DC2626', fontWeight: '700' },
 });

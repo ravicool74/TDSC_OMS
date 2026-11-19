@@ -96,6 +96,7 @@ export default function CashBankScreen() {
   const [cheques, setCheques] = useState<ChequeItem[]>([]);
   const [chequeCounts, setChequeCounts] = useState({ open_count: 0, closed_count: 0, total_count: 0, open_amount: 0 });
   const [chequeFilter, setChequeFilter] = useState<'open' | 'closed' | 'all'>('all');
+  const [cashFilterType, setCashFilterType] = useState<'all' | 'receipts' | 'deposits' | 'expenses'>('all');
   const [loans, setLoans] = useState<LoanAccount[]>([]);
   const [loanSummary, setLoanSummary] = useState({ total_sanctioned: 0, total_outstanding: 0, active_loans_count: 0 });
 
@@ -733,16 +734,28 @@ export default function CashBankScreen() {
   // Filtered Cash Entries
   const filteredCashEntries = useMemo(() => {
     const entries = cashSummary?.recent_entries || [];
+    let list = entries;
+    if (cashFilterType === 'receipts') {
+      list = entries.filter((tx: any) => tx.direction === 'inflow' || tx.badge === 'CASH SALE' || tx.badge === 'PAYMENT IN' || tx.badge === 'CHEQUE IN');
+    } else if (cashFilterType === 'deposits') {
+      list = entries.filter((tx: any) => tx.badge === 'CASH TO BANK' || tx.badge === 'BANK TO CASH' || tx.is_contra);
+    } else if (cashFilterType === 'expenses') {
+      list = entries.filter((tx: any) => tx.badge === 'EXPENSE' || tx.type?.includes('Expense'));
+    }
     const q = searchCash.trim().toLowerCase();
-    if (!q) return entries;
-    return entries.filter((tx: any) =>
+    if (!q) return list;
+    return list.filter((tx: any) =>
       (tx.particulars || '').toLowerCase().includes(q) ||
+      (tx.title || '').toLowerCase().includes(q) ||
+      (tx.party_or_bank || '').toLowerCase().includes(q) ||
+      (tx.voucher_ref || '').toLowerCase().includes(q) ||
+      (tx.handled_by || '').toLowerCase().includes(q) ||
       (tx.date || '').toLowerCase().includes(q) ||
       (tx.mode || '').toLowerCase().includes(q) ||
       String(tx.inflow || '').toLowerCase().includes(q) ||
       String(tx.outflow || '').toLowerCase().includes(q)
     );
-  }, [cashSummary?.recent_entries, searchCash]);
+  }, [cashSummary?.recent_entries, searchCash, cashFilterType]);
 
   // Filtered Cheques list
   const filteredCheques = useMemo(() => {
@@ -1042,13 +1055,37 @@ export default function CashBankScreen() {
               </View>
 
               {/* Recent Cash Ledger */}
-              <Text style={styles.sectionHeading}>Recent Cash & Contra Transactions</Text>
+              <Text style={styles.sectionHeading}>Cash Register & Contra Ledger</Text>
+
+              {/* Cash Filter Pills */}
+              <View style={styles.cashFilterRow}>
+                {([
+                  { key: 'all', label: `All Entries (${cashSummary?.recent_entries?.length || 0})` },
+                  { key: 'receipts', label: 'Cash Receipts' },
+                  { key: 'deposits', label: 'Bank Deposits (Contra)' },
+                  { key: 'expenses', label: 'Cash Expenses' },
+                ] as const).map(f => {
+                  const isActive = cashFilterType === f.key;
+                  return (
+                    <Pressable
+                      key={f.key}
+                      onPress={() => setCashFilterType(f.key)}
+                      style={[styles.cashFilterPill, isActive && styles.cashFilterPillActive]}
+                    >
+                      <Text style={[styles.cashFilterPillText, isActive && styles.cashFilterPillTextActive]}>
+                        {f.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
               <View style={styles.tabSearchBox}>
                 <Ionicons name="search" size={16} color={colors.muted} />
                 <TextInput
                   testID="search-cash"
                   style={styles.tabSearchInput}
-                  placeholder="Search cash & contra entries..."
+                  placeholder="Search by party, bank, voucher #, employee, note..."
                   placeholderTextColor={colors.muted}
                   value={searchCash}
                   onChangeText={setSearchCash}
@@ -1060,42 +1097,126 @@ export default function CashBankScreen() {
                 ) : null}
               </View>
               {filteredCashEntries && filteredCashEntries.length > 0 ? (
-                filteredCashEntries.map((tx: any) => (
-                  <View key={tx.id} style={styles.txRowCard} testID={`cash-card-${tx.id}`}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.txParticulars}>{tx.particulars}</Text>
-                        <Text style={styles.txDate}>{tx.date} • {tx.mode}</Text>
+                filteredCashEntries.map((tx: any) => {
+                  const isInflow = tx.direction === 'inflow' || (tx.inflow && tx.inflow !== '—');
+                  return (
+                    <View key={tx.id} style={styles.txRowCardDetailed} testID={`cash-card-${tx.id}`}>
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                        <View style={{ flex: 1 }}>
+                          {/* Badges & Meta */}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                            <View style={[
+                              styles.entryBadge,
+                              tx.badge === 'CASH SALE' && { backgroundColor: '#DCFCE7' },
+                              tx.badge === 'PAYMENT IN' && { backgroundColor: '#F3E8FF' },
+                              tx.badge === 'CASH TO BANK' && { backgroundColor: '#EDE9FE' },
+                              tx.badge === 'BANK TO CASH' && { backgroundColor: '#CCFBF1' },
+                              tx.badge === 'EXPENSE' && { backgroundColor: '#FEE2E2' },
+                              tx.badge === 'CHEQUE IN' && { backgroundColor: '#E0F2FE' },
+                            ]}>
+                              <Text style={[
+                                styles.entryBadgeText,
+                                tx.badge === 'CASH SALE' && { color: '#15803D' },
+                                tx.badge === 'PAYMENT IN' && { color: '#7E22CE' },
+                                tx.badge === 'CASH TO BANK' && { color: '#6D28D9' },
+                                tx.badge === 'BANK TO CASH' && { color: '#0F766E' },
+                                tx.badge === 'EXPENSE' && { color: '#B91C1C' },
+                                tx.badge === 'CHEQUE IN' && { color: '#0369A1' },
+                              ]}>
+                                {tx.badge || tx.type}
+                              </Text>
+                            </View>
+                            <Text style={styles.txDate}>{tx.date}</Text>
+                            {tx.voucher_ref ? (
+                              <View style={styles.refTag}>
+                                <Text style={styles.refTagText}>Voucher: {tx.voucher_ref}</Text>
+                              </View>
+                            ) : null}
+                          </View>
+
+                          {/* Primary Title (Party / Target Bank) */}
+                          <Text style={styles.txCardTitle}>{tx.title || tx.particulars}</Text>
+
+                          {/* Secondary Narration / Breakdown */}
+                          <Text style={styles.txParticularsSub}>{tx.particulars}</Text>
+
+                          {/* Footer details: Handled by, Attachment Slip */}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6, flexWrap: 'wrap' }}>
+                            {tx.handled_by ? (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <Ionicons name="person-circle-outline" size={14} color="#64748B" />
+                                <Text style={styles.txMetaText}>Handled by: <Text style={{ fontWeight: '700', color: '#334155' }}>{tx.handled_by}</Text></Text>
+                              </View>
+                            ) : null}
+                            {tx.attachment_name ? (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <Ionicons name="document-attach-outline" size={14} color="#2563EB" />
+                                <Text style={[styles.txMetaText, { color: '#2563EB', fontWeight: '700' }]}>{tx.attachment_name}</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </View>
+
+                        {/* Amount */}
+                        <View style={{ alignItems: 'flex-end', paddingTop: 2 }}>
+                          {isInflow ? (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                              <Ionicons name="arrow-down-circle" size={16} color={GREEN} />
+                              <Text style={[styles.txAmount, { color: GREEN, fontSize: 16 }]}>+{tx.inflow}</Text>
+                            </View>
+                          ) : (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                              <Ionicons name="arrow-up-circle" size={16} color={RED} />
+                              <Text style={[styles.txAmount, { color: RED, fontSize: 16 }]}>-{tx.outflow}</Text>
+                            </View>
+                          )}
+                          <Text style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>
+                            {isInflow ? 'Cash Inflow' : 'Cash Outflow'}
+                          </Text>
+                        </View>
                       </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        {tx.inflow !== '—' && (
-                          <Text style={[styles.txAmount, { color: GREEN }]}>+{tx.inflow}</Text>
-                        )}
-                        {tx.outflow !== '—' && (
-                          <Text style={[styles.txAmount, { color: RED }]}>-{tx.outflow}</Text>
-                        )}
-                      </View>
+
+                      {/* Action buttons */}
+                      {tx.is_contra ? (
+                        <View style={styles.itemActionRowDetailed}>
+                          <Pressable
+                            testID={`edit-cash-${tx.id}`}
+                            onPress={() => openEditContra(tx)}
+                            style={styles.itemEditBtn}
+                          >
+                            <Ionicons name="pencil" size={14} color={BLUE} />
+                            <Text style={[styles.itemActionBtnText, { color: BLUE }]}>Edit Transfer</Text>
+                          </Pressable>
+                          <Pressable
+                            testID={`del-cash-${tx.id}`}
+                            onPress={() => handleDeleteContra(tx)}
+                            style={styles.itemDelBtn}
+                          >
+                            <Ionicons name="trash-outline" size={14} color={RED} />
+                            <Text style={[styles.itemActionBtnText, { color: RED }]}>Delete</Text>
+                          </Pressable>
+                        </View>
+                      ) : (
+                        <View style={[styles.itemActionRowDetailed, { justifyContent: 'space-between' }]}>
+                          <Text style={{ fontSize: 11, color: '#94A3B8', fontStyle: 'italic' }}>
+                            Auto-recorded from {tx.type}
+                          </Text>
+                          {tx.badge === 'CASH SALE' ? (
+                            <Pressable onPress={() => router.push('/accounting/sales' as any)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: BLUE }}>View Invoice</Text>
+                              <Ionicons name="chevron-forward" size={12} color={BLUE} />
+                            </Pressable>
+                          ) : tx.badge === 'PAYMENT IN' ? (
+                            <Pressable onPress={() => router.push('/accounting/income' as any)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: BLUE }}>View Income</Text>
+                              <Ionicons name="chevron-forward" size={12} color={BLUE} />
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      )}
                     </View>
-                    <View style={styles.itemActionRow}>
-                      <Pressable
-                        testID={`edit-cash-${tx.id}`}
-                        onPress={() => openEditContra(tx)}
-                        style={styles.itemEditBtn}
-                      >
-                        <Ionicons name="pencil" size={14} color={BLUE} />
-                        <Text style={[styles.itemActionBtnText, { color: BLUE }]}>Edit</Text>
-                      </Pressable>
-                      <Pressable
-                        testID={`del-cash-${tx.id}`}
-                        onPress={() => handleDeleteContra(tx)}
-                        style={styles.itemDelBtn}
-                      >
-                        <Ionicons name="trash-outline" size={14} color={RED} />
-                        <Text style={[styles.itemActionBtnText, { color: RED }]}>Delete</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ))
+                  );
+                })
               ) : (
                 <View style={styles.emptyCard}>
                   <Ionicons name="document-text-outline" size={32} color={colors.muted} />
@@ -2506,6 +2627,85 @@ const styles = StyleSheet.create({
   txAmount: {
     fontSize: 14,
     fontWeight: '900',
+  },
+  txRowCardDetailed: {
+    backgroundColor: '#FFFFFF',
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 8,
+    marginBottom: 8,
+  },
+  entryBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+  },
+  entryBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  txCardTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  txParticularsSub: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 2,
+  },
+  txMetaText: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  refTag: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  refTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  cashFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginBottom: 10,
+  },
+  cashFilterPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  cashFilterPillActive: {
+    backgroundColor: BLUE,
+    borderColor: BLUE,
+  },
+  cashFilterPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  cashFilterPillTextActive: {
+    color: '#FFFFFF',
+  },
+  itemActionRowDetailed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',

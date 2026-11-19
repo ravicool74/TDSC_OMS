@@ -365,7 +365,18 @@ def make_system_operations_router(db, get_current_user, require_admin):
         ).to_list(1000)
         prior_cash_out = sum(float(e.get("amount") or 0) for e in prior_exp_cash)
 
-        cash_ob = max(0.0, round(cash_base + prior_cash_in - prior_cash_out, 2))
+        # Prior contra cash-to-bank and bank-to-cash before from_d
+        prior_contra = await db.bank_transactions.find({"transfer_date": {"$lt": from_d}}, {"_id": 0}).to_list(1000)
+        prior_cash_dep = sum(
+            float(t.get("amount") or 0) for t in prior_contra
+            if t.get("withdraw_from") == "Cash in Hand" or (t.get("transfer_type") == "cash_to_bank" and t.get("direction") != "withdraw")
+        )
+        prior_cash_with = sum(
+            float(t.get("amount") or 0) for t in prior_contra
+            if t.get("deposit_to") == "Cash in Hand" or (t.get("transfer_type") == "bank_to_cash" and t.get("direction") == "deposit") or (t.get("transfer_type") == "cash_to_bank" and t.get("direction") == "withdraw")
+        )
+
+        cash_ob = max(0.0, round(cash_base + prior_cash_in + prior_cash_with - prior_cash_out - prior_cash_dep, 2))
 
         opening_balances.append({
             "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
@@ -464,6 +475,87 @@ def make_system_operations_router(db, get_current_user, require_admin):
         total_day_receipts = round(total_sale_receipts + total_payment_in_receipts, 2)
         total_ob_with_receipts = round(total_previous_ob + total_day_receipts, 2)
 
+        # 3.5 Cash Deposited to Bank (Contra Transfers during period)
+        contra_records = await db.bank_transactions.find(
+            {
+                "transfer_date": {"$gte": from_d, "$lte": to_d},
+                "$or": [
+                    {"withdraw_from": "Cash in Hand"},
+                    {"transfer_type": "cash_to_bank"},
+                    {"deposit_to": "Cash in Hand"},
+                    {"transfer_type": "bank_to_cash"},
+                ]
+            },
+            {"_id": 0}
+        ).sort("transfer_date", 1).to_list(1000)
+
+        c_u_ids = list({t.get("created_by") for t in contra_records if t.get("created_by")})
+        c_u_map = {}
+        if c_u_ids:
+            u_docs = await db.users.find({"user_id": {"$in": c_u_ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(c_u_ids))
+            c_u_map = {u["user_id"]: u.get("name") for u in u_docs}
+
+        contra_deposits = []
+        contra_running = 0.0
+        c_sl = 1
+        bank_contra_inflow = {}
+        bank_contra_outflow = {}
+        total_contra_deposits = 0.0
+        total_contra_withdrawals = 0.0
+
+        for ct in contra_records:
+            amt = float(ct.get("amount") or 0.0)
+            if amt <= 0:
+                continue
+
+            is_cash_to_bank = (
+                ct.get("withdraw_from") == "Cash in Hand" or 
+                (ct.get("transfer_type") == "cash_to_bank" and ct.get("direction") != "withdraw")
+            )
+            is_bank_to_cash = (
+                ct.get("deposit_to") == "Cash in Hand" or
+                (ct.get("transfer_type") == "bank_to_cash" and ct.get("direction") == "deposit") or
+                (ct.get("transfer_type") == "cash_to_bank" and ct.get("direction") == "withdraw")
+            )
+
+            depositor = ct.get("created_by_name") or c_u_map.get(ct.get("created_by")) or "Admin"
+
+            if is_cash_to_bank:
+                contra_running += amt
+                total_contra_deposits += amt
+
+                target_bank_id = ct.get("deposit_to")
+                target_bank_name = ct.get("deposit_to_name")
+                if not target_bank_name:
+                    for b in all_banks:
+                        if b.get("id") == target_bank_id:
+                            target_bank_name = f"{b.get('name')} ({b.get('bank_name')})"
+                            break
+                if not target_bank_name:
+                    target_bank_name = "Bank Account"
+
+                bank_contra_inflow[target_bank_id] = bank_contra_inflow.get(target_bank_id, 0.0) + amt
+
+                contra_deposits.append({
+                    "sl_no": c_sl,
+                    "date": ct.get("transfer_date") or from_d,
+                    "voucher": ct.get("id") or f"CONTRA-{c_sl}",
+                    "withdrawn_from": "Cash in Hand",
+                    "deposited_to_bank": target_bank_name,
+                    "bank_id": target_bank_id,
+                    "deposited_by": depositor,
+                    "amount": round(amt, 2),
+                    "attachment_name": ct.get("attachment_name") or "Slip",
+                    "attachment_path": ct.get("attachment_path"),
+                    "note": ct.get("description") or f"Cash deposit into {target_bank_name}",
+                    "cumulative_bal": round(contra_running, 2),
+                })
+                c_sl += 1
+            elif is_bank_to_cash:
+                total_contra_withdrawals += amt
+                src_bank_id = ct.get("withdraw_from")
+                bank_contra_outflow[src_bank_id] = bank_contra_outflow.get(src_bank_id, 0.0) + amt
+
         # 4. Expenses Breakdown (Online vs Cash)
         expenses = await db.expenses.find(
             {"date": {"$gte": from_d, "$lte": to_d}, "status": {"$ne": "rejected"}},
@@ -485,23 +577,19 @@ def make_system_operations_router(db, get_current_user, require_admin):
         total_expenses = round(expenses_online + expenses_cash, 2)
 
         # 5. Closing Balances Calculation
-        # For each bank account: Closing Balance = Opening Balance + Receipts into Bank - Expenses from Bank
-        # Default allocation: online sales/incomes go to SBI / designated bank, online expenses go from bank
-        # Cash in Hand: cash_ob + cash sales + cash income - cash expenses
+        # For each bank account: Closing Balance = Opening Balance + Receipts into Bank - Expenses from Bank + Cash Deposited (Contra) - Cash Withdrawn
+        # Cash in Hand: cash_ob + cash sales + cash income + withdrawals - cash expenses - cash deposited to bank
 
-        # Calculate cash receipts during the period
         cash_sales_period = sum(
             r["receipt_in"] for r in sale_receipts if "CASH" in r["payment_mode"]
         )
         cash_income_period = sum(
             r["receipt_in"] for r in payment_in_receipts if "CASH" in r["payment_mode"]
         )
-        cash_cb = max(0.0, round(cash_ob + cash_sales_period + cash_income_period - expenses_cash, 2))
+        cash_cb = max(0.0, round(cash_ob + cash_sales_period + cash_income_period + total_contra_withdrawals - expenses_cash - total_contra_deposits, 2))
 
-        # Calculate bank movements:
-        # Bank Inflow = total_day_receipts - (cash_sales_period + cash_income_period)
+        # Calculate general bank receipts (non-cash)
         bank_inflow_period = round(total_day_receipts - (cash_sales_period + cash_income_period), 2)
-        bank_net_closing = round(tot_bank_ob + bank_inflow_period - expenses_online, 2)
 
         closing_balances = []
         c_idx = 0
@@ -514,12 +602,15 @@ def make_system_operations_router(db, get_current_user, require_admin):
             name = b.get("name") or b.get("bank_name") or "Bank Account"
             bank_name = b.get("bank_name") or "Bank"
 
-            # Allocate bank net movement to primary business account (SBI) if not individually split
             b_ob = float(b.get("opening_balance") or b.get("balance") or 0.0)
+            b_dep = bank_contra_inflow.get(b_id, 0.0)
+            b_with = bank_contra_outflow.get(b_id, 0.0)
+
+            # If primary bank (SBI), also assign generic online inflow/expenses
             if "42137607814" in account_no or "TRIVENI" in name.upper():
-                b_cb = round(b_ob + bank_inflow_period - expenses_online, 2)
+                b_cb = round(b_ob + bank_inflow_period - expenses_online + b_dep - b_with, 2)
             else:
-                b_cb = round(b_ob, 2)
+                b_cb = round(b_ob + b_dep - b_with, 2)
             allocated_bank_cb += b_cb
 
             closing_balances.append({
@@ -626,6 +717,10 @@ def make_system_operations_router(db, get_current_user, require_admin):
 
             "payment_in_receipts": payment_in_receipts,
             "total_payment_in_receipts": total_payment_in_receipts,
+
+            "contra_deposits": contra_deposits,
+            "total_contra_deposits": round(total_contra_deposits, 2),
+            "total_contra_withdrawals": round(total_contra_withdrawals, 2),
 
             "total_day_receipts": total_day_receipts,
             "total_ob_with_receipts": total_ob_with_receipts,
