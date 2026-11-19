@@ -20,6 +20,7 @@ import { EmptyState, ScreenLoader, StatusBadge } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
 import { notify, confirm } from '@/src/dialog';
+import { canWrite, canAction } from '@/src/rbac';
 
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
@@ -75,7 +76,8 @@ export default function ExpensesList() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
   const isManager = user?.role === 'manager';
-  const canDelete = isAdmin || isManager || user?.role === 'accountant';
+  const canDelete = isAdmin || isManager || user?.role === 'accountant' || canAction(user, 'expenses', 'delete') || canAction(user, 'accounting', 'delete');
+  const canCreate = isAdmin || isManager || user?.role === 'accountant' || canWrite(user, 'expenses') || canWrite(user, 'accounting');
 
   const [list, setList] = useState<any[] | null>(null);
   const [customers, setCustomers] = useState<any[]>([]);

@@ -9,6 +9,7 @@ import { Card, PrimaryButton, ScreenLoader, SecondaryButton, StatusBadge } from 
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { canWrite, canAction } from '@/src/rbac';
 
 const MAX = 10 * 1024 * 1024;
 const humanSize = (b: number) => b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1024 / 1024).toFixed(2)} MB`;
@@ -101,7 +102,7 @@ export default function TaskDetail() {
     }
   }, [openChat]);
 
-  const canEdit = isAdmin || user?.role === 'manager' || t?.created_by === user?.user_id || t?.assigned_user === user?.user_id;
+  const canEdit = isAdmin || user?.role === 'manager' || t?.created_by === user?.user_id || t?.assigned_user === user?.user_id || canWrite(user, 'tasks') || canAction(user, 'tasks', 'edit');
 
   // Resolve service workflow stages dynamically
   const pipelineStages = useMemo(() => {

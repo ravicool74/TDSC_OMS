@@ -11,6 +11,7 @@ import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
 import { daysUntil, formatDscDateTime } from '@/src/dateUtils';
+import { canWrite, canAction } from '@/src/rbac';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const humanSize = (b: number) => b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1024 / 1024).toFixed(2)} MB`;
@@ -46,7 +47,8 @@ export default function CustomerDetail() {
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || (user?.role as string) === 'super_admin';
-  const canEdit = isAdmin || user?.role === 'manager';
+  const canEdit = isAdmin || user?.role === 'manager' || canWrite(user, 'customers') || canAction(user, 'customers', 'edit');
+  const canDelete = isAdmin || canAction(user, 'customers', 'delete');
 
   const [c, setC] = useState<any | null>(null);
   const [revealed, setRevealed] = useState<Record<string, string>>({});
@@ -427,7 +429,7 @@ export default function CustomerDetail() {
                 <Ionicons name="create-outline" size={22} color="#B45309" />
               </Pressable>
             ) : null}
-            {isAdmin ? (
+            {canDelete ? (
               <Pressable
                 testID="del-cust-hdr"
                 hitSlop={8}

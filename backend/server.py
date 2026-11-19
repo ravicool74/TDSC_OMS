@@ -26,7 +26,7 @@ from starlette.middleware.cors import CORSMiddleware
 from security_vault import log_audit_entry, encrypt_credential, decrypt_credential, mask_credential
 from branch_routes import make_branch_router
 from post_routes import make_post_router
-from role_routes import make_role_router, ALL_MENU_IDS, get_all_perms, build_role_menu_matrix
+from role_routes import make_role_router, ALL_MENU_IDS, get_all_perms, build_role_menu_matrix, derive_permissions_and_menus_from_matrix
 from user_routes import make_user_router
 from service_routes import make_service_router
 from audit_routes import make_audit_router
@@ -1251,6 +1251,16 @@ async def enrich_user_permissions(user_doc: dict) -> dict:
         if not user_doc.get("app_menu_matrix"):
             user_doc["app_menu_matrix"] = role_doc.get("app_menu_matrix", build_role_menu_matrix(role_key))
 
+    # If user has custom app_menu_matrix, derive permissions and allowed_menus to ensure custom permissions take effect
+    custom_matrix = user_doc.get("app_menu_matrix")
+    if custom_matrix and isinstance(custom_matrix, dict) and any(custom_matrix.values()):
+        d_menus, d_perms = derive_permissions_and_menus_from_matrix(custom_matrix)
+        existing_perms = user_doc.get("permissions") or {}
+        for mod, acts in d_perms.items():
+            existing_perms[mod] = list(set(existing_perms.get(mod, []) + acts))
+        user_doc["permissions"] = existing_perms
+        user_doc["allowed_menus"] = list(set((user_doc.get("allowed_menus") or []) + d_menus))
+
     # If user is super_admin, grant full permissions and all menus
     if user_doc.get("role") == "super_admin" or user_doc.get("role_id") == "super_admin":
         user_doc["permissions"] = get_all_perms()
@@ -1284,22 +1294,164 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     return User(**user_doc)
 
 
+def check_user_has_route_permission(current: User, request: Request, require_admin_level: bool = False) -> bool:
+    """
+    Checks whether the current user has custom permissions or matrix rights
+    to execute the requested endpoint action.
+    """
+    if current.role == "super_admin" or getattr(current, "role_id", None) == "super_admin":
+        return True
+    if current.role == "admin" or getattr(current, "role_id", None) == "admin":
+        return True
+    if not require_admin_level and current.role in ("manager", "branch_manager"):
+        return True
+
+    path = request.url.path.lower()
+    method = request.method.upper()
+
+    if method == "GET":
+        action = "view"
+    elif method in ("PUT", "PATCH"):
+        action = "edit"
+    elif method == "DELETE":
+        action = "delete"
+    else:
+        action = "add"
+
+    if "delete" in path:
+        action = "delete"
+
+    perms = current.permissions or {}
+    matrix = current.app_menu_matrix or {}
+
+    def has_module_action(module_name: str, act: str) -> bool:
+        mod_list = perms.get(module_name, [])
+        if act in mod_list or "write" in mod_list:
+            return True
+        if act == "view" and "view" in mod_list:
+            return True
+        return False
+
+    # 1. Customers Master & KYC
+    if "/customers" in path:
+        if has_module_action("customers", action):
+            return True
+        cust_item = (matrix.get("business") or {}).get("customers") or (matrix.get("more", {}).get("operations_services") or {}).get("customers")
+        if cust_item and (cust_item.get(action) or cust_item.get("write") or (action == "view" and cust_item.get("view"))):
+            return True
+
+    # 2. Invoices / Sales / Estimates / Proforma / Challans
+    if any(k in path for k in ("/invoices", "/estimates", "/proforma", "/challans", "/sale-returns", "/sales")):
+        if has_module_action("sales", action):
+            return True
+        acc_item = (matrix.get("business") or {}).get("accounts") or (matrix.get("more", {}).get("operations_services") or {}).get("accounting")
+        if acc_item and (acc_item.get(action) or acc_item.get("write") or (action == "view" and acc_item.get("view"))):
+            return True
+
+    # 3. Cash & Bank
+    if any(k in path for k in ("/cash-bank", "/banking", "/contra", "/cheques", "/loans")):
+        if has_module_action("banking", action):
+            return True
+        acc_item = (matrix.get("business") or {}).get("accounts") or (matrix.get("more", {}).get("operations_services") or {}).get("accounting")
+        if acc_item and (acc_item.get(action) or acc_item.get("write") or (action == "view" and acc_item.get("view"))):
+            return True
+
+    # 4. Expenses
+    if "/expenses" in path:
+        if has_module_action("expenses", action):
+            return True
+        acc_item = (matrix.get("business") or {}).get("accounts") or (matrix.get("more", {}).get("operations_services") or {}).get("accounting")
+        if acc_item and (acc_item.get(action) or acc_item.get("write") or (action == "view" and acc_item.get("view"))):
+            return True
+
+    # 5. Tasks & Workflows
+    if any(k in path for k in ("/tasks", "/service-requests")):
+        if has_module_action("tasks", action):
+            return True
+        task_item = (matrix.get("task") or {}).get("task_followup") or (matrix.get("task") or {}).get("payment_followup")
+        if task_item and (task_item.get(action) or task_item.get("write") or (action == "view" and task_item.get("view"))):
+            return True
+
+    # 6. Documents Library
+    if "/documents" in path or "/files" in path:
+        if has_module_action("documents", action):
+            return True
+        doc_item = (matrix.get("more", {}).get("operations_services") or {}).get("documents")
+        if doc_item and (doc_item.get(action) or doc_item.get("write") or (action == "view" and doc_item.get("view"))):
+            return True
+
+    # 7. Tenders & Calling
+    if "/tenders" in path:
+        if has_module_action("tenders", action):
+            return True
+        t_item = (matrix.get("more", {}).get("operations_services") or {}).get("tenders") or (matrix.get("more", {}).get("operations_services") or {}).get("tender_calling")
+        if t_item and (t_item.get(action) or t_item.get("write") or (action == "view" and t_item.get("view"))):
+            return True
+
+    # 8. Employees / HR / Staff
+    if any(k in path for k in ("/employees", "/attendance", "/leaves", "/payroll")):
+        for mod in ("employees", "attendance", "leaves", "payroll"):
+            if mod in path and has_module_action(mod, action):
+                return True
+        hr_items = (matrix.get("more", {}).get("human_resources") or {})
+        for k, item in hr_items.items():
+            if (item.get(action) or item.get("write")) and any(mod in path for mod in ("employees", "attendance", "leaves", "payroll")):
+                return True
+
+    # 9. Services Master
+    if "/services" in path:
+        if has_module_action("services", action):
+            return True
+        srv_item = (matrix.get("more", {}).get("operations_services") or {}).get("services")
+        if srv_item and (srv_item.get(action) or srv_item.get("write")):
+            return True
+
+    # 10. Reports
+    if any(k in path for k in ("/reports", "/profit-analysis")):
+        if has_module_action("reports", "view"):
+            return True
+        rep_item = (matrix.get("more", {}).get("operations_services") or {}).get("reports")
+        if rep_item and (rep_item.get("view") or rep_item.get("write")):
+            return True
+
+    # 11. GPS Tracking
+    if "/gps" in path:
+        if has_module_action("gps_tracking", action):
+            return True
+
+    # 12. Enterprise Administration (branches, posts, users, roles, audit_logs, settings)
+    if any(k in path for k in ("/branches", "/posts", "/manage-users", "/roles", "/audit-logs", "/settings", "/offices")):
+        for mod in ("branches", "posts", "users", "roles", "audit_logs", "settings"):
+            if mod in path and has_module_action(mod, action):
+                return True
+        admin_items = (matrix.get("more", {}).get("enterprise_administration") or {})
+        for k, item in admin_items.items():
+            if (item.get(action) or item.get("write")):
+                return True
+
+    return False
+
+
 async def require_super_admin(current: User = Depends(get_current_user)) -> User:
     if current.role != "super_admin":
         raise HTTPException(status_code=403, detail="Super Admin access required")
     return current
 
 
-async def require_admin(current: User = Depends(get_current_user)) -> User:
-    if current.role not in ("admin", "super_admin"):
-        raise HTTPException(status_code=403, detail="Admin or Super Admin access required")
-    return current
+async def require_admin(request: Request, current: User = Depends(get_current_user)) -> User:
+    if current.role in ("admin", "super_admin"):
+        return current
+    if check_user_has_route_permission(current, request, require_admin_level=True):
+        return current
+    raise HTTPException(status_code=403, detail="Admin or Super Admin access required")
 
 
-async def require_admin_or_manager(current: User = Depends(get_current_user)) -> User:
-    if current.role not in ("admin", "super_admin", "manager", "branch_manager"):
-        raise HTTPException(status_code=403, detail="Manager, Admin, or Super Admin access required")
-    return current
+async def require_admin_or_manager(request: Request, current: User = Depends(get_current_user)) -> User:
+    if current.role in ("admin", "super_admin", "manager", "branch_manager"):
+        return current
+    if check_user_has_route_permission(current, request, require_admin_level=False):
+        return current
+    raise HTTPException(status_code=403, detail="Manager, Admin, or Super Admin access required")
 
 
 # ============ Auth routes ============
@@ -2147,7 +2299,15 @@ async def list_tasks(
     current: User = Depends(get_current_user)
 ):
     q: dict = {}
-    if mine or current.role == "employee":
+    can_view_all_tasks = current.role in ("admin", "super_admin", "manager", "branch_manager", "assistant_branch_manager", "accountant")
+    if not can_view_all_tasks and current.app_menu_matrix:
+        task_matrix = current.app_menu_matrix.get("task") or {}
+        tf = task_matrix.get("task_followup") or {}
+        pf = task_matrix.get("payment_followup") or {}
+        if tf.get("write") or tf.get("edit") or pf.get("write") or pf.get("edit") or "tasks" in (current.permissions or {}):
+            can_view_all_tasks = True
+
+    if mine or (not can_view_all_tasks):
         q = {"$or": [
             {"assignee_id": current.user_id},
             {"created_by": current.user_id},

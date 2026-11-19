@@ -20,6 +20,7 @@ import { api } from '@/src/api';
 import { Avatar, Card, EmptyState, ScreenLoader } from '@/src/ui';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { canWrite, canAction } from '@/src/rbac';
 
 const DEPARTMENTS = ['All', 'RWD', 'RCD', 'WRD', 'BCD', 'PHED', 'CPWD', 'Railway', 'NHAI', 'PMGSY'];
 const REG_CLASSES = ['All', 'Class-I', 'Class-II', 'Class-III', 'Class-IV', 'Class A', 'Class B'];
@@ -43,7 +44,8 @@ export default function ContractorsDirectoryScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
-  const canEdit = isAdmin || user?.role === 'manager';
+  const canEdit = isAdmin || user?.role === 'manager' || canWrite(user, 'customers') || canAction(user, 'customers', 'edit') || canAction(user, 'customers', 'add');
+  const canDelete = isAdmin || canAction(user, 'customers', 'delete');
 
   const [customers, setCustomers] = useState<any[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -605,7 +607,7 @@ export default function ContractorsDirectoryScreen() {
             return (
               <Pressable
                 onPress={() => selectMode ? toggleSel(item.id) : router.push(`/customers/${item.id}` as any)}
-                onLongPress={() => { if (isAdmin) { setSelectMode(true); setSelected({ [item.id]: true }); } }}
+                onLongPress={() => { if (isAdmin || canDelete) { setSelectMode(true); setSelected({ [item.id]: true }); } }}
                 testID={`contractor-card-${item.id}`}
               >
                 <Card
@@ -792,7 +794,7 @@ export default function ContractorsDirectoryScreen() {
                       <Text style={styles.btnPrintTxt}>Print</Text>
                     </Pressable>
 
-                    {isAdmin ? (
+                    {canDelete ? (
                       <Pressable
                         testID={`del-btn-${item.id}`}
                         onPress={(e) => { e?.stopPropagation?.(); deleteCustomer(item); }}

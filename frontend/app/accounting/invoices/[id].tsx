@@ -9,6 +9,7 @@ import { ScreenHeader } from '@/src/ScreenHeader';
 import { AttachmentsSection, Attachment } from '@/src/AttachmentsSection';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { canWrite, canAction } from '@/src/rbac';
 
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
@@ -25,7 +26,14 @@ export default function InvoiceDetail() {
     user?.role === 'accountant' ||
     user?.role === 'custom_accounts_assistant' ||
     user?.role === 'data_entry_operator' ||
+    canWrite(user, 'business', 'accounts') ||
+    canWrite(user, 'more', 'operations_services', 'accounting') ||
+    canWrite(user, 'sales') ||
+    canWrite(user, 'accounts') ||
+    canAction(user, 'sales', 'edit') ||
+    canAction(user, 'accounting', 'edit') ||
     (!!inv?.created_by && (inv?.created_by === (user as any)?.id || inv?.created_by === user?.user_id));
+  const canDelete = isAdmin || canAction(user, 'sales', 'delete') || canAction(user, 'accounting', 'delete');
 
   // Edit Signatory Modal State
   const [signModalVisible, setSignModalVisible] = useState(false);
@@ -191,7 +199,7 @@ export default function InvoiceDetail() {
               <Ionicons name="create-outline" size={20} color="#B45309" />
             </Pressable>
           ) : null}
-          {isAdmin ? (
+          {canDelete ? (
             <Pressable onPress={remove} hitSlop={8} testID="del-hdr" style={styles.topIconBtn}>
               <Ionicons name="trash-outline" size={20} color={colors.error} />
             </Pressable>

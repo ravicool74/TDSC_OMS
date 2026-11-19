@@ -155,6 +155,16 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
                     from role_routes import build_role_menu_matrix
                     doc["app_menu_matrix"] = role.get("app_menu_matrix", build_role_menu_matrix(doc["role_id"]))
 
+        # If user has custom app_menu_matrix, derive permissions and allowed_menus
+        if doc.get("app_menu_matrix"):
+            from role_routes import derive_permissions_and_menus_from_matrix
+            d_menus, d_perms = derive_permissions_and_menus_from_matrix(doc["app_menu_matrix"])
+            existing_perms = doc.get("permissions") or {}
+            for mod, acts in d_perms.items():
+                existing_perms[mod] = list(set(existing_perms.get(mod, []) + acts))
+            doc["permissions"] = existing_perms
+            doc["allowed_menus"] = list(set((doc.get("allowed_menus") or []) + d_menus))
+
         # Super Admin override
         if doc.get("role") == "super_admin" or doc.get("role_id") == "super_admin":
             from role_routes import ALL_MENU_IDS, get_all_perms, build_role_menu_matrix
@@ -522,34 +532,24 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
             raise HTTPException(status_code=403, detail="Only Super Admin can modify Super Admin permissions.")
 
         matrix = payload.get("app_menu_matrix") or {}
+        from role_routes import derive_permissions_and_menus_from_matrix
+        derived_menus, derived_perms = derive_permissions_and_menus_from_matrix(matrix)
         allowed = payload.get("allowed_menus")
         if allowed is None:
-            derived = []
-            for item_k, item_v in (matrix.get("dashboard") or {}).items():
-                if isinstance(item_v, dict) and item_v.get("view"):
-                    derived.append(item_k)
-            for item_k, item_v in (matrix.get("business") or {}).items():
-                if isinstance(item_v, dict) and item_v.get("view"):
-                    derived.append(item_k)
-            for item_k, item_v in (matrix.get("task") or {}).items():
-                if isinstance(item_v, dict) and item_v.get("view"):
-                    derived.append(item_k)
-            for sec_k, sec_v in (matrix.get("more") or {}).items():
-                if isinstance(sec_v, dict):
-                    for sub_k, sub_v in sec_v.items():
-                        if isinstance(sub_v, dict) and sub_v.get("view"):
-                            derived.append(sub_k)
-            allowed = list(set(derived))
+            allowed = derived_menus
+        else:
+            allowed = list(dict.fromkeys(allowed + derived_menus))
 
         await db.users.update_one(
             {"user_id": uid},
             {"$set": {
                 "app_menu_matrix": matrix,
                 "allowed_menus": allowed,
+                "permissions": derived_perms,
                 "updated_at": now_utc(),
             }}
         )
-        await log_audit(db, current, "users", "custom_permissions", uid, None, {"app_menu_matrix": matrix})
+        await log_audit(db, current, "users", "custom_permissions", uid, None, {"app_menu_matrix": matrix, "permissions": derived_perms})
         return {"ok": True, "message": f"Custom permissions saved for {existing.get('name')}"}
 
     @router.post("/{uid}/reset-permissions")
@@ -561,7 +561,7 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
         await db.users.update_one(
             {"user_id": uid},
             {
-                "$unset": {"app_menu_matrix": "", "allowed_menus": ""},
+                "$unset": {"app_menu_matrix": "", "allowed_menus": "", "permissions": ""},
                 "$set": {"updated_at": now_utc()}
             }
         )

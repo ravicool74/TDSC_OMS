@@ -178,6 +178,108 @@ export const STANDARD_ACTIONS = [
 export type ActionKey = typeof STANDARD_ACTIONS[number]['key'];
 
 /**
+ * Helper to look up an item in app_menu_matrix by section, subkey, or target module name.
+ */
+export function findMatrixItem(matrix: any, target: string, subKey?: string, nestedKey?: string): any {
+  if (!matrix || typeof matrix !== 'object') return null;
+
+  // 1. Direct path lookup if 3/4 arguments passed: matrix[target][subKey][nestedKey]
+  if (nestedKey && subKey && matrix[target]?.[subKey]?.[nestedKey]) {
+    return matrix[target][subKey][nestedKey];
+  }
+  if (subKey && matrix[target]?.[subKey]) {
+    return matrix[target][subKey];
+  }
+
+  // 2. Direct lookup if matrix[target] is an item
+  if (matrix[target] && (typeof matrix[target].view === 'boolean' || typeof matrix[target].write === 'boolean')) {
+    return matrix[target];
+  }
+
+  const cleanTarget = (target || '').toLowerCase().trim();
+
+  // 3. Search dashboard
+  if (matrix.dashboard?.[cleanTarget]) {
+    return matrix.dashboard[cleanTarget];
+  }
+
+  // 4. Search business
+  if (cleanTarget === 'customers' && matrix.business?.customers) {
+    return matrix.business.customers;
+  }
+  if ((cleanTarget === 'accounts' || cleanTarget === 'sales' || cleanTarget === 'invoices' || cleanTarget === 'accounting') && matrix.business?.accounts) {
+    return matrix.business.accounts;
+  }
+  if (matrix.business?.[cleanTarget]) {
+    return matrix.business[cleanTarget];
+  }
+
+  // 5. Search task
+  if ((cleanTarget === 'tasks' || cleanTarget === 'task_followup') && matrix.task?.task_followup) {
+    return matrix.task.task_followup;
+  }
+  if (cleanTarget === 'payment_followup' && matrix.task?.payment_followup) {
+    return matrix.task.payment_followup;
+  }
+  if (matrix.task?.[cleanTarget]) {
+    return matrix.task[cleanTarget];
+  }
+
+  // 6. Search more.operations_services
+  const ops = matrix.more?.operations_services;
+  if (ops) {
+    if (cleanTarget === 'customers' && ops.customers) return ops.customers;
+    if ((cleanTarget === 'accounting' || cleanTarget === 'sales' || cleanTarget === 'accounts' || cleanTarget === 'invoices') && ops.accounting) return ops.accounting;
+    if ((cleanTarget === 'reports' || cleanTarget === 'accounting_reports') && ops.reports) return ops.reports;
+    if (cleanTarget === 'services' && ops.services) return ops.services;
+    if (cleanTarget === 'documents' && ops.documents) return ops.documents;
+    if ((cleanTarget === 'tenders' || cleanTarget === 'tender_calling') && ops.tenders) return ops.tenders;
+    if (cleanTarget === 'tender_calling' && ops.tender_calling) return ops.tender_calling;
+    if (cleanTarget === 'expiry_alerts' && ops.expiry_alerts) return ops.expiry_alerts;
+    if (cleanTarget === 'gps_tracking' && ops.gps_tracking) return ops.gps_tracking;
+    if (cleanTarget === 'simple_accounts' && ops.simple_accounts) return ops.simple_accounts;
+    if (ops[cleanTarget]) return ops[cleanTarget];
+  }
+
+  // 7. Search more.human_resources
+  const hr = matrix.more?.human_resources;
+  if (hr) {
+    if (cleanTarget === 'employees' && hr.employees) return hr.employees;
+    if ((cleanTarget === 'attendance' || cleanTarget === 'leaves' || cleanTarget === 'attendance_leaves') && hr.attendance_leaves) return hr.attendance_leaves;
+    if (cleanTarget === 'payroll' && hr.payroll) return hr.payroll;
+    if (cleanTarget === 'attendance_settings' && hr.attendance_settings) return hr.attendance_settings;
+    if (hr[cleanTarget]) return hr[cleanTarget];
+  }
+
+  // 8. Search more.enterprise_administration
+  const admin = matrix.more?.enterprise_administration;
+  if (admin) {
+    if (cleanTarget === 'branches' && admin.branches) return admin.branches;
+    if (cleanTarget === 'posts' && admin.posts) return admin.posts;
+    if ((cleanTarget === 'users' || cleanTarget === 'user_management') && admin.users) return admin.users;
+    if ((cleanTarget === 'roles' || cleanTarget === 'roles_permissions') && admin.roles) return admin.roles;
+    if (cleanTarget === 'audit_logs' && admin.audit_logs) return admin.audit_logs;
+    if (cleanTarget === 'settings' && admin.settings) return admin.settings;
+    if (admin[cleanTarget]) return admin[cleanTarget];
+  }
+
+  // Fallback: deep search values
+  for (const topKey of ['dashboard', 'business', 'task', 'more']) {
+    const sec = matrix[topKey];
+    if (!sec || typeof sec !== 'object') continue;
+    if (sec[cleanTarget]) return sec[cleanTarget];
+    for (const sub of Object.keys(sec)) {
+      const nested = sec[sub];
+      if (nested && typeof nested === 'object' && nested[cleanTarget]) {
+        return nested[cleanTarget];
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Checks whether user has VIEW power for a menu item.
  */
 export function canView(user: AppUser | null | undefined, menuType: string, subKey?: string, nestedKey?: string): boolean {
@@ -185,28 +287,42 @@ export function canView(user: AppUser | null | undefined, menuType: string, subK
   if (user.role === 'super_admin' || user.role_id === 'super_admin') return true;
 
   const matrix = user.app_menu_matrix;
-  if (matrix && matrix[menuType]) {
-    if (nestedKey && matrix[menuType][subKey || '']) {
-      const item = matrix[menuType][subKey || ''][nestedKey];
-      if (item && typeof item.view === 'boolean') return item.view;
-    }
-    if (subKey) {
-      const item = matrix[menuType][subKey];
-      if (item && typeof item.view === 'boolean') return item.view;
-      if (item && typeof item === 'object') {
-        return Object.values(item).some((v: any) => v?.view === true);
-      }
-    }
-    return Object.values(matrix[menuType]).some((val: any) =>
-      val?.view === true || (typeof val === 'object' && Object.values(val).some((v: any) => v?.view === true))
-    );
+  const target = nestedKey || subKey || menuType;
+
+  // If checking entire top-level section like 'more', 'dashboard', 'business', 'task' without subKey
+  if (!subKey && matrix && matrix[menuType]) {
+    const sec = matrix[menuType];
+    return Object.values(sec).some((val: any) => {
+      if (!val || typeof val !== 'object') return false;
+      if (val.view === true) return true;
+      return Object.values(val).some((v: any) => v?.view === true);
+    });
   }
 
-  // Fallback to allowed_menus if app_menu_matrix not yet configured
-  if (subKey) {
-    return isMenuAllowed(user, subKey);
+  // Check findMatrixItem
+  if (matrix) {
+    const item = findMatrixItem(matrix, menuType, subKey, nestedKey);
+    if (item) {
+      if (typeof item.view === 'boolean') return item.view;
+      if (item.actions && Array.isArray(item.actions) && item.actions.includes('view')) return true;
+    }
   }
-  return true;
+
+  // Check user.permissions
+  if (user.permissions && typeof user.permissions === 'object') {
+    const modPerms = user.permissions[target] || user.permissions[menuType];
+    if (Array.isArray(modPerms) && (modPerms.includes('view') || modPerms.includes('write'))) {
+      return true;
+    }
+  }
+
+  // Fallback to allowed_menus
+  if (isMenuAllowed(user, target) || isMenuAllowed(user, menuType)) {
+    return true;
+  }
+
+  if (user.role === 'admin' || user.role_id === 'admin') return true;
+  return false;
 }
 
 /**
@@ -217,17 +333,26 @@ export function canWrite(user: AppUser | null | undefined, menuType: string, sub
   if (user.role === 'super_admin' || user.role_id === 'super_admin') return true;
   if (user.role === 'admin' && (!user.app_menu_matrix || Object.keys(user.app_menu_matrix).length === 0)) return true;
 
+  const target = nestedKey || subKey || menuType;
   const matrix = user.app_menu_matrix;
-  if (matrix && matrix[menuType]) {
-    let item = matrix[menuType][subKey || ''];
-    if (nestedKey && item) {
-      item = item[nestedKey];
-    }
+
+  if (matrix) {
+    const item = findMatrixItem(matrix, menuType, subKey, nestedKey);
     if (item) {
       if (typeof item.write === 'boolean') return item.write;
       if (item.add || item.edit || item.delete) return true;
       if (Array.isArray(item.actions)) {
-        return item.actions.some((a: string) => ['add', 'edit', 'delete'].includes(a));
+        return item.actions.some((a: string) => ['add', 'edit', 'delete', 'write'].includes(a));
+      }
+    }
+  }
+
+  // Check user.permissions
+  if (user.permissions && typeof user.permissions === 'object') {
+    const modPerms = user.permissions[target] || user.permissions[menuType];
+    if (Array.isArray(modPerms)) {
+      if (modPerms.some((a: string) => ['write', 'edit', 'add', 'delete'].includes(a))) {
+        return true;
       }
     }
   }
@@ -242,33 +367,67 @@ export function canWrite(user: AppUser | null | undefined, menuType: string, sub
  */
 export function canAction(
   user: AppUser | null | undefined,
-  menuType: string,
-  subKey: string,
-  action: ActionKey,
-  nestedKey?: string
+  p1: string,
+  p2?: string,
+  p3?: string,
+  p4?: string
 ): boolean {
   if (!user) return false;
   if (user.role === 'super_admin' || user.role_id === 'super_admin') return true;
   if (user.role === 'admin' && (!user.app_menu_matrix || Object.keys(user.app_menu_matrix).length === 0)) return true;
 
-  const matrix = user.app_menu_matrix;
-  if (matrix && matrix[menuType]) {
-    let item = matrix[menuType][subKey];
-    if (nestedKey && item) {
-      item = item[nestedKey];
-    }
-    if (item) {
-      if (typeof item[action] === 'boolean') return item[action];
-      if (Array.isArray(item.actions)) return item.actions.includes(action);
-      // Legacy fallback
-      if (action === 'view') return !!item.view;
-      if (action === 'search') return !!item.view;
-      if (['add', 'edit', 'delete', 'share', 'export'].includes(action)) return !!item.write;
+  // Resolve target, subKey, and action flexibly
+  let target = p1;
+  let action: string = 'view';
+  let subKey: string | undefined = undefined;
+  let nestedKey: string | undefined = undefined;
+
+  const knownActions = ['view', 'add', 'search', 'edit', 'delete', 'share', 'export', 'write', 'download', 'print', 'approve', 'reject'];
+
+  if (p4 && knownActions.includes(p4)) {
+    target = p3 || p1;
+    subKey = p2;
+    nestedKey = p3;
+    action = p4;
+  } else if (p3 && knownActions.includes(p3)) {
+    target = p2 || p1;
+    subKey = p2;
+    action = p3;
+  } else if (p2 && knownActions.includes(p2)) {
+    target = p1;
+    action = p2;
+  } else if (p2) {
+    target = p2;
+    action = p3 || 'view';
+  }
+
+  // 1. Check user.permissions
+  if (user.permissions && typeof user.permissions === 'object') {
+    const modPerms = user.permissions[target] || user.permissions[p1];
+    if (Array.isArray(modPerms)) {
+      if (modPerms.includes(action)) return true;
+      if (['add', 'edit', 'delete'].includes(action) && modPerms.includes('write')) return true;
+      if (['share', 'export', 'download', 'print'].includes(action) && (modPerms.includes('export') || modPerms.includes('share') || modPerms.includes('write'))) return true;
     }
   }
 
-  // Fallbacks
+  // 2. Check matrix
+  const matrix = user.app_menu_matrix;
+  if (matrix) {
+    const item = findMatrixItem(matrix, p1, subKey || p2, nestedKey);
+    if (item) {
+      if (typeof item[action] === 'boolean') return item[action];
+      if (Array.isArray(item.actions) && item.actions.includes(action)) return true;
+      if (action === 'view' || action === 'search') return !!item.view;
+      if (['add', 'edit', 'delete', 'share', 'export'].includes(action) && !!item.write) return true;
+    }
+  }
+
+  // 3. Fallbacks
   if (user.role === 'admin') return true;
+  if (user.role === 'manager' || user.role === 'branch_manager') {
+    if (['view', 'search', 'edit', 'add'].includes(action)) return true;
+  }
   if (action === 'view' || action === 'search') return true;
   return false;
 }
@@ -281,7 +440,12 @@ export function isMenuAllowed(user: AppUser | null | undefined, menuId: string):
   if (user.role === 'super_admin' || user.role_id === 'super_admin') return true;
 
   if (Array.isArray(user.allowed_menus) && user.allowed_menus.length > 0) {
-    return user.allowed_menus.includes(menuId);
+    if (user.allowed_menus.includes(menuId)) return true;
+  }
+
+  if (user.app_menu_matrix) {
+    const item = findMatrixItem(user.app_menu_matrix, menuId);
+    if (item && item.view === true) return true;
   }
 
   if (user.role === 'admin' || user.role_id === 'admin') return true;
@@ -301,8 +465,8 @@ export function hasPermission(user: AppUser | null | undefined, module: string, 
   if (user.role === 'admin' && (!user.permissions || Object.keys(user.permissions).length === 0)) return true;
 
   const modulePerms = user.permissions?.[module];
-  if (!modulePerms) return false;
-  return modulePerms.includes(action);
+  if (Array.isArray(modulePerms) && modulePerms.includes(action)) return true;
+  return canAction(user, module, action as ActionKey);
 }
 
 /**

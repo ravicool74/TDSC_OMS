@@ -207,6 +207,194 @@ def build_role_menu_matrix(role_id: str) -> dict:
         },
     }
 
+def derive_permissions_and_menus_from_matrix(matrix: dict) -> tuple:
+    """
+    Derive allowed_menus list and permissions dict from an app_menu_matrix structure.
+    Returns (allowed_menus: list[str], permissions: dict[str, list[str]]).
+    """
+    if not isinstance(matrix, dict):
+        return [], {}
+
+    allowed_menus: list = []
+    permissions: dict = {}
+
+    def add_perm(mod: str, acts: list):
+        if mod not in permissions:
+            permissions[mod] = []
+        for a in acts:
+            if a not in permissions[mod]:
+                permissions[mod].append(a)
+
+    def extract_actions(item: dict) -> list:
+        if not isinstance(item, dict):
+            return []
+        acts = set()
+        if item.get("view"):
+            acts.update(["view", "search"])
+        if item.get("search"):
+            acts.add("search")
+        if item.get("add"):
+            acts.update(["add", "write"])
+        if item.get("edit"):
+            acts.update(["edit", "write"])
+        if item.get("delete"):
+            acts.update(["delete", "write"])
+        if item.get("share"):
+            acts.add("share")
+        if item.get("export"):
+            acts.update(["export", "download", "print"])
+        if item.get("write"):
+            acts.update(["add", "edit", "delete", "write", "print", "download", "share", "export"])
+
+        raw_actions = item.get("actions")
+        if isinstance(raw_actions, list):
+            for a in raw_actions:
+                acts.add(str(a))
+                if a in ("add", "edit", "delete"):
+                    acts.add("write")
+                if a in ("export",):
+                    acts.update(["download", "print"])
+        return list(acts)
+
+    # 1. Dashboard
+    dash = matrix.get("dashboard") or {}
+    for k, item in dash.items():
+        acts = extract_actions(item)
+        if acts:
+            allowed_menus.append(k)
+            allowed_menus.append("dashboard")
+            if k == "financial_overview":
+                add_perm("dashboard", acts)
+                add_perm("reports", [a for a in acts if a in ("view", "export", "print", "download")])
+            elif k == "operations_metrics":
+                add_perm("dashboard", acts)
+            elif k == "urgent_tenders":
+                add_perm("tenders", acts)
+            elif k == "quick_actions":
+                add_perm("dashboard", acts)
+
+    # 2. Business
+    biz = matrix.get("business") or {}
+    for k, item in biz.items():
+        acts = extract_actions(item)
+        if acts:
+            allowed_menus.append(k)
+            if k == "customers":
+                allowed_menus.append("customers")
+                add_perm("customers", acts)
+            elif k == "accounts":
+                allowed_menus.extend([
+                    "sales_invoices", "payments_in", "sale_returns", "estimates",
+                    "proforma", "challans", "purchases", "cash_bank"
+                ])
+                add_perm("sales", acts)
+                add_perm("purchases", acts)
+                add_perm("expenses", acts)
+                add_perm("banking", acts)
+
+    # 3. Task
+    tsk = matrix.get("task") or {}
+    for k, item in tsk.items():
+        acts = extract_actions(item)
+        if acts:
+            allowed_menus.append(k)
+            allowed_menus.append("tasks")
+            add_perm("tasks", acts)
+            if k == "payment_followup":
+                add_perm("banking", [a for a in acts if a in ("view", "edit", "write")])
+
+    # 4. More
+    more = matrix.get("more") or {}
+    ops = more.get("operations_services") or {}
+    for k, item in ops.items():
+        acts = extract_actions(item)
+        if acts:
+            allowed_menus.append(k)
+            if k == "customers":
+                allowed_menus.append("customers")
+                add_perm("customers", acts)
+            elif k == "accounting":
+                allowed_menus.extend([
+                    "sales_invoices", "payments_in", "sale_returns", "estimates",
+                    "proforma", "challans", "purchases", "cash_bank", "accounting_reports"
+                ])
+                add_perm("sales", acts)
+                add_perm("purchases", acts)
+                add_perm("expenses", acts)
+                add_perm("banking", acts)
+                add_perm("reports", acts)
+            elif k == "reports":
+                allowed_menus.append("accounting_reports")
+                add_perm("reports", acts)
+            elif k == "services":
+                allowed_menus.append("services")
+                add_perm("services", acts)
+            elif k == "expiry_alerts":
+                allowed_menus.append("expiry_alerts")
+                add_perm("customers", acts)
+            elif k == "gps_tracking":
+                allowed_menus.append("gps_tracking")
+                add_perm("gps_tracking", acts)
+            elif k == "documents":
+                allowed_menus.append("documents")
+                add_perm("documents", acts)
+            elif k == "tenders":
+                allowed_menus.append("tenders")
+                add_perm("tenders", acts)
+            elif k == "tender_calling":
+                allowed_menus.append("tender_calling")
+                add_perm("tenders", acts)
+            elif k == "simple_accounts":
+                allowed_menus.append("simple_accounts")
+                add_perm("sales", acts)
+                add_perm("expenses", acts)
+
+    hr = more.get("human_resources") or {}
+    for k, item in hr.items():
+        acts = extract_actions(item)
+        if acts:
+            allowed_menus.append(k)
+            if k == "employees":
+                allowed_menus.append("employees")
+                add_perm("employees", acts)
+            elif k == "attendance_leaves":
+                allowed_menus.append("attendance_leaves")
+                add_perm("attendance", acts)
+                add_perm("leaves", acts)
+            elif k == "payroll":
+                allowed_menus.append("payroll")
+                add_perm("payroll", acts)
+            elif k == "attendance_settings":
+                allowed_menus.append("attendance_settings")
+                add_perm("attendance", acts)
+
+    admin = more.get("enterprise_administration") or {}
+    for k, item in admin.items():
+        acts = extract_actions(item)
+        if acts:
+            allowed_menus.append(k)
+            if k == "branches":
+                allowed_menus.append("branches")
+                add_perm("branches", acts)
+            elif k == "posts":
+                allowed_menus.append("posts")
+                add_perm("posts", acts)
+            elif k == "users":
+                allowed_menus.extend(["user_management", "users"])
+                add_perm("users", acts)
+            elif k == "roles":
+                allowed_menus.extend(["roles_permissions", "roles"])
+                add_perm("roles", acts)
+            elif k == "audit_logs":
+                allowed_menus.append("audit_logs")
+                add_perm("audit_logs", acts)
+            elif k == "settings":
+                allowed_menus.append("settings")
+                add_perm("settings", acts)
+
+    unique_allowed = list(dict.fromkeys(allowed_menus))
+    return unique_allowed, permissions
+
 SYSTEM_MENUS = [
     # Accounting & Billing
     {"id": "sales_invoices", "title": "Sale Invoices", "category": "Accounting & Billing", "route": "/accounting/invoices", "icon": "receipt", "description": "Create and manage sales tax invoices"},
@@ -572,15 +760,20 @@ def make_role_router(db, get_current_user, require_admin, log_audit):
         if existing:
             raise HTTPException(status_code=400, detail="Role with this name already exists")
         now = now_utc()
+        matrix = payload.app_menu_matrix or build_role_menu_matrix("employee")
+        d_menus, d_perms = derive_permissions_and_menus_from_matrix(matrix)
+        permissions = payload.permissions if payload.permissions else d_perms
+        allowed_menus = payload.allowed_menus if payload.allowed_menus else d_menus
+
         doc = {
             "id": f"rol_{role_id}",
             "role_id": role_id,
             "name": payload.name,
             "description": payload.description,
             "is_system": False,
-            "permissions": payload.permissions,
-            "allowed_menus": payload.allowed_menus if payload.allowed_menus else ["tasks", "attendance_leaves", "documents"],
-            "app_menu_matrix": payload.app_menu_matrix or build_role_menu_matrix("employee"),
+            "permissions": permissions,
+            "allowed_menus": allowed_menus,
+            "app_menu_matrix": matrix,
             "created_at": now,
             "updated_at": now,
         }
@@ -601,6 +794,13 @@ def make_role_router(db, get_current_user, require_admin, log_audit):
 
         updates = {k: v for k, v in payload.dict().items() if v is not None}
         updates["updated_at"] = now_utc()
+
+        if "app_menu_matrix" in updates and updates["app_menu_matrix"]:
+            d_menus, d_perms = derive_permissions_and_menus_from_matrix(updates["app_menu_matrix"])
+            if "allowed_menus" not in updates or not updates["allowed_menus"]:
+                updates["allowed_menus"] = d_menus
+            if "permissions" not in updates or not updates["permissions"]:
+                updates["permissions"] = d_perms
 
         await db.roles.update_one({"id": existing["id"]}, {"$set": updates})
         updated = await db.roles.find_one({"id": existing["id"]}, {"_id": 0})

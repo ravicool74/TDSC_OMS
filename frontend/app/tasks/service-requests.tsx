@@ -7,6 +7,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/AuthContext';
+import { canWrite, canAction } from '@/src/rbac';
 import { Card, StatusBadge, ScreenLoader, PrimaryButton, SecondaryButton, EmptyState } from '@/src/ui';
 import { notify } from '@/src/dialog';
 
@@ -16,7 +17,7 @@ export default function ServiceRequestsQueueScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const isAdminOrManager = user?.role === 'super_admin' || user?.role === 'admin' || user?.role === 'manager';
+  const isAdminOrManager = user?.role === 'super_admin' || user?.role === 'admin' || user?.role === 'manager' || canWrite(user, 'tasks') || canAction(user, 'tasks', 'edit');
 
   const [queue, setQueue] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);

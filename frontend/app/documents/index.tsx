@@ -11,6 +11,7 @@ import { api, tokenStore } from '@/src/api';
 import { Card, EmptyState, ScreenLoader, PrimaryButton, SecondaryButton, Avatar } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
+import { canWrite, canAction } from '@/src/rbac';
 
 type SubMenu = 'general' | 'forms_and_rules';
 
@@ -25,8 +26,9 @@ const formatBytes = (bytes?: number) => {
 export default function DocumentLibraryScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
-  const canEdit = user?.role === 'admin' || user?.role === 'manager';
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const canEdit = user?.role === 'admin' || user?.role === 'manager' || canWrite(user, 'documents') || canAction(user, 'documents', 'edit') || canAction(user, 'documents', 'add');
+  const canDelete = isAdmin || canAction(user, 'documents', 'delete');
 
   const [activeMenu, setActiveMenu] = useState<SubMenu>('forms_and_rules');
   const [folders, setFolders] = useState<any[] | null>(null);

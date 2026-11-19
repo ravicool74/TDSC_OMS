@@ -8,6 +8,7 @@ import { Avatar, Card, EmptyState, ScreenLoader, PrimaryButton } from '@/src/ui'
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
 import { confirm, notify } from '@/src/dialog';
+import { canWrite, canAction } from '@/src/rbac';
 
 export default function EmployeesScreen() {
   const router = useRouter();
@@ -26,7 +27,7 @@ export default function EmployeesScreen() {
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const canManage = user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager';
+  const canManage = user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || canWrite(user, 'employees') || canAction(user, 'employees', 'edit');
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
 
   // Bulk selection state

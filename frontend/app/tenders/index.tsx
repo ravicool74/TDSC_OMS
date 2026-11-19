@@ -10,6 +10,7 @@ import { api } from '@/src/api';
 import { Card, EmptyState, ScreenLoader, StatusBadge, PrimaryButton, SecondaryButton } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
+import { canWrite, canAction } from '@/src/rbac';
 import TenderCallingView from './TenderCallingView';
 
 type SubMenu = 'tenders' | 'contractors' | 'manage' | 'calling';
@@ -39,7 +40,7 @@ export default function TenderManagementScreen() {
   const router = useRouter();
   const searchParams = useLocalSearchParams<{ tab?: string }>();
   const { user } = useAuth();
-  const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
+  const isAdminOrManager = user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || canWrite(user, 'tenders') || canAction(user, 'tenders', 'edit');
 
   const [activeMenu, setActiveMenu] = useState<SubMenu>(searchParams.tab === 'calling' ? 'calling' : 'tenders');
   const [refreshing, setRefreshing] = useState(false);
