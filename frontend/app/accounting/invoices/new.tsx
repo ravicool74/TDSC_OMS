@@ -294,10 +294,26 @@ export default function NewInvoice() {
     }
   }, [totals.total, paymentType]);
 
+  const getBankShortLabel = (b: any) => {
+    if (!b) return 'Bank Account';
+    const acc = String(b.account_no || '');
+    const bankName = (b.bank_name || '').toUpperCase();
+    const name = (b.name || '').toUpperCase();
+    const ifsc = (b.ifsc || '').toUpperCase();
+
+    if (acc.includes('42137607814') || ifsc.startsWith('SBIN') || bankName.includes('STATE') || name.includes('STATE') || name.includes('TRIVENI')) {
+      return `SBI (${b.account_no || '42137607814'})`;
+    }
+    if (acc.includes('915020011528516') || ifsc.startsWith('UTIB') || bankName.includes('AXIS') || name.includes('AXIS') || name.includes('ANJU')) {
+      return `Axis Bank (${b.account_no || '915020011528516'})`;
+    }
+    return `${b.bank_name || b.name} (${b.account_no})`;
+  };
+
   const getBankDisplayName = (bankId?: string) => {
     const b = banks.find(x => x.id === bankId) || banks[0];
     if (!b) return 'Select Bank Account';
-    return `${b.name} (${b.bank_name || 'Bank'} • ${b.account_no})`;
+    return getBankShortLabel(b);
   };
 
   const handleSetBankForSplit = (splitId: string, bank: any) => {
@@ -664,29 +680,52 @@ export default function NewInvoice() {
                     {/* Bank Account Selection for Bank Transfer / Cheque / UPI */}
                     {['bank_transfer', 'cheque', 'upi'].includes(sp.mode) && (
                       <View style={styles.splitBankRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-                          <Ionicons name="business" size={16} color={colors.brandPrimary} />
-                          <Text style={styles.splitBankLabel}>Bank A/c:</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                          <Ionicons name="business" size={15} color="#1E40AF" />
+                          <Text style={styles.splitBankLabel}>Select Bank Account / Ledger:</Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                          {banks.map(b => {
+                            const isSelected = (sp.bank_id || banks[0]?.id) === b.id;
+                            const lbl = getBankShortLabel(b);
+                            return (
+                              <Pressable
+                                key={b.id}
+                                onPress={() => handleSetBankForSplit(sp.id, b)}
+                                style={[
+                                  styles.bankChipBtn,
+                                  isSelected && styles.bankChipBtnActive
+                                ]}
+                                testID={`bank-chip-${b.id}`}
+                              >
+                                <Ionicons
+                                  name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                                  size={15}
+                                  color={isSelected ? "#FFF" : "#2563EB"}
+                                />
+                                <Text style={[
+                                  styles.bankChipTxt,
+                                  isSelected && styles.bankChipTxtActive
+                                ]}>
+                                  {lbl}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+
                           <Pressable
-                            onPress={() => setActivePickingBankSplitId(sp.id)}
-                            style={styles.splitBankSelectBtn}
+                            onPress={() => {
+                              setTargetSplitIdForNewBank(sp.id);
+                              setShowAddBankModal(true);
+                            }}
+                            style={styles.splitAddBankBtn}
+                            testID="btn-add-bank-account"
                           >
-                            <Text style={styles.splitBankSelectTxt} numberOfLines={1}>
-                              {getBankDisplayName(sp.bank_id)}
-                            </Text>
-                            <Ionicons name="chevron-down" size={14} color={colors.muted} />
+                            <Ionicons name="add-circle" size={14} color={colors.brandPrimary} />
+                            <Text style={styles.splitAddBankTxt}>+ Add Account</Text>
                           </Pressable>
                         </View>
-                        <Pressable
-                          onPress={() => {
-                            setTargetSplitIdForNewBank(sp.id);
-                            setShowAddBankModal(true);
-                          }}
-                          style={styles.splitAddBankBtn}
-                        >
-                          <Ionicons name="add-circle" size={14} color={colors.brandPrimary} />
-                          <Text style={styles.splitAddBankTxt}>+ Add Account</Text>
-                        </Pressable>
                       </View>
                     )}
 
@@ -717,12 +756,10 @@ export default function NewInvoice() {
             </View>
 
             {/* Add More Split Button */}
-            {paymentType !== 'cash' ? (
-              <Pressable onPress={handleAddPaymentSplit} style={styles.addSplitBtn}>
-                <Ionicons name="add-circle-outline" size={18} color={colors.brandPrimary} />
-                <Text style={styles.addSplitTxt}>+ Add Payment Mode (Online / Cheque / Cash / UPI)</Text>
-              </Pressable>
-            ) : null}
+            <Pressable onPress={handleAddPaymentSplit} style={styles.addSplitBtn}>
+              <Ionicons name="add-circle-outline" size={18} color={colors.brandPrimary} />
+              <Text style={styles.addSplitTxt}>+ Add Payment Mode (Online / Cheque / Cash / UPI)</Text>
+            </Pressable>
           </View>
 
           {/* Attachments */}
@@ -875,9 +912,9 @@ export default function NewInvoice() {
                       <Ionicons name="business" size={18} color={colors.brandPrimary} />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '800', color: '#1E293B' }}>{b.name}</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '800', color: '#1E293B' }}>{getBankShortLabel(b)}</Text>
                       <Text style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>
-                        {b.bank_name} • A/c {b.account_no} • IFSC: {b.ifsc || '—'}
+                        {b.name} • IFSC: {b.ifsc || '—'}
                       </Text>
                     </View>
                   </View>
@@ -1080,21 +1117,41 @@ const styles = StyleSheet.create({
   addSplitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderStyle: 'dashed', borderRadius: radius.md, paddingVertical: 10 },
   addSplitTxt: { color: '#16A34A', fontWeight: '800', fontSize: 13 },
   splitBankRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     backgroundColor: '#EFF6FF',
     borderWidth: 1,
     borderColor: '#BFDBFE',
     borderRadius: radius.sm,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
   },
   splitBankLabel: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '800',
     color: '#1E40AF',
+  },
+  bankChipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#93C5FD',
+  },
+  bankChipBtnActive: {
+    backgroundColor: '#1E40AF',
+    borderColor: '#1E40AF',
+  },
+  bankChipTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#1E40AF',
+  },
+  bankChipTxtActive: {
+    color: '#FFFFFF',
   },
   splitBankSelectBtn: {
     flex: 1,

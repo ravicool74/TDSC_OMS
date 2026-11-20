@@ -95,7 +95,7 @@ interface ReportCategory {
 
 export default function AccountingReportsHub() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ report?: string; tab?: string }>();
+  const params = useLocalSearchParams<{ report?: string; tab?: string; bank?: string }>();
 
   const [categories, setCategories] = useState<ReportCategory[]>([]);
   const [summary, setSummary] = useState<any | null>(null);
@@ -149,9 +149,10 @@ export default function AccountingReportsHub() {
   // Auto-open report if passed in params
   useEffect(() => {
     if (params?.report) {
-      openReport(params.report);
+      if (params?.bank) setSelectedBankId(params.bank);
+      openReport(params.report, undefined, undefined, undefined, params.bank);
     }
-  }, [params?.report]);
+  }, [params?.report, params?.bank]);
 
   // Inject native @media print style for web so Ctrl+P prints cleanly with full-width table
   useEffect(() => {

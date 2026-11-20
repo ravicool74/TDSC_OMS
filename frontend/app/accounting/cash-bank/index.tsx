@@ -976,6 +976,13 @@ export default function CashBankScreen() {
                     </View>
                     <View style={styles.itemActionRow}>
                       <Pressable
+                        onPress={() => router.push({ pathname: '/accounting/reports', params: { report: 'bank_ledger', bank: b.id } } as any)}
+                        style={[styles.itemEditBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+                      >
+                        <Ionicons name="book-outline" size={14} color={BLUE} />
+                        <Text style={[styles.itemActionBtnText, { color: BLUE, fontWeight: '800' }]}>View Ledger</Text>
+                      </Pressable>
+                      <Pressable
                         testID={`edit-bank-${b.id}`}
                         onPress={() => openEditBank(b)}
                         style={styles.itemEditBtn}
@@ -1015,15 +1022,25 @@ export default function CashBankScreen() {
                   </Text>
                 </View>
 
-                {/* Bank Transfer Button on Cash in Hand */}
-                <Pressable
-                  testID="btn-cash-transfer"
-                  onPress={() => openTransferModal('bank_to_cash')}
-                  style={[styles.depWithBtn, { backgroundColor: GREEN }]}
-                >
-                  <Ionicons name="swap-horizontal" size={16} color="#FFF" />
-                  <Text style={styles.btnTextWhite}>Bank Transfer</Text>
-                </Pressable>
+                {/* Action Buttons on Cash in Hand */}
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  <Pressable
+                    testID="btn-cash-ledger-rep"
+                    onPress={() => router.push({ pathname: '/accounting/reports', params: { report: 'cash_ledger' } } as any)}
+                    style={[styles.depWithBtn, { backgroundColor: '#00104A' }]}
+                  >
+                    <Ionicons name="book-outline" size={15} color="#FFF" />
+                    <Text style={styles.btnTextWhite}>Cash Ledger</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="btn-cash-transfer"
+                    onPress={() => openTransferModal('bank_to_cash')}
+                    style={[styles.depWithBtn, { backgroundColor: GREEN }]}
+                  >
+                    <Ionicons name="swap-horizontal" size={15} color="#FFF" />
+                    <Text style={styles.btnTextWhite}>Bank Transfer</Text>
+                  </Pressable>
+                </View>
               </View>
 
               {/* Inflow vs Outflow Mini-Stats */}

@@ -382,9 +382,9 @@ const BankPanel: React.FC = () => {
                   <Text style={[styles.bankBal, { color: pos ? '#059669' : '#DC2626' }]}>{pos ? '' : '-'}{inr(Math.abs(bal))}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                  <Pressable onPress={() => router.push({ pathname: '/accounting/day-book', params: { bank: item.id } } as any)} style={styles.bankBtn}>
+                  <Pressable onPress={() => router.push({ pathname: '/accounting/reports', params: { report: 'bank_ledger', bank: item.id } } as any)} style={styles.bankBtn}>
                     <Ionicons name="book" size={14} color={colors.brandPrimary} />
-                    <Text style={styles.bankBtnTxt}>Bank Book</Text>
+                    <Text style={styles.bankBtnTxt}>Bank Ledger</Text>
                   </Pressable>
                   <Pressable onPress={() => router.push('/accounting/banks' as any)} style={styles.bankBtn}>
                     <Ionicons name="create-outline" size={14} color={colors.brandPrimary} />
