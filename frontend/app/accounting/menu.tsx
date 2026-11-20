@@ -381,10 +381,14 @@ const BankPanel: React.FC = () => {
                   <Text style={styles.bankLbl}>Current Balance</Text>
                   <Text style={[styles.bankBal, { color: pos ? '#059669' : '#DC2626' }]}>{pos ? '' : '-'}{inr(Math.abs(bal))}</Text>
                 </View>
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                  <Pressable onPress={() => router.push({ pathname: '/accounting/reports', params: { report: 'bank_ledger', bank: item.id } } as any)} style={styles.bankBtn}>
+                <View style={{ flexDirection: 'row', gap: 6, marginTop: 8 }}>
+                  <Pressable onPress={() => router.push({ pathname: '/accounting/books', params: { bank: item.id } } as any)} style={styles.bankBtn}>
                     <Ionicons name="book" size={14} color={colors.brandPrimary} />
-                    <Text style={styles.bankBtnTxt}>Bank Ledger</Text>
+                    <Text style={styles.bankBtnTxt}>Bank Book</Text>
+                  </Pressable>
+                  <Pressable onPress={() => router.push({ pathname: '/accounting/reports', params: { report: 'bank_ledger', bank: item.id } } as any)} style={[styles.bankBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }]}>
+                    <Ionicons name="document-text" size={14} color="#1E40AF" />
+                    <Text style={[styles.bankBtnTxt, { color: '#1E40AF' }]}>Bank Ledger</Text>
                   </Pressable>
                   <Pressable onPress={() => router.push('/accounting/banks' as any)} style={styles.bankBtn}>
                     <Ionicons name="create-outline" size={14} color={colors.brandPrimary} />

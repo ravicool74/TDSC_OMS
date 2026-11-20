@@ -976,11 +976,18 @@ export default function CashBankScreen() {
                     </View>
                     <View style={styles.itemActionRow}>
                       <Pressable
+                        onPress={() => router.push({ pathname: '/accounting/books', params: { bank: b.id } } as any)}
+                        style={[styles.itemEditBtn, { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' }]}
+                      >
+                        <Ionicons name="book-outline" size={14} color="#475569" />
+                        <Text style={[styles.itemActionBtnText, { color: '#475569', fontWeight: '800' }]}>Bank Book</Text>
+                      </Pressable>
+                      <Pressable
                         onPress={() => router.push({ pathname: '/accounting/reports', params: { report: 'bank_ledger', bank: b.id } } as any)}
                         style={[styles.itemEditBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
                       >
-                        <Ionicons name="book-outline" size={14} color={BLUE} />
-                        <Text style={[styles.itemActionBtnText, { color: BLUE, fontWeight: '800' }]}>View Ledger</Text>
+                        <Ionicons name="document-text-outline" size={14} color={BLUE} />
+                        <Text style={[styles.itemActionBtnText, { color: BLUE, fontWeight: '800' }]}>Ledger</Text>
                       </Pressable>
                       <Pressable
                         testID={`edit-bank-${b.id}`}

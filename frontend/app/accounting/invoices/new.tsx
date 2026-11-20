@@ -326,6 +326,35 @@ export default function NewInvoice() {
     } : s));
   };
 
+  const handleSelectBankMode = (splitId: string, mode: 'bank_transfer' | 'cheque' | 'upi', bank: any) => {
+    setPaymentSplits(prev => prev.map(s => s.id === splitId ? {
+      ...s,
+      mode,
+      bank_id: bank.id,
+      bank_account_id: bank.id,
+      bank_name: bank.bank_name || bank.name,
+      account_no: bank.account_no,
+    } : s));
+  };
+
+  const getSplitDisplay = (sp: PaymentSplit) => {
+    const b = banks.find(x => x.id === (sp.bank_id || banks[0]?.id)) || banks[0];
+    const bLbl = getBankShortLabel(b);
+    if (sp.mode === 'cash') {
+      return { label: 'Cash (Cash Ledger)', icon: 'cash', color: '#059669', bg: '#DCFCE7' };
+    }
+    if (sp.mode === 'bank_transfer') {
+      return { label: `Online — ${bLbl}`, icon: 'business', color: '#1E40AF', bg: '#DBEAFE' };
+    }
+    if (sp.mode === 'cheque') {
+      return { label: `Cheque — ${bLbl}`, icon: 'document-text', color: '#7C3AED', bg: '#EDE9FE' };
+    }
+    if (sp.mode === 'upi') {
+      return { label: `UPI / QR — ${bLbl}`, icon: 'phone-portrait', color: '#0284C7', bg: '#E0F2FE' };
+    }
+    return { label: 'Other Mode', icon: 'ellipsis-horizontal', color: '#64748B', bg: '#F1F5F9' };
+  };
+
   const handleSaveNewBank = async () => {
     if (!newBankForm.name.trim() || !newBankForm.bank_name.trim() || !newBankForm.account_no.trim()) {
       setBankSaveErr('Account Nickname, Bank Name, and Account Number are required.');
@@ -645,17 +674,17 @@ export default function NewInvoice() {
             {/* Split Payment Rows */}
             <View style={{ gap: 8 }}>
               {paymentSplits.map((sp, idx) => {
-                const currentModeObj = PAY_MODES.find(m => m.key === sp.mode) || PAY_MODES[0];
+                const disp = getSplitDisplay(sp);
                 return (
                   <View key={sp.id} style={styles.splitCard}>
                     <View style={styles.splitHeaderRow}>
                       <Pressable
                         onPress={() => setActivePickingSplitId(sp.id)}
-                        style={styles.splitModeBtn}
+                        style={[styles.splitModeBtn, { backgroundColor: disp.bg, borderColor: disp.color + '40' }]}
                       >
-                        <Ionicons name={currentModeObj.icon as any} size={18} color={colors.brandPrimary} />
-                        <Text style={styles.splitModeTxt}>{currentModeObj.label}</Text>
-                        <Ionicons name="chevron-down" size={14} color={colors.muted} />
+                        <Ionicons name={disp.icon as any} size={18} color={disp.color} />
+                        <Text style={[styles.splitModeTxt, { color: disp.color, fontWeight: '800' }]}>{disp.label}</Text>
+                        <Ionicons name="chevron-down" size={14} color={disp.color} />
                       </Pressable>
 
                       <View style={styles.splitAmtBox}>
@@ -678,11 +707,24 @@ export default function NewInvoice() {
                     </View>
 
                     {/* Bank Account Selection for Bank Transfer / Cheque / UPI */}
-                    {['bank_transfer', 'cheque', 'upi'].includes(sp.mode) && (
+                    {['bank_transfer', 'cheque', 'upi'].includes(sp.mode) ? (
                       <View style={styles.splitBankRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                          <Ionicons name="business" size={15} color="#1E40AF" />
-                          <Text style={styles.splitBankLabel}>Select Bank Account / Ledger:</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="business" size={15} color="#1E40AF" />
+                            <Text style={styles.splitBankLabel}>Select Bank Account / Ledger:</Text>
+                          </View>
+                          <Pressable
+                            onPress={() => {
+                              setTargetSplitIdForNewBank(sp.id);
+                              setShowAddBankModal(true);
+                            }}
+                            style={styles.splitAddBankBtn}
+                            testID="btn-add-bank-account"
+                          >
+                            <Ionicons name="add-circle" size={14} color={colors.brandPrimary} />
+                            <Text style={styles.splitAddBankTxt}>+ Add Account</Text>
+                          </Pressable>
                         </View>
 
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -713,21 +755,31 @@ export default function NewInvoice() {
                               </Pressable>
                             );
                           })}
-
-                          <Pressable
-                            onPress={() => {
-                              setTargetSplitIdForNewBank(sp.id);
-                              setShowAddBankModal(true);
-                            }}
-                            style={styles.splitAddBankBtn}
-                            testID="btn-add-bank-account"
-                          >
-                            <Ionicons name="add-circle" size={14} color={colors.brandPrimary} />
-                            <Text style={styles.splitAddBankTxt}>+ Add Account</Text>
-                          </Pressable>
                         </View>
                       </View>
-                    )}
+                    ) : sp.mode === 'cash' ? (
+                      <View style={[styles.splitBankRow, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="wallet" size={15} color="#059669" />
+                            <Text style={[styles.splitBankLabel, { color: '#059669' }]}>
+                              Auto-records to Cash in Hand Ledger
+                            </Text>
+                          </View>
+                          {banks.length > 0 && (
+                            <Pressable
+                              onPress={() => handleSelectBankMode(sp.id, 'bank_transfer', banks[0])}
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}
+                            >
+                              <Ionicons name="swap-horizontal" size={12} color="#1E40AF" />
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: '#1E40AF' }}>
+                                Switch to Bank ({getBankShortLabel(banks[0])})
+                              </Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      </View>
+                    ) : null}
 
                     {/* Reference / UTR / Cheque / Notes input */}
                     <View style={styles.splitRefRow}>
@@ -849,27 +901,166 @@ export default function NewInvoice() {
       {/* Payment Mode Selector Modal for Multi-Mode Splits */}
       {activePickingSplitId ? (
         <Pressable style={styles.termsOverlay} onPress={() => setActivePickingSplitId(null)}>
-          <View style={styles.termsSheet}>
-            <Text style={styles.termsTitle}>Select Payment Mode</Text>
-            {PAY_MODES.map(m => {
-              const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
-              const isSelected = currentSplit?.mode === m.key;
-              return (
-                <Pressable
-                  key={m.key}
-                  onPress={() => {
-                    handleUpdatePaymentSplit(activePickingSplitId, 'mode', m.key);
-                    setActivePickingSplitId(null);
-                  }}
-                  style={styles.termsRow}
-                  testID={`pm-${m.key}`}
-                >
-                  <Ionicons name={m.icon as any} size={20} color={colors.brandPrimary} />
-                  <Text style={{ flex: 1, color: '#111827', fontWeight: '600', marginLeft: 10 }}>{m.label}</Text>
-                  {isSelected ? <Ionicons name="checkmark" size={20} color={colors.brandPrimary} /> : null}
-                </Pressable>
-              );
-            })}
+          <View style={[styles.termsSheet, { maxHeight: '85%' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <View>
+                <Text style={styles.termsTitle}>Select Payment Mode & Account</Text>
+                <Text style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>
+                  Choose Cash or Bank Account for receipt auto-posting
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => {
+                  setTargetSplitIdForNewBank(activePickingSplitId);
+                  setActivePickingSplitId(null);
+                  setShowAddBankModal(true);
+                }}
+                style={styles.quickAddBankBtn}
+              >
+                <Ionicons name="add-circle" size={16} color="#FFF" />
+                <Text style={styles.quickAddBankTxt}>+ Add Bank</Text>
+              </Pressable>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+              {/* Option 1: Cash */}
+              <Text style={styles.modalSectionHdr}>CASH PAYMENT</Text>
+              {(() => {
+                const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
+                const isSelected = currentSplit?.mode === 'cash';
+                return (
+                  <Pressable
+                    onPress={() => {
+                      handleUpdatePaymentSplit(activePickingSplitId, 'mode', 'cash');
+                      setActivePickingSplitId(null);
+                    }}
+                    style={[styles.termsRow, isSelected && styles.termsRowSelected]}
+                    testID="pm-cash"
+                  >
+                    <View style={[styles.modeIconCircle, { backgroundColor: '#DCFCE7' }]}>
+                      <Ionicons name="cash" size={20} color="#059669" />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={{ color: '#111827', fontWeight: '800', fontSize: 13.5 }}>Cash</Text>
+                      <Text style={{ color: '#059669', fontSize: 11.5, fontWeight: '600' }}>Direct Cash in Hand Ledger</Text>
+                    </View>
+                    {isSelected ? <Ionicons name="checkmark-circle" size={22} color="#059669" /> : null}
+                  </Pressable>
+                );
+              })()}
+
+              {/* Option 2: Bank Transfer / Online with each Bank Account */}
+              <Text style={[styles.modalSectionHdr, { marginTop: 12 }]}>BANK TRANSFER / ONLINE (SELECT ACCOUNT)</Text>
+              {banks.map(b => {
+                const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
+                const isSelected = currentSplit?.mode === 'bank_transfer' && (currentSplit?.bank_id || banks[0]?.id) === b.id;
+                const shortLbl = getBankShortLabel(b);
+                return (
+                  <Pressable
+                    key={`bt-${b.id}`}
+                    onPress={() => {
+                      handleSelectBankMode(activePickingSplitId, 'bank_transfer', b);
+                      setActivePickingSplitId(null);
+                    }}
+                    style={[styles.termsRow, isSelected && styles.termsRowSelected]}
+                    testID={`pm-bank-${b.id}`}
+                  >
+                    <View style={[styles.modeIconCircle, { backgroundColor: '#DBEAFE' }]}>
+                      <Ionicons name="business" size={20} color="#1E40AF" />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={{ color: '#111827', fontWeight: '800', fontSize: 13.5 }}>{shortLbl}</Text>
+                      <Text style={{ color: '#1E40AF', fontSize: 11.5, fontWeight: '600' }}>
+                        Online Transfer • {b.name} (IFSC: {b.ifsc || '—'})
+                      </Text>
+                    </View>
+                    {isSelected ? <Ionicons name="checkmark-circle" size={22} color="#1E40AF" /> : null}
+                  </Pressable>
+                );
+              })}
+
+              {/* Option 3: Cheque with Bank Accounts */}
+              <Text style={[styles.modalSectionHdr, { marginTop: 12 }]}>CHEQUE (SELECT DEPOSIT BANK)</Text>
+              {banks.map(b => {
+                const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
+                const isSelected = currentSplit?.mode === 'cheque' && (currentSplit?.bank_id || banks[0]?.id) === b.id;
+                const shortLbl = getBankShortLabel(b);
+                return (
+                  <Pressable
+                    key={`chq-${b.id}`}
+                    onPress={() => {
+                      handleSelectBankMode(activePickingSplitId, 'cheque', b);
+                      setActivePickingSplitId(null);
+                    }}
+                    style={[styles.termsRow, isSelected && styles.termsRowSelected]}
+                    testID={`pm-chq-${b.id}`}
+                  >
+                    <View style={[styles.modeIconCircle, { backgroundColor: '#EDE9FE' }]}>
+                      <Ionicons name="document-text" size={20} color="#7C3AED" />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={{ color: '#111827', fontWeight: '800', fontSize: 13.5 }}>Cheque — {shortLbl}</Text>
+                      <Text style={{ color: '#7C3AED', fontSize: 11.5, fontWeight: '600' }}>Deposit to {b.bank_name || 'Bank'}</Text>
+                    </View>
+                    {isSelected ? <Ionicons name="checkmark-circle" size={22} color="#7C3AED" /> : null}
+                  </Pressable>
+                );
+              })}
+
+              {/* Option 4: UPI / QR with Bank Accounts */}
+              <Text style={[styles.modalSectionHdr, { marginTop: 12 }]}>UPI / QR (SELECT RECEIVING BANK)</Text>
+              {banks.map(b => {
+                const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
+                const isSelected = currentSplit?.mode === 'upi' && (currentSplit?.bank_id || banks[0]?.id) === b.id;
+                const shortLbl = getBankShortLabel(b);
+                return (
+                  <Pressable
+                    key={`upi-${b.id}`}
+                    onPress={() => {
+                      handleSelectBankMode(activePickingSplitId, 'upi', b);
+                      setActivePickingSplitId(null);
+                    }}
+                    style={[styles.termsRow, isSelected && styles.termsRowSelected]}
+                    testID={`pm-upi-${b.id}`}
+                  >
+                    <View style={[styles.modeIconCircle, { backgroundColor: '#E0F2FE' }]}>
+                      <Ionicons name="phone-portrait" size={20} color="#0284C7" />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={{ color: '#111827', fontWeight: '800', fontSize: 13.5 }}>UPI / QR — {shortLbl}</Text>
+                      <Text style={{ color: '#0284C7', fontSize: 11.5, fontWeight: '600' }}>Receive via UPI to {b.bank_name || 'Bank'}</Text>
+                    </View>
+                    {isSelected ? <Ionicons name="checkmark-circle" size={22} color="#0284C7" /> : null}
+                  </Pressable>
+                );
+              })}
+
+              {/* Option 5: Other Mode */}
+              <Text style={[styles.modalSectionHdr, { marginTop: 12 }]}>OTHER</Text>
+              {(() => {
+                const currentSplit = paymentSplits.find(s => s.id === activePickingSplitId);
+                const isSelected = currentSplit?.mode === 'other';
+                return (
+                  <Pressable
+                    onPress={() => {
+                      handleUpdatePaymentSplit(activePickingSplitId, 'mode', 'other');
+                      setActivePickingSplitId(null);
+                    }}
+                    style={[styles.termsRow, isSelected && styles.termsRowSelected]}
+                    testID="pm-other"
+                  >
+                    <View style={[styles.modeIconCircle, { backgroundColor: '#F1F5F9' }]}>
+                      <Ionicons name="ellipsis-horizontal" size={20} color="#64748B" />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={{ color: '#111827', fontWeight: '800', fontSize: 13.5 }}>Other Mode</Text>
+                      <Text style={{ color: '#64748B', fontSize: 11.5 }}>Unspecified / Custom Payment</Text>
+                    </View>
+                    {isSelected ? <Ionicons name="checkmark-circle" size={22} color="#64748B" /> : null}
+                  </Pressable>
+                );
+              })()}
+            </ScrollView>
           </View>
         </Pressable>
       ) : null}
@@ -1282,5 +1473,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     flex: 1,
+  },
+  modalSectionHdr: {
+    fontSize: 10.5,
+    fontWeight: '900',
+    color: '#64748B',
+    letterSpacing: 0.8,
+    marginTop: 10,
+    marginBottom: 4,
+    paddingHorizontal: 4,
+  },
+  modeIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  termsRowSelected: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: radius.md,
   },
 });

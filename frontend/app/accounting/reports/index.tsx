@@ -61,6 +61,7 @@ const getColWidth = (colKey: string): number => {
   if (k === '#' || k === 'sr' || k === 'sn') return 44;
   if (k === 'actions') return 110;
   if (k.includes('date')) return 100;
+  if (k.includes('ref')) return 120;
   if (k.includes('inv') || k.includes('bill_no') || k.includes('voucher') || k.includes('order_no')) return 130;
   if (k.includes('mode') || k.includes('type')) return 85;
   if (k.includes('status')) return 105;
@@ -105,10 +106,14 @@ export default function AccountingReportsHub() {
   const [openCats, setOpenCats] = useState<Record<string, boolean>>({ core_financial: true, party_reports: true, gst_reports: true, passed_on_money: true });
   const [favs, setFavs] = useState<Record<string, boolean>>({});
 
+  const rawReportParam = Array.isArray(params?.report) ? params.report[0] : params?.report;
+  const rawBankParam = Array.isArray(params?.bank) ? params.bank[0] : params?.bank;
+
   // Active Report Viewer State
-  const [activeReportId, setActiveReportId] = useState<string | null>(params?.report || null);
+  const [activeReportId, setActiveReportId] = useState<string | null>(rawReportParam || null);
   const [reportData, setReportData] = useState<any | null>(null);
-  const [reportLoading, setReportLoading] = useState(false);
+  const [reportLoading, setReportLoading] = useState(!!rawReportParam);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | 'month' | 'quarter' | 'fy' | 'all' | 'custom'>('month');
   const [customFromDate, setCustomFromDate] = useState<string>(() => {
     const d = new Date();
@@ -119,7 +124,7 @@ export default function AccountingReportsHub() {
     return d.toISOString().split('T')[0];
   });
   const [tableSearch, setTableSearch] = useState('');
-  const [selectedBankId, setSelectedBankId] = useState<string>('');
+  const [selectedBankId, setSelectedBankId] = useState<string>(rawBankParam || '');
   const [editingContraModal, setEditingContraModal] = useState<any | null>(null);
   const [contraForm, setContraForm] = useState({ amount: '', particulars: '', date: '' });
   const [savingContra, setSavingContra] = useState(false);
@@ -148,9 +153,11 @@ export default function AccountingReportsHub() {
 
   // Auto-open report if passed in params
   useEffect(() => {
-    if (params?.report) {
-      if (params?.bank) setSelectedBankId(params.bank);
-      openReport(params.report, undefined, undefined, undefined, params.bank);
+    const rId = Array.isArray(params?.report) ? params.report[0] : params?.report;
+    const bId = Array.isArray(params?.bank) ? params.bank[0] : params?.bank;
+    if (rId) {
+      if (bId) setSelectedBankId(bId);
+      openReport(rId, undefined, undefined, undefined, bId);
     }
   }, [params?.report, params?.bank]);
 
@@ -216,8 +223,10 @@ export default function AccountingReportsHub() {
     toDateOverride?: string,
     selectedBankIdOverride?: string
   ) => {
-    setActiveReportId(repId);
+    const cleanRepId = Array.isArray(repId) ? repId[0] : repId;
+    setActiveReportId(cleanRepId);
     setReportLoading(true);
+    setReportError(null);
     setTableSearch('');
     const dFilter = customDateFilter || dateFilter;
 
@@ -254,17 +263,20 @@ export default function AccountingReportsHub() {
     const bId = selectedBankIdOverride !== undefined ? selectedBankIdOverride : selectedBankId;
 
     try {
-      const res = await api.getAccountingReportData(repId, {
+      const res = await api.getAccountingReportData(cleanRepId, {
         from_date: fromDate,
         to_date: toDate,
         bank_id: bId || undefined,
       });
       setReportData(res);
+      setReportError(null);
       if (res?.selected_bank_id) {
         setSelectedBankId(res.selected_bank_id);
       }
-    } catch {
+    } catch (err: any) {
+      console.error('Failed to load report:', err);
       setReportData(null);
+      setReportError(err?.message || 'Could not load report statement. Please check connection and try again.');
     } finally {
       setReportLoading(false);
     }
@@ -1384,9 +1396,31 @@ export default function AccountingReportsHub() {
               </View>
             </ScrollView>
           ) : (
-            <View style={styles.loadingBox}>
-              <Ionicons name="alert-circle-outline" size={40} color="#DC2626" />
-              <Text style={{ color: '#0F172A', fontWeight: '700', marginTop: 8 }}>Unable to load report</Text>
+            <View style={[styles.loadingBox, { padding: 32 }]}>
+              <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
+              <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 12 }}>Unable to load report</Text>
+              <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 360 }}>
+                {reportError || 'Could not fetch statement data from server. Please check connection and retry.'}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+                <Pressable
+                  onPress={() => activeReportId && openReport(activeReportId)}
+                  style={[styles.btnAction, { backgroundColor: BLUE, paddingHorizontal: 16 }]}
+                >
+                  <Ionicons name="refresh" size={16} color="#FFF" />
+                  <Text style={styles.btnActionTxt}>Retry / Reload</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setActiveReportId(null);
+                    setReportError(null);
+                  }}
+                  style={[styles.btnAction, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 16 }]}
+                >
+                  <Ionicons name="arrow-back" size={16} color="#0F172A" />
+                  <Text style={[styles.btnActionTxt, { color: '#0F172A' }]}>All Reports</Text>
+                </Pressable>
+              </View>
             </View>
           )}
         </View>

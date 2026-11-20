@@ -1333,6 +1333,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "columns": [
                         {"key": "date", "label": "Date"},
                         {"key": "voucher_no", "label": "Voucher #"},
+                        {"key": "ref_no", "label": "Ref / Slip #"},
                         {"key": "trans_type", "label": "Transaction Type"},
                         {"key": "party", "label": "Party / Payee"},
                         {"key": "particulars", "label": "Particulars"},
@@ -1605,6 +1606,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "columns": [
                         {"key": "date", "label": "Date"},
                         {"key": "voucher_no", "label": "Voucher #"},
+                        {"key": "ref_no", "label": "Ref / Slip #"},
                         {"key": "trans_type", "label": "Transaction Type"},
                         {"key": "party", "label": "Party / Payee"},
                         {"key": "particulars", "label": "Particulars"},
