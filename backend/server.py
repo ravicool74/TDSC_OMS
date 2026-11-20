@@ -768,6 +768,9 @@ class Income(BaseModel):
     amount: float
     payment_mode: str                  # cash / bank / upi / cheque
     bank_account_id: Optional[str] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     employee_id: Optional[str] = None
     employee_name: Optional[str] = None
     remarks: Optional[str] = None
@@ -796,6 +799,9 @@ class IncomeInput(BaseModel):
     amount: float
     payment_mode: str
     bank_account_id: Optional[str] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     employee_id: Optional[str] = None
     employee_name: Optional[str] = None
     remarks: Optional[str] = None
@@ -817,6 +823,9 @@ class IncomeUpdateInput(BaseModel):
     amount: Optional[float] = None
     payment_mode: Optional[str] = None
     bank_account_id: Optional[str] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     employee_id: Optional[str] = None
     employee_name: Optional[str] = None
     remarks: Optional[str] = None
@@ -3821,6 +3830,21 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
             inc_dict["client_gst"] = inc_dict.get("client_gst") or cust.get("gst_no")
             inc_dict["client_code"] = inc_dict.get("client_code") or cust.get("customer_code")
 
+    # Auto-enrich bank details if bank_account_id is provided or found in payment_splits
+    b_id = inc_dict.get("bank_id") or inc_dict.get("bank_account_id")
+    if not b_id and inc_dict.get("payment_splits"):
+        for ps in inc_dict["payment_splits"]:
+            if ps.get("bank_account_id"):
+                b_id = ps["bank_account_id"]
+                break
+    if b_id:
+        target_bank = await db.bank_accounts.find_one({"id": b_id}, {"_id": 0})
+        if target_bank:
+            inc_dict["bank_id"] = target_bank["id"]
+            inc_dict["bank_account_id"] = target_bank["id"]
+            inc_dict["bank_name"] = target_bank.get("bank_name") or target_bank.get("name")
+            inc_dict["account_no"] = target_bank.get("account_no")
+
     inc = Income(
         **inc_dict,
         income_no=no,
@@ -4030,6 +4054,20 @@ async def list_income(
                 if not d.get("client_gst"): d["client_gst"] = c.get("gst_no")
                 if not d.get("client_code"): d["client_code"] = c.get("customer_code")
 
+    # Dynamic bank enrichment if missing on income documents
+    b_ids = [d.get("bank_account_id") or d.get("bank_id") for d in docs if (d.get("bank_account_id") or d.get("bank_id")) and not d.get("account_no")]
+    if b_ids:
+        banks = await db.bank_accounts.find({"id": {"$in": list(set(b_ids))}}, {"_id": 0, "id": 1, "name": 1, "bank_name": 1, "account_no": 1}).to_list(100)
+        bmap = {b["id"]: b for b in banks}
+        for d in docs:
+            bid = d.get("bank_account_id") or d.get("bank_id")
+            if bid and bid in bmap:
+                b = bmap[bid]
+                if not d.get("bank_id"): d["bank_id"] = b["id"]
+                if not d.get("bank_account_id"): d["bank_account_id"] = b["id"]
+                if not d.get("bank_name"): d["bank_name"] = b.get("bank_name") or b.get("name")
+                if not d.get("account_no"): d["account_no"] = b.get("account_no")
+
     return [Income(**d) for d in docs]
 
 
@@ -4045,6 +4083,14 @@ async def get_income(iid: str, current: User = Depends(get_current_user)):
             d["client_pan"] = d.get("client_pan") or cust.get("pan")
             d["client_gst"] = d.get("client_gst") or cust.get("gst_no")
             d["client_code"] = d.get("client_code") or cust.get("customer_code")
+    bid = d.get("bank_account_id") or d.get("bank_id")
+    if bid and not d.get("account_no"):
+        b = await db.bank_accounts.find_one({"id": bid}, {"_id": 0})
+        if b:
+            d["bank_id"] = b["id"]
+            d["bank_account_id"] = b["id"]
+            d["bank_name"] = b.get("bank_name") or b.get("name")
+            d["account_no"] = b.get("account_no")
     return Income(**d)
 
 
@@ -6759,6 +6805,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s: %s", request.method, request.url, exc)
+    from starlette.responses import JSONResponse
+    origin = request.headers.get("origin") or "*"
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Server error: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": origin if origin != "*" else "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*",
+        }
+    )
+
 
 # Serve static frontend production build from backend/public
 public_dir = ROOT_DIR / "public"
