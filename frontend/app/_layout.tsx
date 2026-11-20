@@ -29,7 +29,7 @@ function AuthGate() {
       } else {
         router.replace('/(tabs)/dashboard');
       }
-    } else if (user && (segments as string[]).length === 0) {
+    } else if (user && ((segments as string[]).length === 0 || (segments[0] as string) === 'index')) {
       if (isCustomer) {
         router.replace('/customer/dashboard' as any);
       } else {

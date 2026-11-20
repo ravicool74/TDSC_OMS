@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { ScreenHeader } from '@/src/ScreenHeader';
+import { useAuth } from '@/src/AuthContext';
 
 const inr = (n: any) => {
   const val = Number(n || 0);
@@ -28,6 +29,67 @@ const daysAgo = (d: number) => {
 
 export default function DayBookReport() {
   const router = useRouter();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+
+  // Admin Initial Balances Configuration Modal states
+  const [showInitModal, setShowInitModal] = useState(false);
+  const [initStartDate, setInitStartDate] = useState('2026-11-17');
+  const [initCashInHand, setInitCashInHand] = useState('0');
+  const [initBankList, setInitBankList] = useState<any[]>([]);
+  const [initBankAmounts, setInitBankAmounts] = useState<Record<string, string>>({});
+  const [initBusy, setInitBusy] = useState(false);
+  const [initErr, setInitErr] = useState<string | null>(null);
+  const [initSuccessMsg, setInitSuccessMsg] = useState<string | null>(null);
+
+  const openInitModal = async () => {
+    setInitErr(null);
+    setShowInitModal(true);
+    setInitBusy(true);
+    try {
+      const res = await api.getDayBookInitialBalances();
+      setInitStartDate(res?.start_date || '2026-11-17');
+      setInitCashInHand(String(res?.cash_in_hand ?? 0));
+      const accs = res?.accounts || [];
+      setInitBankList(accs);
+      const bMap: Record<string, string> = {};
+      accs.forEach((b: any) => {
+        bMap[b.id] = String(b.opening_balance ?? 0);
+      });
+      setInitBankAmounts(bMap);
+    } catch (e: any) {
+      setInitErr(e?.message || 'Failed to load initial balances configuration.');
+    } finally {
+      setInitBusy(false);
+    }
+  };
+
+  const handleSaveInitialBalances = async () => {
+    setInitBusy(true);
+    setInitErr(null);
+    try {
+      const parsedAccounts: Record<string, number> = {};
+      Object.keys(initBankAmounts).forEach(k => {
+        parsedAccounts[k] = parseFloat(initBankAmounts[k]) || 0;
+      });
+
+      await api.saveDayBookInitialBalances({
+        start_date: initStartDate || '2026-11-17',
+        cash_in_hand: parseFloat(initCashInHand) || 0,
+        accounts: parsedAccounts,
+      });
+
+      setShowInitModal(false);
+      setInitSuccessMsg('Initial opening balances saved and fixed successfully!');
+      setTimeout(() => setInitSuccessMsg(null), 6000);
+      await load();
+    } catch (e: any) {
+      setInitErr(e?.message || 'Failed to save initial balances.');
+    } finally {
+      setInitBusy(false);
+    }
+  };
+
   const [fromDate, setFromDate] = useState(todayKolkata());
   const [toDate, setToDate] = useState(todayKolkata());
   const [data, setData] = useState<any | null>(null);
@@ -142,6 +204,17 @@ export default function DayBookReport() {
       const generatedOn = new Date().toLocaleString('en-IN', {
         day: '2-digit', month: 'short', year: 'numeric',
         hour: '2-digit', minute: '2-digit', hour12: true
+      });
+
+      // 0. Account Started On Date & Initial Balances HTML
+      let initBalHtml = '';
+      initialBalances.forEach((acc: any) => {
+        initBalHtml += `
+          <div style="display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed #CBD5E1; font-size: 8.5px;">
+            <span><strong>${acc.account_no && acc.account_no !== '—' ? `Account No : ${acc.account_no} (${acc.bank_name || acc.name})` : acc.name}</strong></span>
+            <span>Opening Balance is on ${data?.account_start_date || '17-11-2026'}: <strong>${inr(acc.initial_balance ?? acc.balance)}</strong></span>
+          </div>
+        `;
       });
 
       // 1. Opening Balance Table HTML
@@ -682,6 +755,7 @@ export default function DayBookReport() {
     }
   };
 
+  const initialBalances: any[] = data?.initial_balances || [];
   const openingBalances: any[] = data?.opening_balances || [];
   const saleReceipts: any[] = data?.sale_receipts || [];
   const paymentInReceipts: any[] = data?.payment_in_receipts || [];
@@ -697,6 +771,12 @@ export default function DayBookReport() {
         title="Day Book Report"
         right={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {isAdmin && (
+              <Pressable onPress={openInitModal} style={styles.adminInitHeaderBtn} testID="btn-header-config-init">
+                <Ionicons name="settings-outline" size={15} color="#00104A" />
+                <Text style={styles.adminInitHeaderBtnTxt}>Initial Balances</Text>
+              </Pressable>
+            )}
             <Pressable onPress={openDepositModal} style={styles.depositBtn} testID="btn-deposit-cash">
               <Ionicons name="arrow-up-circle-outline" size={16} color="#059669" />
               <Text style={styles.depositBtnTxt}>+ Deposit Cash to Bank</Text>
@@ -785,6 +865,54 @@ export default function DayBookReport() {
                     : `Discrepancy of ${inr(diffAmt)} between Total O.B (${inr(data?.total_ob_with_receipts)}) and Total C.B (${inr(data?.total_cb)}).`}
                 </Text>
               </View>
+            </View>
+          </View>
+
+          {/* ============================================================== */}
+          {/* 0. Account Start Date & Fixed Initial Balances Header          */}
+          {/* ============================================================== */}
+          <View style={styles.startHeaderCard}>
+            <View style={styles.startHeaderTopRow}>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <Ionicons name="calendar" size={18} color="#00104A" />
+                  <Text style={styles.startHeaderTitle}>
+                    Account Started on date: <Text style={{ color: '#00104A', fontWeight: '900' }}>{data?.account_start_date || '17-11-2026'}</Text>
+                    {'  '}|{'  '}as on date: <Text style={{ color: '#2563EB', fontWeight: '900' }}>{fromDate}{fromDate !== toDate ? ` to ${toDate}` : ''}</Text>
+                  </Text>
+                </View>
+                <Text style={styles.startHeaderSub}>
+                  Rule: "Today Closing Balance is tomorrow opening Balance" applied across all accounts.
+                </Text>
+              </View>
+              {isAdmin && (
+                <Pressable onPress={openInitModal} style={styles.adminEditInitBtn} testID="btn-config-initial-balances">
+                  <Ionicons name="create-outline" size={14} color="#00104A" />
+                  <Text style={styles.adminEditInitBtnTxt}>Edit Initial Balances (Admin)</Text>
+                </Pressable>
+              )}
+            </View>
+
+            {initSuccessMsg && (
+              <View style={[styles.successToast, { marginHorizontal: 12, marginTop: 8 }]}>
+                <Ionicons name="checkmark-circle" size={16} color="#059669" />
+                <Text style={styles.successToastText}>{initSuccessMsg}</Text>
+              </View>
+            )}
+
+            <View style={styles.initialBalancesGrid}>
+              {initialBalances.map((acc: any, i: number) => (
+                <View key={acc.id || i} style={styles.initialBalancePill}>
+                  <Text style={styles.initPillLabel}>
+                    {acc.account_no && acc.account_no !== '—'
+                      ? `Account No : ${acc.account_no} (${acc.bank_name || acc.name})`
+                      : acc.name}
+                  </Text>
+                  <Text style={styles.initPillVal}>
+                    Opening Balance is on {data?.account_start_date || '17-11-2026'}: <Text style={{ fontWeight: '900', color: '#00104A' }}>{inr(acc.initial_balance ?? acc.balance)}</Text>
+                  </Text>
+                </View>
+              ))}
             </View>
           </View>
 
@@ -1291,6 +1419,116 @@ export default function DayBookReport() {
       )}
 
       {/* ============================================================== */}
+      {/* Admin Modal: Configure Initial Balances & Start Date            */}
+      {/* ============================================================== */}
+      <Modal visible={showInitModal} transparent animationType="fade" onRequestClose={() => setShowInitModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxWidth: 580 }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="settings" size={24} color="#00104A" />
+                <View>
+                  <Text style={styles.modalTitle}>Configure Initial Balances</Text>
+                  <Text style={styles.modalSubtitle}>Day Book Start Date & Fixed Baseline Balances (Admin Only)</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setShowInitModal(false)}>
+                <Ionicons name="close-circle-outline" size={24} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ padding: spacing.md, gap: 12 }}>
+              <View style={styles.startInfoBox}>
+                <Ionicons name="information-circle-outline" size={18} color="#1D4ED8" />
+                <Text style={styles.startInfoText}>
+                  Rule: "Today Closing Balance is tomorrow opening Balance". These opening balances are fixed as of the starting date and roll forward automatically.
+                </Text>
+              </View>
+
+              {initErr && (
+                <View style={styles.errBox}>
+                  <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                  <Text style={styles.errText}>{initErr}</Text>
+                </View>
+              )}
+
+              {/* Account Start Date */}
+              <View style={{ gap: 4 }}>
+                <Text style={styles.inputLabel}>Account Started On Date:</Text>
+                {Platform.OS === 'web' ? (
+                  <input
+                    type="date"
+                    value={initStartDate}
+                    onChange={(e: any) => setInitStartDate(e.target.value)}
+                    style={webDateInputStyle}
+                  />
+                ) : (
+                  <TextInput
+                    style={styles.modalInput}
+                    value={initStartDate}
+                    onChangeText={setInitStartDate}
+                    placeholder="YYYY-MM-DD"
+                  />
+                )}
+              </View>
+
+              {/* Bank Accounts */}
+              <Text style={{ fontSize: 12, fontWeight: '800', color: '#0F172A', marginTop: 4 }}>
+                Bank Accounts Initial Opening Balance (₹):
+              </Text>
+              {initBankList.map((b: any) => (
+                <View key={b.id} style={{ gap: 4 }}>
+                  <Text style={styles.inputLabel}>
+                    {b.name} ({b.bank_name}) • A/c {b.account_no}:
+                  </Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    keyboardType="numeric"
+                    value={initBankAmounts[b.id] ?? ''}
+                    onChangeText={(val) => setInitBankAmounts(prev => ({ ...prev, [b.id]: val }))}
+                    placeholder="0.00"
+                  />
+                </View>
+              ))}
+
+              {/* Cash in Hand */}
+              <View style={{ gap: 4 }}>
+                <Text style={styles.inputLabel}>Cash in Hand Initial Opening Balance (₹):</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  keyboardType="numeric"
+                  value={initCashInHand}
+                  onChangeText={setInitCashInHand}
+                  placeholder="0.00"
+                />
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Pressable onPress={() => setShowInitModal(false)} style={styles.cancelBtn}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSaveInitialBalances}
+                disabled={initBusy}
+                style={[styles.confirmBtn, { backgroundColor: '#00104A' }]}
+                testID="btn-save-initial-balances"
+              >
+                {initBusy ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-done" size={16} color="#FFF" />
+                    <Text style={styles.confirmBtnText}>Save & Fix Balances (Admin)</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ============================================================== */}
       {/* Quick Modal: Deposit Cash into Bank (Contra Entry)              */}
       {/* ============================================================== */}
       <Modal visible={showDepositModal} transparent animationType="fade" onRequestClose={() => setShowDepositModal(false)}>
@@ -1484,6 +1722,110 @@ const styles = StyleSheet.create({
   balanceItemName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
   balanceItemSub: { fontSize: 11, color: '#64748B', marginTop: 1 },
   dottedLeader: { flex: 1, height: 1, borderBottomWidth: 1, borderBottomColor: '#CBD5E1', borderStyle: 'dotted', marginHorizontal: 6 },
+  startHeaderCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: '#00104A',
+    padding: spacing.md,
+    ...shadow.card,
+  },
+  startHeaderTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    paddingBottom: 8,
+    marginBottom: 8,
+  },
+  startHeaderTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  startHeaderSub: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
+  adminEditInitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  adminEditInitBtnTxt: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#00104A',
+  },
+  adminInitHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.md,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  adminInitHeaderBtnTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#00104A',
+  },
+  initialBalancesGrid: {
+    gap: 6,
+    marginTop: 4,
+  },
+  initialBalancePill: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  initPillLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  initPillVal: {
+    fontSize: 11,
+    color: '#475569',
+  },
+  startInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    backgroundColor: '#EFF6FF',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  startInfoText: {
+    fontSize: 11,
+    color: '#1E40AF',
+    flex: 1,
+    lineHeight: 16,
+  },
   balanceItemAmt: { fontSize: 12, color: '#475569' },
 
   sectionDivider: { height: 1, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', marginVertical: 12 },

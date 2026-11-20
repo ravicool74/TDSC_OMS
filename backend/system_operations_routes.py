@@ -17,6 +17,11 @@ class GlobalSearchResponse(BaseModel):
     total_matches: int
     results: List[SearchResultItem]
 
+class DayBookInitialBalancesRequest(BaseModel):
+    start_date: str = "2026-11-17"
+    cash_in_hand: float = 0.0
+    accounts: Dict[str, float] = {}
+
 class SystemStats(BaseModel):
     total_branches: int
     branches: Optional[int] = None
@@ -266,40 +271,27 @@ def make_system_operations_router(db, get_current_user, require_admin):
             expiring_documents_30_days=expiring_docs,
         )
 
-    # ====== REPORTS ======
-    @router.get("/reports/day-book")
-    async def get_day_book(
-        from_date: Optional[str] = Query(None),
-        to_date: Optional[str] = Query(None),
-        current: any = Depends(get_current_user)
-    ):
-        """Comprehensive Vyapar/Tally style Day Book with Opening & Closing Balances, Sale Receipts, Payment In, and Reconciliation."""
-        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-        today_ist = now_ist.strftime("%Y-%m-%d")
+    # ====== REPORTS & DAY BOOK INITIAL BALANCES ======
+    @router.get("/reports/day-book/initial-balances")
+    async def get_day_book_initial_balances(current: any = Depends(get_current_user)):
+        """Retrieve fixed initial balances and account start date for Day Book."""
+        setting = await db.settings.find_one({"key": "day_book_initial_balances"}, {"_id": 0})
+        start_date = "2026-11-17"
+        cash_in_hand = 0.0
+        acc_map = {}
+        if setting:
+            start_date = setting.get("start_date") or "2026-11-17"
+            cash_in_hand = float(setting.get("cash_in_hand", 0.0))
+            acc_map = setting.get("accounts", {})
+        else:
+            c_setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+            if c_setting:
+                cash_in_hand = float(c_setting.get("value", 0.0))
 
-        from_d = from_date or today_ist
-        to_d = to_date or today_ist
-
-        # 1. Bank Accounts & Opening Balances
         all_banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
         if not all_banks:
             all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
 
-        # Standard accounts mapping:
-        # (i) TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED (SBI)
-        # (ii) ANJU KUMARI (AXIS BANK)
-        # (iii) Other Accounts
-        # (iv) Cash in Hand
-
-        # Calculate opening balances before from_d
-        # We start with configured bank opening balance, adjusted by transactions prior to from_d
-        opening_balances = []
-        tot_bank_ob = 0.0
-
-        idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)", "(vii)"]
-        r_idx = 0
-
-        # Sort banks so SBI is (i), Axis is (ii), then others
         def bank_sort_key(b):
             acc = str(b.get("account_no") or "")
             name = (b.get("name") or "").upper()
@@ -311,73 +303,309 @@ def make_system_operations_router(db, get_current_user, require_admin):
 
         all_banks.sort(key=bank_sort_key)
 
+        accounts_list = []
         for b in all_banks:
             b_id = b.get("id")
-            base_bal = float(b.get("opening_balance") or b.get("balance") or 0.0)
-            account_no = b.get("account_no") or "—"
+            acc_no = str(b.get("account_no") or "")
+            configured_val = acc_map.get(b_id)
+            if configured_val is None:
+                configured_val = acc_map.get(acc_no)
+            if configured_val is None:
+                configured_val = float(b.get("opening_balance") or b.get("balance") or 0.0)
+
+            accounts_list.append({
+                "id": b_id,
+                "name": b.get("name") or b.get("bank_name") or "Bank Account",
+                "bank_name": b.get("bank_name") or "Bank",
+                "account_no": acc_no,
+                "ifsc": b.get("ifsc") or "—",
+                "opening_balance": round(float(configured_val), 2),
+            })
+
+        return {
+            "start_date": start_date,
+            "cash_in_hand": round(cash_in_hand, 2),
+            "accounts": accounts_list,
+        }
+
+    @router.post("/reports/day-book/initial-balances")
+    async def save_day_book_initial_balances(payload: DayBookInitialBalancesRequest, current: any = Depends(require_admin)):
+        """Update and fix initial balances and account start date. Admin only."""
+        clean_date = payload.start_date.strip() or "2026-11-17"
+        cash_val = round(float(payload.cash_in_hand or 0.0), 2)
+
+        doc = {
+            "key": "day_book_initial_balances",
+            "start_date": clean_date,
+            "cash_in_hand": cash_val,
+            "accounts": payload.accounts,
+            "updated_by": getattr(current, "username", None) or getattr(current, "name", "admin"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.settings.update_one(
+            {"key": "day_book_initial_balances"},
+            {"$set": doc},
+            upsert=True
+        )
+
+        await db.settings.update_one(
+            {"key": "cash_opening_balance"},
+            {"$set": {"key": "cash_opening_balance", "value": cash_val, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+
+        for acc_key, acc_val in payload.accounts.items():
+            val = round(float(acc_val or 0.0), 2)
+            await db.bank_accounts.update_one(
+                {"$or": [{"id": acc_key}, {"account_no": acc_key}]},
+                {"$set": {"opening_balance": val}}
+            )
+
+        await log_audit_entry(db, current, "accounting", "update_day_book_initial_balances", "day_book_initial_balances", None, doc)
+        return {"status": "success", "message": "Initial balances successfully saved and fixed by admin.", "data": doc}
+
+    @router.get("/reports/day-book")
+    async def get_day_book(
+        from_date: Optional[str] = Query(None),
+        to_date: Optional[str] = Query(None),
+        current: any = Depends(get_current_user)
+    ):
+        """Comprehensive Vyapar/Tally style Day Book with Strict Day-by-Day Balance Roll-Forward: Today's Closing Balance == Tomorrow's Opening Balance."""
+        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        today_ist = now_ist.strftime("%Y-%m-%d")
+
+        from_d = from_date or today_ist
+        to_d = to_date or today_ist
+
+        # 1. Fetch Initial Balances and Start Date from settings
+        setting = await db.settings.find_one({"key": "day_book_initial_balances"}, {"_id": 0})
+        if setting:
+            start_date = setting.get("start_date") or "2026-11-17"
+            init_cash = float(setting.get("cash_in_hand", 0.0))
+            init_acc_map = setting.get("accounts", {})
+        else:
+            start_date = "2026-11-17"
+            c_setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+            init_cash = float(c_setting.get("value", 0.0)) if c_setting else 0.0
+            init_acc_map = {}
+
+        # 2. Bank Accounts
+        all_banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
+        if not all_banks:
+            all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
+
+        def bank_sort_key(b):
+            acc = str(b.get("account_no") or "")
+            name = (b.get("name") or "").upper()
+            if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name:
+                return 0
+            if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name:
+                return 1
+            return 2
+
+        all_banks.sort(key=bank_sort_key)
+
+        idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)", "(vii)", "(viii)"]
+        r_idx = 0
+
+        # Build initial balances on start date for header display & establish running balances
+        initial_balances_display = []
+        running_balances = {"cash_in_hand": init_cash}
+
+        sbi_id = None
+        axis_id = None
+
+        for b in all_banks:
+            b_id = b.get("id")
+            acc_no = str(b.get("account_no") or "")
             ifsc = b.get("ifsc") or "—"
             name = b.get("name") or b.get("bank_name") or "Bank Account"
             bank_name = b.get("bank_name") or "Bank"
 
-            opening_balances.append({
+            if "42137607814" in acc_no or "SBIN" in str(ifsc) or "TRIVENI" in name.upper():
+                sbi_id = b_id
+            if "915020011528516" in acc_no or "UTIB" in str(ifsc) or "AXIS" in name.upper():
+                axis_id = b_id
+
+            configured_init = init_acc_map.get(b_id)
+            if configured_init is None:
+                configured_init = init_acc_map.get(acc_no)
+            if configured_init is None:
+                configured_init = float(b.get("opening_balance") or b.get("balance") or 0.0)
+            configured_init = float(configured_init)
+
+            running_balances[b_id] = configured_init
+
+            initial_balances_display.append({
                 "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
                 "id": b_id,
                 "name": name,
                 "bank_name": bank_name,
-                "account_no": account_no,
+                "account_no": acc_no,
                 "ifsc": ifsc,
-                "balance": round(base_bal, 2),
-                "formatted_balance": f"₹{base_bal:,.2f}",
+                "balance": round(configured_init, 2),
+                "formatted_balance": f"₹{configured_init:,.2f}",
             })
-            tot_bank_ob += base_bal
             r_idx += 1
 
-        # Cash in Hand opening balance calculation
-        # Sum of cash receipts minus cash disbursements prior to from_d
-        setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
-        cash_base = float(setting.get("value", 0.0)) if setting else 0.0
+        if not sbi_id and all_banks:
+            sbi_id = all_banks[0].get("id")
 
-        # Fetch prior cash sales & prior cash income
-        prior_sales_cash = await db.invoices.find(
-            {"date": {"$lt": from_d}, "payment_mode": {"$regex": "cash", "$options": "i"}},
-            {"_id": 0, "paid_amount": 1, "total_amount": 1, "payment_splits": 1}
-        ).to_list(1000)
-        prior_cash_in = 0.0
-        for s in prior_sales_cash:
-            if s.get("payment_splits"):
-                prior_cash_in += sum(float(ps.get("amount") or 0) for ps in s["payment_splits"] if "cash" in str(ps.get("mode") or "").lower())
-            else:
-                prior_cash_in += float(s.get("paid_amount") or s.get("total_amount") or 0)
+        initial_balances_display.append({
+            "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
+            "id": "cash_in_hand",
+            "name": "Cash in Hand",
+            "bank_name": "Cash",
+            "account_no": "—",
+            "ifsc": "—",
+            "balance": round(init_cash, 2),
+            "formatted_balance": f"₹{init_cash:,.2f}",
+        })
 
-        prior_inc_cash = await db.income.find(
-            {"date": {"$lt": from_d}, "payment_mode": {"$regex": "cash", "$options": "i"}},
-            {"_id": 0, "amount": 1, "payment_splits": 1}
-        ).to_list(1000)
-        for i in prior_inc_cash:
-            if i.get("payment_splits"):
-                prior_cash_in += sum(float(ps.get("amount") or 0) for ps in i["payment_splits"] if "cash" in str(ps.get("mode") or "").lower())
-            else:
-                prior_cash_in += float(i.get("amount") or 0)
+        def resolve_bank_id(b_id_val, b_name_val):
+            b_str = (str(b_id_val or "") + " " + str(b_name_val or "")).lower()
+            if axis_id and ("axis" in b_str or "915020011528516" in b_str or axis_id.lower() in b_str):
+                return axis_id
+            for b in all_banks:
+                if b.get("id") and b.get("id").lower() in b_str:
+                    return b.get("id")
+                if b.get("account_no") and str(b.get("account_no")) in b_str:
+                    return b.get("id")
+            return sbi_id
 
-        prior_exp_cash = await db.expenses.find(
-            {"date": {"$lt": from_d}, "payment_mode": {"$regex": "cash", "$options": "i"}},
-            {"_id": 0, "amount": 1}
-        ).to_list(1000)
-        prior_cash_out = sum(float(e.get("amount") or 0) for e in prior_exp_cash)
+        # 3. Roll forward prior transactions (from start_date to from_d - 1)
+        if from_d > start_date:
+            prior_invoices = await db.invoices.find(
+                {"invoice_type": "sale", "date": {"$gte": start_date, "$lt": from_d}},
+                {"_id": 0}
+            ).to_list(5000)
+            for inv in prior_invoices:
+                amt = float(inv.get("paid_amount") or inv.get("total_amount") or 0.0)
+                if amt <= 0:
+                    continue
+                mode = (inv.get("payment_mode") or "cash").lower()
+                splits = inv.get("payment_splits") or []
+                if splits:
+                    for ps in splits:
+                        p_amt = float(ps.get("amount") or 0.0)
+                        if p_amt <= 0: continue
+                        p_m = str(ps.get("mode") or "").lower()
+                        if "cash" in p_m:
+                            running_balances["cash_in_hand"] += p_amt
+                        else:
+                            tgt = resolve_bank_id(ps.get("bank_id"), ps.get("bank_name"))
+                            if tgt in running_balances:
+                                running_balances[tgt] += p_amt
+                            elif sbi_id in running_balances:
+                                running_balances[sbi_id] += p_amt
+                elif "cash" in mode:
+                    running_balances["cash_in_hand"] += amt
+                else:
+                    tgt = resolve_bank_id(inv.get("bank_id"), inv.get("bank_name"))
+                    if tgt in running_balances:
+                        running_balances[tgt] += amt
+                    elif sbi_id in running_balances:
+                        running_balances[sbi_id] += amt
 
-        # Prior contra cash-to-bank and bank-to-cash before from_d
-        prior_contra = await db.bank_transactions.find({"transfer_date": {"$lt": from_d}}, {"_id": 0}).to_list(1000)
-        prior_cash_dep = sum(
-            float(t.get("amount") or 0) for t in prior_contra
-            if t.get("withdraw_from") == "Cash in Hand" or (t.get("transfer_type") == "cash_to_bank" and t.get("direction") != "withdraw")
-        )
-        prior_cash_with = sum(
-            float(t.get("amount") or 0) for t in prior_contra
-            if t.get("deposit_to") == "Cash in Hand" or (t.get("transfer_type") == "bank_to_cash" and t.get("direction") == "deposit") or (t.get("transfer_type") == "cash_to_bank" and t.get("direction") == "withdraw")
-        )
+            prior_income = await db.income.find(
+                {"date": {"$gte": start_date, "$lt": from_d}},
+                {"_id": 0}
+            ).to_list(5000)
+            for inc in prior_income:
+                amt = float(inc.get("amount") or 0.0)
+                if amt <= 0:
+                    continue
+                mode = (inc.get("payment_mode") or "cash").lower()
+                splits = inc.get("payment_splits") or []
+                if splits:
+                    for ps in splits:
+                        p_amt = float(ps.get("amount") or 0.0)
+                        if p_amt <= 0: continue
+                        p_m = str(ps.get("mode") or "").lower()
+                        if "cash" in p_m:
+                            running_balances["cash_in_hand"] += p_amt
+                        else:
+                            tgt = resolve_bank_id(ps.get("bank_id"), ps.get("bank_name"))
+                            if tgt in running_balances:
+                                running_balances[tgt] += p_amt
+                            elif sbi_id in running_balances:
+                                running_balances[sbi_id] += p_amt
+                elif "cash" in mode:
+                    running_balances["cash_in_hand"] += amt
+                else:
+                    tgt = resolve_bank_id(inc.get("bank_id"), inc.get("bank_name"))
+                    if tgt in running_balances:
+                        running_balances[tgt] += amt
+                    elif sbi_id in running_balances:
+                        running_balances[sbi_id] += amt
 
-        cash_ob = max(0.0, round(cash_base + prior_cash_in + prior_cash_with - prior_cash_out - prior_cash_dep, 2))
+            prior_expenses = await db.expenses.find(
+                {"date": {"$gte": start_date, "$lt": from_d}, "status": {"$ne": "rejected"}},
+                {"_id": 0}
+            ).to_list(5000)
+            for exp in prior_expenses:
+                amt = float(exp.get("amount") or 0.0)
+                if amt <= 0:
+                    continue
+                mode = str(exp.get("payment_mode") or "cash").lower()
+                is_online = any(k in mode for k in ["bank", "online", "upi", "cheque", "neft", "rtgs", "card"])
+                if is_online:
+                    tgt = resolve_bank_id(exp.get("bank_id") or exp.get("bank_account_id"), exp.get("bank_name"))
+                    if tgt in running_balances:
+                        running_balances[tgt] -= amt
+                    elif sbi_id in running_balances:
+                        running_balances[sbi_id] -= amt
+                else:
+                    running_balances["cash_in_hand"] -= amt
 
+            prior_contra = await db.bank_transactions.find(
+                {"transfer_date": {"$gte": start_date, "$lt": from_d}},
+                {"_id": 0}
+            ).to_list(5000)
+            for c in prior_contra:
+                amt = float(c.get("amount") or 0.0)
+                if amt <= 0:
+                    continue
+                w_from = c.get("withdraw_from")
+                d_to = c.get("deposit_to")
+                ttype = c.get("transfer_type")
+                if w_from == "Cash in Hand" or ttype == "cash_to_bank":
+                    running_balances["cash_in_hand"] -= amt
+                    tgt = d_to if d_to in running_balances else sbi_id
+                    if tgt in running_balances:
+                        running_balances[tgt] += amt
+                elif d_to == "Cash in Hand" or ttype == "bank_to_cash":
+                    running_balances["cash_in_hand"] += amt
+                    src = w_from if w_from in running_balances else sbi_id
+                    if src in running_balances:
+                        running_balances[src] -= amt
+                else:
+                    if w_from in running_balances:
+                        running_balances[w_from] -= amt
+                    if d_to in running_balances:
+                        running_balances[d_to] += amt
+
+        # Snapshot of Opening Balances for from_d
+        opening_balances = []
+        tot_bank_ob = 0.0
+        r_idx = 0
+        for b in all_banks:
+            b_id = b.get("id")
+            bal = round(running_balances.get(b_id, 0.0), 2)
+            tot_bank_ob += bal
+            opening_balances.append({
+                "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
+                "id": b_id,
+                "name": b.get("name") or b.get("bank_name") or "Bank Account",
+                "bank_name": b.get("bank_name") or "Bank",
+                "account_no": b.get("account_no") or "—",
+                "ifsc": b.get("ifsc") or "—",
+                "balance": bal,
+                "formatted_balance": f"₹{bal:,.2f}",
+            })
+            r_idx += 1
+
+        cash_ob = round(running_balances.get("cash_in_hand", 0.0), 2)
         opening_balances.append({
             "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
             "id": "cash_in_hand",
@@ -391,11 +619,11 @@ def make_system_operations_router(db, get_current_user, require_admin):
 
         total_previous_ob = round(tot_bank_ob + cash_ob, 2)
 
-        # 2. Receipt Amount from Sale Voucher Table
+        # 4. Receipt Amount from Sale Voucher Table in date range
         sale_invoices = await db.invoices.find(
             {"invoice_type": "sale", "date": {"$gte": from_d, "$lte": to_d}},
             {"_id": 0}
-        ).sort("date", 1).to_list(1000)
+        ).sort("date", 1).to_list(2000)
 
         sale_receipts = []
         sale_running = 0.0
@@ -410,6 +638,30 @@ def make_system_operations_router(db, get_current_user, require_admin):
                 items_str = s.get("notes") or "Sale Invoice Services"
 
             p_mode = (s.get("payment_mode") or "CASH").upper()
+            mode_lower = p_mode.lower()
+            splits = s.get("payment_splits") or []
+
+            if splits:
+                for ps in splits:
+                    p_amt = float(ps.get("amount") or 0.0)
+                    if p_amt <= 0: continue
+                    p_m = str(ps.get("mode") or "").lower()
+                    if "cash" in p_m:
+                        running_balances["cash_in_hand"] += p_amt
+                    else:
+                        tgt = resolve_bank_id(ps.get("bank_id"), ps.get("bank_name"))
+                        if tgt in running_balances:
+                            running_balances[tgt] += p_amt
+                        elif sbi_id in running_balances:
+                            running_balances[sbi_id] += p_amt
+            elif "cash" in mode_lower:
+                running_balances["cash_in_hand"] += paid_amt
+            else:
+                tgt = resolve_bank_id(s.get("bank_id"), s.get("bank_name"))
+                if tgt in running_balances:
+                    running_balances[tgt] += paid_amt
+                elif sbi_id in running_balances:
+                    running_balances[sbi_id] += paid_amt
 
             sale_receipts.append({
                 "sl_no": s_sl,
@@ -428,11 +680,11 @@ def make_system_operations_router(db, get_current_user, require_admin):
 
         total_sale_receipts = round(sale_running, 2)
 
-        # 3. Receipt Amount from Payment In Table
+        # 5. Receipt Amount from Payment In Table in date range
         payment_incomes = await db.income.find(
             {"date": {"$gte": from_d, "$lte": to_d}},
             {"_id": 0}
-        ).sort("date", 1).to_list(1000)
+        ).sort("date", 1).to_list(2000)
 
         payment_in_receipts = []
         payment_running = 0.0
@@ -450,8 +702,31 @@ def make_system_operations_router(db, get_current_user, require_admin):
                 linked_ref = "Direct Receipt"
 
             part_desc = inc.get("service_name") or inc.get("category") or inc.get("source") or inc.get("remarks") or "Part Payment Received"
-
             p_mode = (inc.get("payment_mode") or "CASH").upper()
+            mode_lower = p_mode.lower()
+            splits = inc.get("payment_splits") or []
+
+            if splits:
+                for ps in splits:
+                    p_amt = float(ps.get("amount") or 0.0)
+                    if p_amt <= 0: continue
+                    p_m = str(ps.get("mode") or "").lower()
+                    if "cash" in p_m:
+                        running_balances["cash_in_hand"] += p_amt
+                    else:
+                        tgt = resolve_bank_id(ps.get("bank_id"), ps.get("bank_name"))
+                        if tgt in running_balances:
+                            running_balances[tgt] += p_amt
+                        elif sbi_id in running_balances:
+                            running_balances[sbi_id] += p_amt
+            elif "cash" in mode_lower:
+                running_balances["cash_in_hand"] += inc_amt
+            else:
+                tgt = resolve_bank_id(inc.get("bank_id"), inc.get("bank_name"))
+                if tgt in running_balances:
+                    running_balances[tgt] += inc_amt
+                elif sbi_id in running_balances:
+                    running_balances[sbi_id] += inc_amt
 
             payment_in_receipts.append({
                 "sl_no": p_sl,
@@ -470,12 +745,9 @@ def make_system_operations_router(db, get_current_user, require_admin):
             p_sl += 1
 
         total_payment_in_receipts = round(payment_running, 2)
-
-        # Total O.B with Receipts during the period
         total_day_receipts = round(total_sale_receipts + total_payment_in_receipts, 2)
-        total_ob_with_receipts = round(total_previous_ob + total_day_receipts, 2)
 
-        # 3.5 Cash Deposited to Bank (Contra Transfers during period)
+        # 6. Contra Deposits & Transfers in date range
         contra_records = await db.bank_transactions.find(
             {
                 "transfer_date": {"$gte": from_d, "$lte": to_d},
@@ -484,10 +756,11 @@ def make_system_operations_router(db, get_current_user, require_admin):
                     {"transfer_type": "cash_to_bank"},
                     {"deposit_to": "Cash in Hand"},
                     {"transfer_type": "bank_to_cash"},
+                    {"transfer_type": "bank_to_bank"},
                 ]
             },
             {"_id": 0}
-        ).sort("transfer_date", 1).to_list(1000)
+        ).sort("transfer_date", 1).to_list(2000)
 
         c_u_ids = list({t.get("created_by") for t in contra_records if t.get("created_by")})
         c_u_map = {}
@@ -498,8 +771,6 @@ def make_system_operations_router(db, get_current_user, require_admin):
         contra_deposits = []
         contra_running = 0.0
         c_sl = 1
-        bank_contra_inflow = {}
-        bank_contra_outflow = {}
         total_contra_deposits = 0.0
         total_contra_withdrawals = 0.0
 
@@ -508,14 +779,18 @@ def make_system_operations_router(db, get_current_user, require_admin):
             if amt <= 0:
                 continue
 
+            w_from = ct.get("withdraw_from")
+            d_to = ct.get("deposit_to")
+            ttype = ct.get("transfer_type")
+
             is_cash_to_bank = (
-                ct.get("withdraw_from") == "Cash in Hand" or 
-                (ct.get("transfer_type") == "cash_to_bank" and ct.get("direction") != "withdraw")
+                w_from == "Cash in Hand" or
+                (ttype == "cash_to_bank" and ct.get("direction") != "withdraw")
             )
             is_bank_to_cash = (
-                ct.get("deposit_to") == "Cash in Hand" or
-                (ct.get("transfer_type") == "bank_to_cash" and ct.get("direction") == "deposit") or
-                (ct.get("transfer_type") == "cash_to_bank" and ct.get("direction") == "withdraw")
+                d_to == "Cash in Hand" or
+                (ttype == "bank_to_cash" and ct.get("direction") == "deposit") or
+                (ttype == "cash_to_bank" and ct.get("direction") == "withdraw")
             )
 
             depositor = ct.get("created_by_name") or c_u_map.get(ct.get("created_by")) or "Admin"
@@ -523,18 +798,19 @@ def make_system_operations_router(db, get_current_user, require_admin):
             if is_cash_to_bank:
                 contra_running += amt
                 total_contra_deposits += amt
+                running_balances["cash_in_hand"] -= amt
+                tgt = d_to if d_to in running_balances else sbi_id
+                if tgt in running_balances:
+                    running_balances[tgt] += amt
 
-                target_bank_id = ct.get("deposit_to")
                 target_bank_name = ct.get("deposit_to_name")
                 if not target_bank_name:
                     for b in all_banks:
-                        if b.get("id") == target_bank_id:
+                        if b.get("id") == d_to:
                             target_bank_name = f"{b.get('name')} ({b.get('bank_name')})"
                             break
                 if not target_bank_name:
                     target_bank_name = "Bank Account"
-
-                bank_contra_inflow[target_bank_id] = bank_contra_inflow.get(target_bank_id, 0.0) + amt
 
                 contra_deposits.append({
                     "sl_no": c_sl,
@@ -542,7 +818,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
                     "voucher": ct.get("id") or f"CONTRA-{c_sl}",
                     "withdrawn_from": "Cash in Hand",
                     "deposited_to_bank": target_bank_name,
-                    "bank_id": target_bank_id,
+                    "bank_id": d_to,
                     "deposited_by": depositor,
                     "amount": round(amt, 2),
                     "attachment_name": ct.get("attachment_name") or "Slip",
@@ -553,14 +829,21 @@ def make_system_operations_router(db, get_current_user, require_admin):
                 c_sl += 1
             elif is_bank_to_cash:
                 total_contra_withdrawals += amt
-                src_bank_id = ct.get("withdraw_from")
-                bank_contra_outflow[src_bank_id] = bank_contra_outflow.get(src_bank_id, 0.0) + amt
+                running_balances["cash_in_hand"] += amt
+                src = w_from if w_from in running_balances else sbi_id
+                if src in running_balances:
+                    running_balances[src] -= amt
+            else:
+                if w_from in running_balances:
+                    running_balances[w_from] -= amt
+                if d_to in running_balances:
+                    running_balances[d_to] += amt
 
-        # 4. Expenses Breakdown (Online vs Cash) & Details Table
+        # 7. Expenses in date range
         expenses = await db.expenses.find(
             {"date": {"$gte": from_d, "$lte": to_d}, "status": {"$ne": "rejected"}},
             {"_id": 0}
-        ).sort("date", 1).to_list(1000)
+        ).sort("date", 1).to_list(2000)
 
         expenses_online = 0.0
         expenses_cash = 0.0
@@ -576,8 +859,14 @@ def make_system_operations_router(db, get_current_user, require_admin):
             is_online = any(kw in e_mode for kw in ["bank", "online", "upi", "cheque", "neft", "rtgs", "card"])
             if is_online:
                 expenses_online += e_amt
+                tgt = resolve_bank_id(e.get("bank_id") or e.get("bank_account_id"), e.get("bank_name"))
+                if tgt in running_balances:
+                    running_balances[tgt] -= e_amt
+                elif sbi_id in running_balances:
+                    running_balances[sbi_id] -= e_amt
             else:
                 expenses_cash += e_amt
+                running_balances["cash_in_hand"] -= e_amt
 
             exp_running += e_amt
             cat = e.get("category") or "General Expense"
@@ -614,21 +903,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
         expenses_cash = round(expenses_cash, 2)
         total_expenses = round(expenses_online + expenses_cash, 2)
 
-        # 5. Closing Balances Calculation
-        # For each bank account: Closing Balance = Opening Balance + Receipts into Bank - Expenses from Bank + Cash Deposited (Contra) - Cash Withdrawn
-        # Cash in Hand: cash_ob + cash sales + cash income + withdrawals - cash expenses - cash deposited to bank
-
-        cash_sales_period = sum(
-            r["receipt_in"] for r in sale_receipts if "CASH" in r["payment_mode"]
-        )
-        cash_income_period = sum(
-            r["receipt_in"] for r in payment_in_receipts if "CASH" in r["payment_mode"]
-        )
-        cash_cb = max(0.0, round(cash_ob + cash_sales_period + cash_income_period + total_contra_withdrawals - expenses_cash - total_contra_deposits, 2))
-
-        # Calculate general bank receipts (non-cash)
-        bank_inflow_period = round(total_day_receipts - (cash_sales_period + cash_income_period), 2)
-
+        # 8. Closing Balances List
         closing_balances = []
         c_idx = 0
         allocated_bank_cb = 0.0
@@ -640,15 +915,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
             name = b.get("name") or b.get("bank_name") or "Bank Account"
             bank_name = b.get("bank_name") or "Bank"
 
-            b_ob = float(b.get("opening_balance") or b.get("balance") or 0.0)
-            b_dep = bank_contra_inflow.get(b_id, 0.0)
-            b_with = bank_contra_outflow.get(b_id, 0.0)
-
-            # If primary bank (SBI), also assign generic online inflow/expenses
-            if "42137607814" in account_no or "TRIVENI" in name.upper():
-                b_cb = round(b_ob + bank_inflow_period - expenses_online + b_dep - b_with, 2)
-            else:
-                b_cb = round(b_ob + b_dep - b_with, 2)
+            b_cb = round(running_balances.get(b_id, 0.0), 2)
             allocated_bank_cb += b_cb
 
             closing_balances.append({
@@ -687,6 +954,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
         })
         c_idx += 1
 
+        cash_cb = round(running_balances.get("cash_in_hand", 0.0), 2)
         closing_balances.append({
             "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
             "id": "cash_in_hand",
@@ -698,15 +966,22 @@ def make_system_operations_router(db, get_current_user, require_admin):
             "formatted_balance": f"₹{cash_cb:,.2f}",
         })
 
-        # Total C.B Formula: (i)+(ii)+(iii)+(iv)+(v)+(vi)
-        # Sum of all closing items (closing banks + closing cash + total online expenses + total cash expenses)
-        total_cb = round(allocated_bank_cb + expenses_online + expenses_cash + cash_cb, 2)
+        # 9. Totals and Balanced Equation
+        # Receipt Side: Total previous OB + Total Day Receipts
+        receipt_side_total = round(total_previous_ob + total_day_receipts, 2)
+        # Payment Side: Total Day Expenses + Closing Balances of all accounts
+        # Note: allocated_bank_cb + expenses_online + expenses_cash + cash_cb equals:
+        # (allocated_bank_cb + cash_cb) + total_expenses
+        total_closing_accounts = round(allocated_bank_cb + cash_cb, 2)
+        payment_side_total = round(total_expenses + total_closing_accounts, 2)
 
-        # 6. Verification / Reconciliation Check: Total O.B == Total C.B
-        diff = round(abs(total_ob_with_receipts - total_cb), 2)
-        is_balanced = (diff == 0.0 or diff < 0.01)
+        # Sum of items shown in Closing Balance section
+        total_cb_display = round(allocated_bank_cb + expenses_online + expenses_cash + cash_cb, 2)
 
-        # Combined chronologic list for backward compatibility with existing FlatList
+        diff = round(abs(receipt_side_total - payment_side_total), 2)
+        is_balanced = (diff < 0.01)
+
+        # Combined chronologic list for backward compatibility
         combined_entries = []
         for sr in sale_receipts:
             combined_entries.append({
@@ -746,6 +1021,10 @@ def make_system_operations_router(db, get_current_user, require_admin):
         return {
             "from_date": from_d,
             "to_date": to_d,
+            "account_start_date": start_date,
+            "as_on_date": to_d if from_d == to_d else f"{from_d} to {to_d}",
+            "initial_balances": initial_balances_display,
+
             "opening_balances": opening_balances,
             "total_opening_balance": total_previous_ob,
             "total_previous_ob": total_previous_ob,
@@ -761,7 +1040,7 @@ def make_system_operations_router(db, get_current_user, require_admin):
             "total_contra_withdrawals": round(total_contra_withdrawals, 2),
 
             "total_day_receipts": total_day_receipts,
-            "total_ob_with_receipts": total_ob_with_receipts,
+            "total_ob_with_receipts": receipt_side_total,
 
             "expenses_online": expenses_online,
             "expenses_cash": expenses_cash,
@@ -769,13 +1048,24 @@ def make_system_operations_router(db, get_current_user, require_admin):
             "expense_details": expense_details,
 
             "closing_balances": closing_balances,
-            "total_closing_balance": total_cb,
-            "total_cb": total_cb,
+            "total_closing_balance": total_cb_display,
+            "total_cb": total_cb_display,
+            "total_closing_accounts": total_closing_accounts,
+
+            "receipt_side_total": receipt_side_total,
+            "payment_side_total": payment_side_total,
+            "receipt_reconciliation": {
+                "total_previous_ob": total_previous_ob,
+                "total_sale_receipts": total_sale_receipts,
+                "total_payment_in_receipts": total_payment_in_receipts,
+                "total_ob": receipt_side_total,
+            },
 
             "is_balanced": is_balanced,
             "reconciliation_status": "ok" if is_balanced else "mismatch",
             "reconciliation_message": "Account is ok." if is_balanced else "Account Mismatch",
             "difference": diff,
+            "difference_message": "Account is ok. (VERIFIED)" if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}",
 
             # Compatibility fields
             "entries": combined_entries,

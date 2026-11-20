@@ -1014,6 +1014,38 @@ export default function AccountingReportsHub() {
                 ) : null}
               </View>
 
+              {/* Account Start Date & Fixed Initial Balances Banner */}
+              {reportData.initial_balances && reportData.initial_balances.length > 0 && (
+                <View style={[styles.obCbCard, { borderLeftColor: '#00104A', borderLeftWidth: 4 }]}>
+                  <View style={styles.obCbHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <Ionicons name="calendar-outline" size={16} color="#00104A" />
+                      <Text style={[styles.obCbTitle, { color: '#00104A' }]}>
+                        Account Started on date: <Text style={{ fontWeight: '900' }}>{reportData.account_start_date || '17-11-2026'}</Text>
+                        {'  '}|{'  '}as on date: <Text style={{ color: BLUE, fontWeight: '800' }}>{reportData.as_on_date || reportData.from_date || ''}</Text>
+                      </Text>
+                    </View>
+                    <Text style={styles.obCbBadge}>Rule: Today CB = Tomorrow OB</Text>
+                  </View>
+                  <View style={{ gap: 6, marginTop: 8 }}>
+                    {reportData.initial_balances.map((b: any, idx: number) => (
+                      <View key={idx} style={styles.obCbRow}>
+                        <Text style={[styles.obCbIdx, { color: '#00104A' }]}>{b.index}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.obCbName}>
+                            {b.account_no && b.account_no !== '—' ? `Account No : ${b.account_no} (${b.bank_name || b.name})` : b.name}
+                          </Text>
+                        </View>
+                        <View style={styles.dottedLeader} />
+                        <Text style={styles.obCbVal}>
+                          Opening Balance is on {reportData.account_start_date || '17-11-2026'}: <Text style={{ fontWeight: '800', color: '#00104A' }}>{inr(b.initial_balance ?? b.balance)}</Text>
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+
               {/* Opening Balance (For Day Book & Ledger Statements) */}
               {reportData.opening_balances && reportData.opening_balances.length > 0 && (
                 <View style={styles.obCbCard}>

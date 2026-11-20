@@ -738,6 +738,9 @@ export const api = {
   getCashBankAccounts: () => request<any[]>('/accounting/cash-bank/banks'),
   executeCashBankTransfer: (data: any) => request<any>('/accounting/cash-bank/transfer', { method: 'POST', body: JSON.stringify(data) }),
   getCashSummary: () => request<any>('/accounting/cash-bank/cash-summary'),
+  getDayBookInitialBalances: () => request<any>('/system/reports/day-book/initial-balances'),
+  saveDayBookInitialBalances: (data: { start_date: string; cash_in_hand: number; accounts: Record<string, number> }) =>
+    request<any>('/system/reports/day-book/initial-balances', { method: 'POST', body: JSON.stringify(data) }),
   getCheques: (status?: string) => request<any>(`/accounting/cash-bank/cheques?status=${status || 'all'}`),
   createCheque: (data: any) => request<any>('/accounting/cash-bank/cheques', { method: 'POST', body: JSON.stringify(data) }),
   depositCheque: (chqId: string, data: any) => request<any>(`/accounting/cash-bank/cheques/${chqId}/deposit`, { method: 'POST', body: JSON.stringify(data) }),

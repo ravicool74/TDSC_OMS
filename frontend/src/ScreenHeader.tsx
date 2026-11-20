@@ -16,8 +16,10 @@ export const ScreenHeader: React.FC<{ title: string; subtitle?: string; right?: 
   const handleBack = () => {
     if (onBack) {
       onBack();
-    } else {
+    } else if (router.canGoBack()) {
       router.back();
+    } else {
+      router.replace('/(tabs)/dashboard');
     }
   };
 
