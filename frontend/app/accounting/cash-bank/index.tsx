@@ -925,6 +925,34 @@ export default function CashBankScreen() {
                 </Pressable>
               </View>
 
+              {/* Consolidated Bank Book Quick Action Banner */}
+              <Pressable
+                onPress={() => router.push('/accounting/reports?report=consolidated_bank_book' as any)}
+                style={{
+                  backgroundColor: '#00104A',
+                  borderRadius: radius.md,
+                  padding: 12,
+                  marginBottom: spacing.md,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="journal-outline" size={20} color="#FFF" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 14 }}>Consolidated Bank Book</Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>All Banks & Cash Statement with Opening/Closing Roll-Forward</Text>
+                  </View>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#2563EB', paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.sm }}>
+                  <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 11 }}>View Full Statement</Text>
+                  <Ionicons name="arrow-forward" size={12} color="#FFF" />
+                </View>
+              </Pressable>
+
               {/* Bank Accounts List */}
               <Text style={styles.sectionHeading}>Your Bank Accounts</Text>
               <View style={styles.tabSearchBox}>

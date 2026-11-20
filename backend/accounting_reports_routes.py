@@ -36,6 +36,7 @@ REPORT_CATALOG = [
         "icon": "bar-chart",
         "color": "#2563EB",
         "reports": [
+            {"id": "consolidated_bank_book", "name": "Consolidated Bank Book", "icon": "journal", "description": "Consolidated multi-bank statement across SBI, Axis Bank & linked accounts with opening balance breakdown, all receipts, expenses, running balance and digital audit reconciliation."},
             {"id": "bank_ledger", "name": "Bank Report Ledger", "icon": "business", "description": "Account-wise bank ledger statement with opening balance, all receipts (Sale, Payment-In), online expenses and running balance."},
             {"id": "cash_ledger", "name": "Cash Ledger", "icon": "cash", "description": "Real-time Cash in Hand ledger showing opening balance, cash sales, cash receipts, cash expenses and bank deposits."},
             {"id": "sale_report", "name": "Sale Report", "icon": "trending-up", "description": "Comprehensive sale invoices register with customer details, taxable value & GST."},
@@ -102,6 +103,7 @@ REPORT_CATALOG = [
         "icon": "briefcase",
         "color": "#D97706",
         "reports": [
+            {"id": "consolidated_bank_book", "name": "Consolidated Bank Book", "icon": "journal", "description": "Consolidated multi-bank statement across SBI, Axis Bank & linked accounts with opening balance breakdown, all receipts, expenses, running balance and digital audit reconciliation."},
             {"id": "bank_ledger", "name": "Bank Report Ledger", "icon": "business", "description": "Account-wise bank ledger statement with opening balance, all receipts (Sale, Payment-In), online expenses and running balance."},
             {"id": "cash_ledger", "name": "Cash Ledger", "icon": "cash", "description": "Real-time Cash in Hand ledger showing opening balance, cash sales, cash receipts, cash expenses and bank deposits."},
             {"id": "bank_statement", "name": "Bank Statement", "icon": "card-outline", "description": "Multi-bank passbook ledger showing deposits, withdrawals and balances."},
@@ -370,44 +372,86 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "rows": rows
             }
 
-        elif report_type in ["day_book", "all_transactions"]:
-            # Combine sales receipts, purchases, expenses into daily chronological order
+        elif report_type in ["day_book", "all_transactions", "consolidated_bank_book", "bank_book"]:
+            # Combine sales receipts, payment-in receipts, purchases, expenses into daily chronological order
             entries = []
             for s in sales:
                 d = s.get("date") or s.get("invoice_date")
                 if in_date_range(d):
+                    s_id = s.get("id") or str(s.get("_id", ""))
+                    v_no = s.get("invoice_no") or s.get("invoice_number") or "SI"
+                    splits = s.get("payment_splits") or []
+                    p_m = (s.get("payment_mode") or "cash").upper()
+                    if splits:
+                        p_m = "/".join(set(str(ps.get("mode") or "").upper() for ps in splits if ps.get("mode"))) or p_m
                     entries.append({
                         "date": d,
-                        "ref_no": s.get("invoice_number"),
+                        "ref_no": v_no,
                         "type": "Sale Invoice",
                         "party": s.get("party_name") or "Direct Client",
-                        "mode": (s.get("payment_mode") or "cash").upper(),
+                        "mode": p_m,
                         "in_amount": float(s.get("paid_amount") or s.get("total_amount") or 0),
                         "out_amount": 0.0,
+                        "voucher_id": s_id,
+                        "voucher_type": "sale_invoice",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
+                    })
+            for inc in incomes:
+                d = inc.get("date")
+                if in_date_range(d):
+                    inc_id = inc.get("id") or str(inc.get("_id", ""))
+                    v_no = inc.get("income_no") or inc.get("voucher_no") or "PAYIN"
+                    entries.append({
+                        "date": d,
+                        "ref_no": v_no,
+                        "type": "Payment-In Receipt",
+                        "party": inc.get("client_name") or "Customer",
+                        "mode": (inc.get("payment_mode") or "online").upper(),
+                        "in_amount": float(inc.get("amount") or 0),
+                        "out_amount": 0.0,
+                        "voucher_id": inc_id,
+                        "voucher_type": "payment_in",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
                     })
             for p in purchases:
                 d = p.get("date") or p.get("invoice_date")
                 if in_date_range(d):
+                    p_id = p.get("id") or str(p.get("_id", ""))
                     entries.append({
                         "date": d,
-                        "ref_no": p.get("invoice_number"),
+                        "ref_no": p.get("invoice_number") or p.get("bill_no") or "—",
                         "type": "Purchase Bill",
                         "party": p.get("party_name") or "Vendor",
                         "mode": (p.get("payment_mode") or "bank").upper(),
                         "in_amount": 0.0,
                         "out_amount": float(p.get("paid_amount") or p.get("total_amount") or 0),
+                        "voucher_id": p_id,
+                        "voucher_type": "purchase",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
                     })
             for e in expenses:
                 d = e.get("date")
                 if in_date_range(d):
+                    e_id = e.get("id") or str(e.get("_id", ""))
                     entries.append({
                         "date": d,
-                        "ref_no": e.get("expense_no") or "EXP",
+                        "ref_no": e.get("expense_no") or e.get("voucher_no") or "EXP",
                         "type": f"Expense ({e.get('category') or 'General'})",
                         "party": e.get("vendor") or "Various",
                         "mode": (e.get("payment_mode") or "cash").upper(),
                         "in_amount": 0.0,
                         "out_amount": float(e.get("amount") or 0),
+                        "voucher_id": e_id,
+                        "voucher_type": "expense",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
                     })
 
             entries.sort(key=lambda x: x["date"] or "", reverse=True)
@@ -427,6 +471,13 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "debit": inr(item["in_amount"]) if item["in_amount"] > 0 else "—",
                     "credit": inr(item["out_amount"]) if item["out_amount"] > 0 else "—",
                     "balance": inr(running),
+                    "receipt_raw": item["in_amount"],
+                    "payment_raw": item["out_amount"],
+                    "voucher_id": item.get("voucher_id"),
+                    "voucher_type": item.get("voucher_type"),
+                    "can_view": True,
+                    "can_edit": True,
+                    "can_delete": True,
                 })
 
             # Compute Opening & Closing Balances with strict roll-forward
@@ -793,12 +844,40 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             diff = round(abs(receipt_side_total - payment_side_total), 2)
             is_balanced = (diff < 0.01)
 
+            total_all_bank_ob = sum(round(running_balances.get(b.get("id"), 0.0), 2) for b in all_banks)
+            available_banks = [
+                {
+                    "id": "all",
+                    "name": "Consolidated (All Banks)",
+                    "bank_name": "All Banks",
+                    "account_no": "Multi-Bank",
+                    "opening_balance": total_previous_ob,
+                    "formatted_balance": inr(total_previous_ob),
+                }
+            ] + [
+                {
+                    "id": b.get("id"),
+                    "name": b.get("name") or b.get("bank_name"),
+                    "bank_name": b.get("bank_name") or "Bank",
+                    "account_no": b.get("account_no") or "—",
+                    "ifsc": b.get("ifsc") or "—",
+                    "opening_balance": round(running_balances.get(b.get("id"), 0.0), 2),
+                    "formatted_balance": inr(running_balances.get(b.get("id"), 0.0)),
+                }
+                for b in all_banks
+            ]
+
+            title = "Consolidated Bank Book (All Accounts)" if report_type in ["consolidated_bank_book", "bank_book"] else ("Day Book (Cash & Bank Ledger)" if report_type == "day_book" else "All Transactions Master Register")
+            rec_msg = "Account is ok. Total O.B matches Total C.B perfectly." if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}"
+
             return {
                 "report_type": report_type,
-                "report_title": "Day Book (Cash & Bank Ledger)" if report_type == "day_book" else "All Transactions Master Register",
+                "report_title": title,
                 "category": cat_name,
                 "account_start_date": start_date,
                 "as_on_date": to_date if from_date == to_date else f"{from_date or start_date} to {to_date or ''}".strip(),
+                "selected_bank_id": "all",
+                "available_banks": available_banks,
                 "initial_balances": initial_balances_display,
                 "kpis": [
                     {"label": "Total Cash/Bank Inflow", "value": inr(tot_in), "numeric": tot_in, "color": "#059669"},
@@ -815,6 +894,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"key": "debit", "label": "Receipt (In)"},
                     {"key": "credit", "label": "Payment (Out)"},
                     {"key": "balance", "label": "Cumulative Bal."},
+                    {"key": "actions", "label": "Actions"},
                 ],
                 "rows": rows,
                 "opening_balances": opening_balances,
@@ -830,9 +910,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "expenses_cash": cash_out_period,
                 "is_balanced": is_balanced,
                 "reconciliation_status": "ok" if is_balanced else "mismatch",
-                "reconciliation_message": "Account is ok. (VERIFIED)" if is_balanced else "Account Mismatch",
+                "reconciliation_message": rec_msg,
                 "difference": diff,
-                "difference_message": "Account is ok. (VERIFIED)" if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}",
+                "difference_message": rec_msg,
             }
 
 
@@ -1049,7 +1129,18 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             contra_period = await db.bank_transactions.find(contra_query, {"_id": 0}).to_list(2000)
 
             # Available banks list for frontend dropdown switchers
+            total_all_bank_ob = sum(round(running_balances.get(b.get("id"), 0.0), 2) for b in all_banks)
+            total_all_ob = total_all_bank_ob + round(running_balances.get("cash_in_hand", 0.0), 2)
             available_banks = [
+                {
+                    "id": "all",
+                    "name": "Consolidated (All Banks)",
+                    "bank_name": "All Banks",
+                    "account_no": "Multi-Bank",
+                    "opening_balance": total_all_ob,
+                    "formatted_balance": inr(total_all_ob),
+                }
+            ] + [
                 {
                     "id": b.get("id"),
                     "name": b.get("name") or b.get("bank_name"),
@@ -1062,7 +1153,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 for b in all_banks
             ]
 
-            if report_type == "bank_ledger":
+            if report_type in ["bank_ledger", "consolidated_bank_book", "bank_book"]:
+                if report_type in ["consolidated_bank_book", "bank_book"] or not bank_id or bank_id in ["all", "consolidated"]:
+                    return await generate_report("consolidated_bank_book", from_date=from_date, to_date=to_date, bank_id="all")
                 sel_bank_id = bank_id or sbi_id or (all_banks[0]["id"] if all_banks else None)
                 target_bank = next((b for b in all_banks if b.get("id") == sel_bank_id), all_banks[0] if all_banks else {})
                 target_bank_name = target_bank.get("name") or target_bank.get("bank_name") or "Bank Account"

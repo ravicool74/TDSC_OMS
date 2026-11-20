@@ -6025,11 +6025,34 @@ async def cash_book(from_date: Optional[str] = None, to_date: Optional[str] = No
 
 
 @api_router.get("/accounting/bank-book")
-async def bank_book(bank_id: str, from_date: Optional[str] = None, to_date: Optional[str] = None, current: User = Depends(get_current_user)):
-    b = await db.bank_accounts.find_one({"id": bank_id}, {"_id": 0})
-    if not b: raise HTTPException(status_code=404, detail="Bank account not found")
-    q_inc: dict = {"bank_account_id": bank_id}
-    q_exp: dict = {"bank_account_id": bank_id}
+async def bank_book(bank_id: Optional[str] = None, from_date: Optional[str] = None, to_date: Optional[str] = None, current: User = Depends(get_current_user)):
+    try:
+        from accounting_reports_routes import generate_report
+        is_all = not bank_id or bank_id.lower() in ["all", "consolidated"]
+        rep_type = "consolidated_bank_book" if is_all else "bank_ledger"
+        rep = await generate_report(rep_type, from_date=from_date, to_date=to_date, bank_id="all" if is_all else bank_id)
+        if rep:
+            b_obj = rep.get("selected_bank") or ({"id": "all", "name": "Consolidated (All Banks)", "bank_name": "Multi-Bank"} if is_all else {})
+            return {
+                **rep,
+                "bank": b_obj,
+                "entries": rep.get("rows", []),
+                "closing": rep.get("total_closing_balance", 0.0),
+            }
+    except Exception as e:
+        print("bank_book generate_report fallback:", e)
+
+    # Fallback if specific bank
+    b = None
+    if bank_id and bank_id.lower() not in ["all", "consolidated"]:
+        b = await db.bank_accounts.find_one({"id": bank_id}, {"_id": 0})
+    if not b:
+        b = await db.bank_accounts.find_one({}, {"_id": 0}) or {"id": "all", "name": "Consolidated (All Banks)", "bank_name": "Multi-Bank"}
+    q_inc: dict = {}
+    q_exp: dict = {}
+    if b.get("id") != "all":
+        q_inc["bank_account_id"] = b["id"]
+        q_exp["bank_account_id"] = b["id"]
     if from_date or to_date:
         d: dict = {}
         if from_date: d["$gte"] = from_date

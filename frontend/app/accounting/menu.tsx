@@ -73,6 +73,8 @@ const REPORT_SECTIONS: Section[] = [
     title: '1. CORE FINANCIAL REPORTS',
     defaultOpen: true,
     rows: [
+      { icon: 'journal', iconColor: '#00104A', iconBg: '#E0E7FF', label: 'Consolidated Bank Book', route: '/accounting/reports', params: { report: 'consolidated_bank_book' } },
+      { icon: 'business', iconColor: '#1E40AF', iconBg: '#DBEAFE', label: 'Bank Report Ledger', route: '/accounting/reports', params: { report: 'bank_ledger' } },
       { icon: 'trending-up', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Sale Report', route: '/accounting/reports', params: { report: 'sale_report' } },
       { icon: 'trending-down', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Purchase Report', route: '/accounting/reports', params: { report: 'purchase_report' } },
       { icon: 'book', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Day Book (Cash / Bank)', route: '/accounting/reports', params: { report: 'day_book' } },
@@ -338,6 +340,10 @@ const BankPanel: React.FC = () => {
       <View style={styles.bankHeader}>
         <Text style={styles.bankTitle}>Bank Accounts</Text>
         <View style={{ flexDirection: 'row', gap: 6 }}>
+          <Pressable testID="open-consolidated-book" onPress={() => router.push('/accounting/reports?report=consolidated_bank_book' as any)} style={[styles.bankAdd, { backgroundColor: '#00104A' }]}>
+            <Ionicons name="journal-outline" size={14} color="#FFF" />
+            <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Consolidated Book</Text>
+          </Pressable>
           <Pressable testID="open-cash-bank-hub" onPress={() => router.push('/accounting/cash-bank' as any)} style={[styles.bankAdd, { backgroundColor: NAVY }]}>
             <Ionicons name="swap-vertical" size={14} color="#FFF" />
             <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Cash & Bank Hub</Text>

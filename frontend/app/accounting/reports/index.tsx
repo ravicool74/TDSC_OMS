@@ -37,6 +37,7 @@ const formatCellValue = (colKey: string, val: any): string => {
   const moneyColKeywords = [
     'taxable', 'tax', 'gst', 'amount', 'amt', 'paid', 'balance', 'price',
     'total', 'subtotal', 'received', 'turnover', 'profit', 'debit', 'credit',
+    'receipt', 'payment', 'in_amount', 'out_amount',
     'sales', 'purchases', 'expenses', 'discount', 'fee', 'charge', 'cost',
     'receivable', 'payable', 'opening', 'closing'
   ];
@@ -1087,8 +1088,8 @@ export default function AccountingReportsHub() {
                 </Pressable>
               </View>
 
-              {/* Bank Selector Bar (For Bank Report Ledger) */}
-              {activeReportId === 'bank_ledger' && reportData?.available_banks && reportData.available_banks.length > 0 && (
+              {/* Bank Selector Bar (For Bank Report Ledger & Consolidated Bank Book) */}
+              {(activeReportId === 'bank_ledger' || activeReportId === 'consolidated_bank_book' || activeReportId === 'bank_book') && reportData?.available_banks && reportData.available_banks.length > 0 && (
                 <View style={styles.bankSelectBarCard}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                     <Ionicons name="business" size={16} color="#00104A" />
@@ -1096,19 +1097,24 @@ export default function AccountingReportsHub() {
                   </View>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
                     {reportData.available_banks.map((b: any) => {
-                      const isSel = (selectedBankId || reportData.selected_bank_id) === b.id;
+                      const isSel = (b.id === 'all' && (selectedBankId === 'all' || activeReportId === 'consolidated_bank_book' || activeReportId === 'bank_book')) ||
+                                    (b.id !== 'all' && (selectedBankId === b.id || reportData.selected_bank_id === b.id));
                       return (
                         <Pressable
                           key={b.id}
                           onPress={() => {
                             setSelectedBankId(b.id);
-                            openReport('bank_ledger', dateFilter, customFromDate, customToDate, b.id);
+                            if (b.id === 'all') {
+                              openReport('consolidated_bank_book', dateFilter, customFromDate, customToDate, 'all');
+                            } else {
+                              openReport('bank_ledger', dateFilter, customFromDate, customToDate, b.id);
+                            }
                           }}
                           style={[styles.bankTabChip, isSel && styles.bankTabChipActive]}
                         >
-                          <Ionicons name="wallet-outline" size={14} color={isSel ? '#FFF' : '#00104A'} />
+                          <Ionicons name={b.id === 'all' ? "globe-outline" : "wallet-outline"} size={14} color={isSel ? '#FFF' : '#00104A'} />
                           <Text style={[styles.bankTabChipTxt, isSel && styles.bankTabChipTxtActive]}>
-                            {b.name} ({b.account_no && b.account_no !== '—' ? b.account_no : 'A/C'})
+                            {b.id === 'all' ? '🌐 ' + b.name : `${b.name} (${b.account_no && b.account_no !== '—' ? b.account_no : 'A/C'})`}
                           </Text>
                         </Pressable>
                       );
