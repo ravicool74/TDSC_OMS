@@ -6026,22 +6026,6 @@ async def cash_book(from_date: Optional[str] = None, to_date: Optional[str] = No
 
 @api_router.get("/accounting/bank-book")
 async def bank_book(bank_id: Optional[str] = None, from_date: Optional[str] = None, to_date: Optional[str] = None, current: User = Depends(get_current_user)):
-    try:
-        from accounting_reports_routes import generate_report
-        is_all = not bank_id or bank_id.lower() in ["all", "consolidated"]
-        rep_type = "consolidated_bank_book" if is_all else "bank_ledger"
-        rep = await generate_report(rep_type, from_date=from_date, to_date=to_date, bank_id="all" if is_all else bank_id)
-        if rep:
-            b_obj = rep.get("selected_bank") or ({"id": "all", "name": "Consolidated (All Banks)", "bank_name": "Multi-Bank"} if is_all else {})
-            return {
-                **rep,
-                "bank": b_obj,
-                "entries": rep.get("rows", []),
-                "closing": rep.get("total_closing_balance", 0.0),
-            }
-    except Exception as e:
-        print("bank_book generate_report fallback:", e)
-
     # Consolidated / single-bank query
     is_all = not bank_id or bank_id.lower() in ["all", "consolidated"]
     if is_all:

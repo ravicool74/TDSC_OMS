@@ -372,7 +372,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "rows": rows
             }
 
-        elif report_type in ["day_book", "all_transactions", "consolidated_bank_book", "bank_book"]:
+        elif report_type in ["day_book", "all_transactions", "consolidated_bank_book", "bank_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"])):
             # Combine sales receipts, payment-in receipts, purchases, expenses into daily chronological order
             entries = []
             for s in sales:
@@ -867,7 +867,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 for b in all_banks
             ]
 
-            title = "Consolidated Bank Book (All Accounts)" if report_type in ["consolidated_bank_book", "bank_book"] else ("Day Book (Cash & Bank Ledger)" if report_type == "day_book" else "All Transactions Master Register")
+            is_cons = report_type in ["consolidated_bank_book", "bank_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"]))
+            title = "Consolidated Bank Book (All Accounts)" if is_cons else ("Day Book (Cash & Bank Ledger)" if report_type == "day_book" else "All Transactions Master Register")
             rec_msg = "Account is ok. Total O.B matches Total C.B perfectly." if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}"
 
             return {
@@ -1153,9 +1154,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 for b in all_banks
             ]
 
-            if report_type in ["bank_ledger", "consolidated_bank_book", "bank_book"]:
-                if report_type in ["consolidated_bank_book", "bank_book"] or not bank_id or bank_id in ["all", "consolidated"]:
-                    return await generate_report("consolidated_bank_book", from_date=from_date, to_date=to_date, bank_id="all")
+            if report_type == "bank_ledger":
                 sel_bank_id = bank_id or sbi_id or (all_banks[0]["id"] if all_banks else None)
                 target_bank = next((b for b in all_banks if b.get("id") == sel_bank_id), all_banks[0] if all_banks else {})
                 target_bank_name = target_bank.get("name") or target_bank.get("bank_name") or "Bank Account"
