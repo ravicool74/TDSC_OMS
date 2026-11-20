@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Share, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Share, Platform, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -59,6 +59,7 @@ const formatCellValue = (colKey: string, val: any): string => {
 const getColWidth = (colKey: string): number => {
   const k = colKey.toLowerCase();
   if (k === '#' || k === 'sr' || k === 'sn') return 44;
+  if (k === 'actions') return 110;
   if (k.includes('date')) return 100;
   if (k.includes('inv') || k.includes('bill_no') || k.includes('voucher') || k.includes('order_no')) return 130;
   if (k.includes('mode') || k.includes('type')) return 85;
@@ -118,6 +119,11 @@ export default function AccountingReportsHub() {
     return d.toISOString().split('T')[0];
   });
   const [tableSearch, setTableSearch] = useState('');
+  const [selectedBankId, setSelectedBankId] = useState<string>('');
+  const [editingContraModal, setEditingContraModal] = useState<any | null>(null);
+  const [contraForm, setContraForm] = useState({ amount: '', particulars: '', date: '' });
+  const [savingContra, setSavingContra] = useState(false);
+  const [viewingContra, setViewingContra] = useState<any | null>(null);
 
   // Load Catalog & Summary
   const loadCatalog = useCallback(async () => {
@@ -206,7 +212,8 @@ export default function AccountingReportsHub() {
     repId: string,
     customDateFilter?: 'today' | 'yesterday' | 'month' | 'quarter' | 'fy' | 'all' | 'custom',
     fromDateOverride?: string,
-    toDateOverride?: string
+    toDateOverride?: string,
+    selectedBankIdOverride?: string
   ) => {
     setActiveReportId(repId);
     setReportLoading(true);
@@ -243,13 +250,103 @@ export default function AccountingReportsHub() {
       toDate = todayStr;
     }
 
+    const bId = selectedBankIdOverride !== undefined ? selectedBankIdOverride : selectedBankId;
+
     try {
-      const res = await api.getAccountingReportData(repId, { from_date: fromDate, to_date: toDate });
+      const res = await api.getAccountingReportData(repId, {
+        from_date: fromDate,
+        to_date: toDate,
+        bank_id: bId || undefined,
+      });
       setReportData(res);
+      if (res?.selected_bank_id) {
+        setSelectedBankId(res.selected_bank_id);
+      }
     } catch {
       setReportData(null);
     } finally {
       setReportLoading(false);
+    }
+  };
+
+  const handleViewVoucher = (row: any) => {
+    if (!row.voucher_id) return;
+    if (row.voucher_type === 'sale_invoice') {
+      router.push(`/accounting/invoices/${row.voucher_id}` as any);
+    } else if (row.voucher_type === 'payment_in') {
+      router.push(`/accounting/income/${row.voucher_id}` as any);
+    } else if (row.voucher_type === 'expense') {
+      router.push(`/accounting/expenses/${row.voucher_id}` as any);
+    } else if (row.voucher_type === 'contra') {
+      setViewingContra(row);
+    }
+  };
+
+  const handleEditVoucher = (row: any) => {
+    if (!row.voucher_id) return;
+    if (row.voucher_type === 'sale_invoice') {
+      router.push({ pathname: '/accounting/invoices/new', params: { edit_id: row.voucher_id, type: 'sale' } } as any);
+    } else if (row.voucher_type === 'payment_in') {
+      router.push({ pathname: '/accounting/income/new', params: { edit_id: row.voucher_id } } as any);
+    } else if (row.voucher_type === 'expense') {
+      router.push({ pathname: '/accounting/expenses/new', params: { edit_id: row.voucher_id } } as any);
+    } else if (row.voucher_type === 'contra') {
+      setEditingContraModal(row);
+      setContraForm({
+        amount: String(row.receipt_raw || row.payment_raw || ''),
+        particulars: String(row.particulars || ''),
+        date: String(row.date || ''),
+      });
+    }
+  };
+
+  const handleDeleteVoucher = async (row: any) => {
+    if (!row.voucher_id) return;
+    const vName = row.voucher_no || row.trans_type || 'this transaction';
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm(`Are you sure you want to delete ${vName}? This action will permanently remove the voucher and update all balances.`)
+      : true;
+
+    if (!confirmed) return;
+    try {
+      if (row.voucher_type === 'sale_invoice') {
+        await api.deleteInvoice(row.voucher_id);
+      } else if (row.voucher_type === 'payment_in') {
+        await api.deleteIncome(row.voucher_id);
+      } else if (row.voucher_type === 'expense') {
+        await api.deleteExpense(row.voucher_id);
+      } else if (row.voucher_type === 'contra') {
+        await api.deleteContraTransaction(row.voucher_id);
+      }
+      if (Platform.OS === 'web') {
+        alert(`${vName} deleted successfully.`);
+      }
+      if (activeReportId) {
+        openReport(activeReportId, dateFilter, customFromDate, customToDate, selectedBankId);
+      }
+    } catch (e: any) {
+      const msg = e?.message || 'Delete failed';
+      if (Platform.OS === 'web') alert(msg);
+    }
+  };
+
+  const handleSaveContraEdit = async () => {
+    if (!editingContraModal?.voucher_id) return;
+    setSavingContra(true);
+    try {
+      await api.updateContraTransaction(editingContraModal.voucher_id, {
+        amount: parseFloat(contraForm.amount) || 0,
+        particulars: contraForm.particulars,
+        date: contraForm.date,
+      });
+      setEditingContraModal(null);
+      if (activeReportId) {
+        openReport(activeReportId, dateFilter, customFromDate, customToDate, selectedBankId);
+      }
+    } catch (e: any) {
+      if (Platform.OS === 'web') alert(e?.message || 'Update failed');
+    } finally {
+      setSavingContra(false);
     }
   };
 
@@ -340,7 +437,7 @@ export default function AccountingReportsHub() {
       hour: '2-digit', minute: '2-digit', hour12: true,
     });
     const logoUrl = `${api.base}/api/system/logo`;
-    const cols = reportData?.columns || [];
+    const cols = (reportData?.columns || []).filter((c: any) => c.key !== 'actions');
     const rows = filteredReportRows || [];
     const kpis = reportData?.kpis || [];
     const isLandscape = cols.length > 6;
@@ -977,6 +1074,36 @@ export default function AccountingReportsHub() {
                 </Pressable>
               </View>
 
+              {/* Bank Selector Bar (For Bank Report Ledger) */}
+              {activeReportId === 'bank_ledger' && reportData?.available_banks && reportData.available_banks.length > 0 && (
+                <View style={styles.bankSelectBarCard}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                    <Ionicons name="business" size={16} color="#00104A" />
+                    <Text style={styles.bankSelectBarLbl}>Select Bank Account Ledger:</Text>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                    {reportData.available_banks.map((b: any) => {
+                      const isSel = (selectedBankId || reportData.selected_bank_id) === b.id;
+                      return (
+                        <Pressable
+                          key={b.id}
+                          onPress={() => {
+                            setSelectedBankId(b.id);
+                            openReport('bank_ledger', dateFilter, customFromDate, customToDate, b.id);
+                          }}
+                          style={[styles.bankTabChip, isSel && styles.bankTabChipActive]}
+                        >
+                          <Ionicons name="wallet-outline" size={14} color={isSel ? '#FFF' : '#00104A'} />
+                          <Text style={[styles.bankTabChipTxt, isSel && styles.bankTabChipTxtActive]}>
+                            {b.name} ({b.account_no && b.account_no !== '—' ? b.account_no : 'A/C'})
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
               {/* KPI Summary Grid */}
               {reportData.kpis && reportData.kpis.length > 0 && (
                 <View style={styles.kpiGrid}>
@@ -1115,6 +1242,42 @@ export default function AccountingReportsHub() {
                             </View>
                             {reportData.columns?.map((col: any) => {
                               const colW = getColWidth(col.key);
+                              if (col.key === 'actions') {
+                                return (
+                                  <View key={col.key} style={[styles.tDataCell, { width: colW, flexDirection: 'row', gap: 6, justifyContent: 'center', alignItems: 'center' }]}>
+                                    {row.can_view && (
+                                      <Pressable
+                                        onPress={() => handleViewVoucher(row)}
+                                        hitSlop={6}
+                                        style={styles.actionBtnView}
+                                        testID={`btn-view-${row.voucher_id || rIdx}`}
+                                      >
+                                        <Ionicons name="eye" size={13} color="#0284C7" />
+                                      </Pressable>
+                                    )}
+                                    {row.can_edit && (
+                                      <Pressable
+                                        onPress={() => handleEditVoucher(row)}
+                                        hitSlop={6}
+                                        style={styles.actionBtnEdit}
+                                        testID={`btn-edit-${row.voucher_id || rIdx}`}
+                                      >
+                                        <Ionicons name="pencil" size={13} color="#D97706" />
+                                      </Pressable>
+                                    )}
+                                    {row.can_delete && (
+                                      <Pressable
+                                        onPress={() => handleDeleteVoucher(row)}
+                                        hitSlop={6}
+                                        style={styles.actionBtnDelete}
+                                        testID={`btn-delete-${row.voucher_id || rIdx}`}
+                                      >
+                                        <Ionicons name="trash" size={13} color="#DC2626" />
+                                      </Pressable>
+                                    )}
+                                  </View>
+                                );
+                              }
                               const val = formatCellValue(col.key, row[col.key]);
                               const isAmount = String(val).startsWith('₹') || String(val).startsWith('-₹');
                               const isAlert = String(val).includes('LOW') || String(val).includes('OVERDUE') || String(val).includes('Unpaid');
@@ -1367,6 +1530,112 @@ export default function AccountingReportsHub() {
           )}
         </ScrollView>
       )}
+
+      {/* VIEW CONTRA DETAILS MODAL */}
+      <Modal visible={!!viewingContra} transparent animationType="fade" onRequestClose={() => setViewingContra(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="document-text" size={20} color="#00104A" />
+                <Text style={styles.modalTitle}>Contra Voucher Details</Text>
+              </View>
+              <Pressable onPress={() => setViewingContra(null)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#64748B" />
+              </Pressable>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.contraDetailRow}>
+                <Text style={styles.contraDetailLbl}>Voucher / Tx Ref:</Text>
+                <Text style={styles.contraDetailVal}>{viewingContra?.voucher_no || viewingContra?.voucher_id || '—'}</Text>
+              </View>
+              <View style={styles.contraDetailRow}>
+                <Text style={styles.contraDetailLbl}>Date:</Text>
+                <Text style={styles.contraDetailVal}>{viewingContra?.date || '—'}</Text>
+              </View>
+              <View style={styles.contraDetailRow}>
+                <Text style={styles.contraDetailLbl}>Transaction Type:</Text>
+                <Text style={[styles.contraDetailVal, { color: '#00104A', fontWeight: '800' }]}>{viewingContra?.trans_type || 'Contra'}</Text>
+              </View>
+              <View style={styles.contraDetailRow}>
+                <Text style={styles.contraDetailLbl}>Particulars / Description:</Text>
+                <Text style={styles.contraDetailVal}>{viewingContra?.particulars || '—'}</Text>
+              </View>
+              <View style={styles.contraDetailRow}>
+                <Text style={styles.contraDetailLbl}>Amount:</Text>
+                <Text style={[styles.contraDetailVal, { fontSize: 16, fontWeight: '900', color: '#059669' }]}>
+                  {inr(viewingContra?.receipt_raw || viewingContra?.payment_raw || 0)}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.modalFooter}>
+              <Pressable onPress={() => setViewingContra(null)} style={styles.modalCancelBtn}>
+                <Text style={styles.modalCancelBtnTxt}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* EDIT CONTRA MODAL */}
+      <Modal visible={!!editingContraModal} transparent animationType="fade" onRequestClose={() => setEditingContraModal(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="pencil" size={20} color="#2563EB" />
+                <Text style={styles.modalTitle}>Edit Contra Transaction</Text>
+              </View>
+              <Pressable onPress={() => setEditingContraModal(null)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#64748B" />
+              </Pressable>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.modalField}>
+                <Text style={styles.modalLabel}>Date (YYYY-MM-DD):</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={contraForm.date}
+                  onChangeText={(t) => setContraForm(prev => ({ ...prev, date: t }))}
+                  placeholder="YYYY-MM-DD"
+                />
+              </View>
+              <View style={styles.modalField}>
+                <Text style={styles.modalLabel}>Amount (₹):</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={contraForm.amount}
+                  onChangeText={(t) => setContraForm(prev => ({ ...prev, amount: t }))}
+                  keyboardType="numeric"
+                  placeholder="0.00"
+                />
+              </View>
+              <View style={styles.modalField}>
+                <Text style={styles.modalLabel}>Particulars / Note:</Text>
+                <TextInput
+                  style={[styles.modalInput, { minHeight: 60 }]}
+                  value={contraForm.particulars}
+                  onChangeText={(t) => setContraForm(prev => ({ ...prev, particulars: t }))}
+                  multiline
+                  placeholder="Narration / reason"
+                />
+              </View>
+            </View>
+            <View style={styles.modalFooter}>
+              <Pressable onPress={() => setEditingContraModal(null)} style={styles.modalCancelBtn} disabled={savingContra}>
+                <Text style={styles.modalCancelBtnTxt}>Cancel</Text>
+              </Pressable>
+              <Pressable onPress={handleSaveContraEdit} style={styles.modalSaveBtn} disabled={savingContra}>
+                {savingContra ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.modalSaveBtnTxt}>Save Changes</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1487,4 +1756,36 @@ const styles = StyleSheet.create({
   recBannerErr: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
   recBannerTitle: { fontSize: 13, fontWeight: '800' },
   recBannerSub: { fontSize: 11, marginTop: 1 },
+
+  /* Bank Selector in Bank Report Ledger */
+  bankSelectBarCard: { backgroundColor: '#FFFFFF', borderRadius: radius.md, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, ...shadow.card },
+  bankSelectBarLbl: { fontSize: 11.5, fontWeight: '800', color: '#00104A' },
+  bankTabChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 20, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1' },
+  bankTabChipActive: { backgroundColor: '#00104A', borderColor: '#00104A' },
+  bankTabChipTxt: { fontSize: 11.5, fontWeight: '700', color: '#00104A' },
+  bankTabChipTxtActive: { color: '#FFFFFF' },
+
+  /* Action Buttons in Ledger Table */
+  actionBtnView: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#E0F2FE', alignItems: 'center', justifyContent: 'center' },
+  actionBtnEdit: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#FEF3C7', alignItems: 'center', justifyContent: 'center' },
+  actionBtnDelete: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#FEE2E2', alignItems: 'center', justifyContent: 'center' },
+
+  /* Modals */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
+  modalContainer: { width: '100%', maxWidth: 440, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', overflow: 'hidden', ...shadow.card },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  modalTitle: { fontSize: 14, fontWeight: '800', color: '#0F172A' },
+  modalCloseBtn: { padding: 4 },
+  modalBody: { padding: 16, gap: 12 },
+  contraDetailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  contraDetailLbl: { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  contraDetailVal: { fontSize: 12, fontWeight: '700', color: '#1E293B', maxWidth: '60%', textAlign: 'right' },
+  modalField: { gap: 4 },
+  modalLabel: { fontSize: 12, fontWeight: '700', color: '#334155' },
+  modalInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, backgroundColor: '#FFFFFF', color: '#0F172A' },
+  modalFooter: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  modalCancelBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: '#FFFFFF' },
+  modalCancelBtnTxt: { fontSize: 12, fontWeight: '700', color: '#475569' },
+  modalSaveBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: BLUE, minWidth: 100, alignItems: 'center', justifyContent: 'center' },
+  modalSaveBtnTxt: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },
 });

@@ -41,6 +41,10 @@ export type PaymentSplit = {
   mode: string;
   amount: string;
   reference: string;
+  bank_id?: string;
+  bank_account_id?: string;
+  bank_name?: string;
+  account_no?: string;
 };
 
 type LineItem = {
@@ -73,6 +77,43 @@ export default function NewInvoice() {
   const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([
     { id: 'pay_1', mode: 'cash', amount: '', reference: '' }
   ]);
+
+  // Bank Accounts & Dropdown Selection State
+  const [banks, setBanks] = useState<any[]>([]);
+  const [activePickingBankSplitId, setActivePickingBankSplitId] = useState<string | null>(null);
+  const [showAddBankModal, setShowAddBankModal] = useState(false);
+  const [targetSplitIdForNewBank, setTargetSplitIdForNewBank] = useState<string | null>(null);
+  const [newBankForm, setNewBankForm] = useState({
+    name: '',
+    bank_name: '',
+    account_no: '',
+    ifsc: '',
+    opening_balance: '0',
+  });
+  const [savingNewBank, setSavingNewBank] = useState(false);
+  const [bankSaveErr, setBankSaveErr] = useState<string | null>(null);
+
+  // Fetch active bank accounts
+  useEffect(() => {
+    (async () => {
+      try {
+        const b = await api.get<any[]>('/bank-accounts');
+        if (Array.isArray(b) && b.length > 0) {
+          setBanks(b);
+        } else {
+          setBanks([
+            { id: 'bnk_sbi_01', name: 'TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED', bank_name: 'State Bank of India', account_no: '42137607814', ifsc: 'SBIN0063706' },
+            { id: 'bnk_hdfc_02', name: 'ANJU KUMARI (AXIS BANK)', bank_name: 'AXIS BANK', account_no: '915020011528516', ifsc: 'UTIB0000873' },
+          ]);
+        }
+      } catch {
+        setBanks([
+          { id: 'bnk_sbi_01', name: 'TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED', bank_name: 'State Bank of India', account_no: '42137607814', ifsc: 'SBIN0063706' },
+          { id: 'bnk_hdfc_02', name: 'ANJU KUMARI (AXIS BANK)', bank_name: 'AXIS BANK', account_no: '915020011528516', ifsc: 'UTIB0000873' },
+        ]);
+      }
+    })();
+  }, []);
 
   const [date, setDate] = useState(today());
   const dateInitializedRef = React.useRef(false);
@@ -117,6 +158,9 @@ export default function NewInvoice() {
               mode: s.mode || s.payment_mode || 'cash',
               amount: String(s.amount || ''),
               reference: s.reference || s.ref || '',
+              bank_id: s.bank_id || s.bank_account_id || ex.bank_id || '',
+              bank_name: s.bank_name || ex.bank_name || '',
+              account_no: s.account_no || ex.account_no || '',
             })));
           } else if (Array.isArray(ex.payments) && ex.payments.length > 0) {
             setPaymentSplits(ex.payments.map((p: any, idx: number) => ({
@@ -124,6 +168,9 @@ export default function NewInvoice() {
               mode: p.payment_mode || 'cash',
               amount: String(p.amount || ''),
               reference: p.reference || p.ref || '',
+              bank_id: p.bank_id || p.bank_account_id || ex.bank_id || '',
+              bank_name: p.bank_name || ex.bank_name || '',
+              account_no: p.account_no || ex.account_no || '',
             })));
           } else if (ex.paid_amount) {
             setPaymentSplits([{
@@ -131,6 +178,9 @@ export default function NewInvoice() {
               mode: ex.payment_mode || 'cash',
               amount: String(ex.paid_amount || ''),
               reference: '',
+              bank_id: ex.bank_id || '',
+              bank_name: ex.bank_name || '',
+              account_no: ex.account_no || '',
             }]);
           }
           setDate(ex.date || today());
@@ -244,9 +294,64 @@ export default function NewInvoice() {
     }
   }, [totals.total, paymentType]);
 
+  const getBankDisplayName = (bankId?: string) => {
+    const b = banks.find(x => x.id === bankId) || banks[0];
+    if (!b) return 'Select Bank Account';
+    return `${b.name} (${b.bank_name || 'Bank'} • ${b.account_no})`;
+  };
+
+  const handleSetBankForSplit = (splitId: string, bank: any) => {
+    setPaymentSplits(prev => prev.map(s => s.id === splitId ? {
+      ...s,
+      bank_id: bank.id,
+      bank_account_id: bank.id,
+      bank_name: bank.bank_name || bank.name,
+      account_no: bank.account_no,
+    } : s));
+  };
+
+  const handleSaveNewBank = async () => {
+    if (!newBankForm.name.trim() || !newBankForm.bank_name.trim() || !newBankForm.account_no.trim()) {
+      setBankSaveErr('Account Nickname, Bank Name, and Account Number are required.');
+      return;
+    }
+    setSavingNewBank(true);
+    setBankSaveErr(null);
+    try {
+      const created: any = await api.post('/bank-accounts', {
+        name: newBankForm.name.trim(),
+        bank_name: newBankForm.bank_name.trim(),
+        account_no: newBankForm.account_no.trim(),
+        ifsc: newBankForm.ifsc.trim() || null,
+        opening_balance: parseFloat(newBankForm.opening_balance) || 0,
+        is_active: true,
+      });
+      const newBankObj = {
+        id: created?.id || `bnk_${Date.now()}`,
+        name: newBankForm.name.trim(),
+        bank_name: newBankForm.bank_name.trim(),
+        account_no: newBankForm.account_no.trim(),
+        ifsc: newBankForm.ifsc.trim() || '—',
+        opening_balance: parseFloat(newBankForm.opening_balance) || 0,
+      };
+      setBanks(prev => [...prev, newBankObj]);
+      if (targetSplitIdForNewBank) {
+        handleSetBankForSplit(targetSplitIdForNewBank, newBankObj);
+      }
+      setShowAddBankModal(false);
+      setNewBankForm({ name: '', bank_name: '', account_no: '', ifsc: '', opening_balance: '0' });
+      notify('Bank Account Added', `${newBankObj.name} (${newBankObj.bank_name}) ledger created and selected.`);
+    } catch (e: any) {
+      setBankSaveErr(e?.message || 'Failed to save bank account');
+    } finally {
+      setSavingNewBank(false);
+    }
+  };
+
   const handleAddPaymentSplit = () => {
     const usedModes = paymentSplits.map(s => s.mode);
     const availableMode = PAY_MODES.find(m => !usedModes.includes(m.key))?.key || 'other';
+    const defaultB = banks[0];
     setPaymentSplits(prev => [
       ...prev,
       {
@@ -254,12 +359,29 @@ export default function NewInvoice() {
         mode: availableMode,
         amount: '',
         reference: '',
+        bank_id: ['bank_transfer', 'cheque', 'upi'].includes(availableMode) ? defaultB?.id : undefined,
+        bank_account_id: ['bank_transfer', 'cheque', 'upi'].includes(availableMode) ? defaultB?.id : undefined,
+        bank_name: ['bank_transfer', 'cheque', 'upi'].includes(availableMode) ? (defaultB?.bank_name || defaultB?.name) : undefined,
+        account_no: ['bank_transfer', 'cheque', 'upi'].includes(availableMode) ? defaultB?.account_no : undefined,
       }
     ]);
   };
 
-  const handleUpdatePaymentSplit = (id: string, field: 'mode' | 'amount' | 'reference', val: string) => {
-    setPaymentSplits(prev => prev.map(s => s.id === id ? { ...s, [field]: val } : s));
+  const handleUpdatePaymentSplit = (id: string, field: 'mode' | 'amount' | 'reference' | 'bank_id', val: string) => {
+    setPaymentSplits(prev => prev.map(s => {
+      if (s.id !== id) return s;
+      const updated = { ...s, [field]: val };
+      if (field === 'mode' && ['bank_transfer', 'cheque', 'upi'].includes(val) && !updated.bank_id) {
+        const defaultB = banks[0];
+        if (defaultB) {
+          updated.bank_id = defaultB.id;
+          updated.bank_account_id = defaultB.id;
+          updated.bank_name = defaultB.bank_name || defaultB.name;
+          updated.account_no = defaultB.account_no;
+        }
+      }
+      return updated;
+    }));
   };
 
   const handleRemovePaymentSplit = (id: string) => {
@@ -284,20 +406,33 @@ export default function NewInvoice() {
     setBusy(true);
     try {
       const validSplits = paymentSplits
-        .map(s => ({
-          mode: s.mode,
-          amount: parseFloat(s.amount) || 0,
-          reference: s.reference ? s.reference.trim() : '',
-        }))
+        .map(s => {
+          const isBankMode = ['bank_transfer', 'cheque', 'upi'].includes(s.mode);
+          const resolvedBankId = s.bank_id || (isBankMode ? (banks[0]?.id || 'bnk_sbi_01') : undefined);
+          const resolvedBank = banks.find(b => b.id === resolvedBankId);
+          return {
+            mode: s.mode,
+            amount: parseFloat(s.amount) || 0,
+            reference: s.reference ? s.reference.trim() : '',
+            bank_id: resolvedBankId,
+            bank_account_id: resolvedBankId,
+            bank_name: s.bank_name || resolvedBank?.bank_name || resolvedBank?.name || undefined,
+            account_no: s.account_no || resolvedBank?.account_no || undefined,
+          };
+        })
         .filter(s => s.amount > 0);
 
       const dominantMode = validSplits.length > 0 ? validSplits.map(s => s.mode).join(', ') : 'cash';
+      const primaryBank = validSplits.find(s => s.bank_id);
 
       const body = {
         invoice_type: actualInvoiceType,
         invoice_no: invoiceNo && !invoiceNo.includes('preview') && invoiceNo !== 'AUTO' ? invoiceNo.trim() : undefined,
         payment_type: paymentType,
         payment_mode: dominantMode,
+        bank_id: primaryBank?.bank_id,
+        bank_name: primaryBank?.bank_name,
+        account_no: primaryBank?.account_no,
         payment_splits: validSplits.length > 0 ? validSplits : undefined,
         date, payment_terms: terms, due_date: paymentType === 'cash' ? date : dueDate,
         party_id: party.id, party_name: party.name, party_mobile: party.mobile || null, party_gst: party.gst_no || null,
@@ -526,6 +661,35 @@ export default function NewInvoice() {
                       ) : null}
                     </View>
 
+                    {/* Bank Account Selection for Bank Transfer / Cheque / UPI */}
+                    {['bank_transfer', 'cheque', 'upi'].includes(sp.mode) && (
+                      <View style={styles.splitBankRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                          <Ionicons name="business" size={16} color={colors.brandPrimary} />
+                          <Text style={styles.splitBankLabel}>Bank A/c:</Text>
+                          <Pressable
+                            onPress={() => setActivePickingBankSplitId(sp.id)}
+                            style={styles.splitBankSelectBtn}
+                          >
+                            <Text style={styles.splitBankSelectTxt} numberOfLines={1}>
+                              {getBankDisplayName(sp.bank_id)}
+                            </Text>
+                            <Ionicons name="chevron-down" size={14} color={colors.muted} />
+                          </Pressable>
+                        </View>
+                        <Pressable
+                          onPress={() => {
+                            setTargetSplitIdForNewBank(sp.id);
+                            setShowAddBankModal(true);
+                          }}
+                          style={styles.splitAddBankBtn}
+                        >
+                          <Ionicons name="add-circle" size={14} color={colors.brandPrimary} />
+                          <Text style={styles.splitAddBankTxt}>+ Add Account</Text>
+                        </Pressable>
+                      </View>
+                    )}
+
                     {/* Reference / UTR / Cheque / Notes input */}
                     <View style={styles.splitRefRow}>
                       <Ionicons name="bookmark-outline" size={14} color={colors.muted} />
@@ -672,6 +836,158 @@ export default function NewInvoice() {
           </View>
         </Pressable>
       ) : null}
+
+      {/* Bank Account Selector Modal for Split Payments */}
+      {activePickingBankSplitId ? (
+        <Pressable style={styles.termsOverlay} onPress={() => setActivePickingBankSplitId(null)}>
+          <View style={styles.termsSheet}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <Text style={styles.termsTitle}>Select Bank Account / Ledger</Text>
+              <Pressable
+                onPress={() => {
+                  setTargetSplitIdForNewBank(activePickingBankSplitId);
+                  setActivePickingBankSplitId(null);
+                  setShowAddBankModal(true);
+                }}
+                style={styles.quickAddBankBtn}
+              >
+                <Ionicons name="add-circle" size={16} color="#FFF" />
+                <Text style={styles.quickAddBankTxt}>+ Add New Bank</Text>
+              </Pressable>
+            </View>
+            <Text style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+              Payment will be credited directly to this account's ledger
+            </Text>
+            {banks.map(b => {
+              const currentSplit = paymentSplits.find(s => s.id === activePickingBankSplitId);
+              const isSelected = (currentSplit?.bank_id || banks[0]?.id) === b.id;
+              return (
+                <Pressable
+                  key={b.id}
+                  onPress={() => {
+                    handleSetBankForSplit(activePickingBankSplitId, b);
+                    setActivePickingBankSplitId(null);
+                  }}
+                  style={[styles.termsRow, { justifyContent: 'space-between' }]}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                    <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }}>
+                      <Ionicons name="business" size={18} color={colors.brandPrimary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 13, fontWeight: '800', color: '#1E293B' }}>{b.name}</Text>
+                      <Text style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>
+                        {b.bank_name} • A/c {b.account_no} • IFSC: {b.ifsc || '—'}
+                      </Text>
+                    </View>
+                  </View>
+                  {isSelected ? <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} /> : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </Pressable>
+      ) : null}
+
+      {/* Modal: Add New Bank Account */}
+      {showAddBankModal ? (
+        <Pressable style={styles.termsOverlay} onPress={() => setShowAddBankModal(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%' }}>
+            <Pressable style={styles.addBankModalBox} onPress={e => e.stopPropagation()}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={styles.modalTitle}>Add New Bank Account</Text>
+                <Pressable onPress={() => setShowAddBankModal(false)} hitSlop={8}>
+                  <Ionicons name="close" size={20} color="#64748B" />
+                </Pressable>
+              </View>
+              <Text style={styles.modalSubtitle}>Create a new bank ledger for auto-posting receipts</Text>
+
+              {bankSaveErr ? (
+                <View style={styles.errBanner}>
+                  <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                  <Text style={styles.errBannerTxt}>{bankSaveErr}</Text>
+                </View>
+              ) : null}
+
+              <ScrollView contentContainerStyle={{ gap: 10, paddingVertical: 10 }}>
+                <View>
+                  <Text style={styles.inputLbl}>Account Holder / Nickname *</Text>
+                  <TextInput
+                    value={newBankForm.name}
+                    onChangeText={v => setNewBankForm(p => ({ ...p, name: v }))}
+                    placeholder="e.g. TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED"
+                    placeholderTextColor="#94A3B8"
+                    style={styles.modalInput}
+                  />
+                </View>
+
+                <View>
+                  <Text style={styles.inputLbl}>Bank Name *</Text>
+                  <TextInput
+                    value={newBankForm.bank_name}
+                    onChangeText={v => setNewBankForm(p => ({ ...p, bank_name: v }))}
+                    placeholder="e.g. State Bank of India, Axis Bank, HDFC Bank"
+                    placeholderTextColor="#94A3B8"
+                    style={styles.modalInput}
+                  />
+                </View>
+
+                <View>
+                  <Text style={styles.inputLbl}>Account Number *</Text>
+                  <TextInput
+                    value={newBankForm.account_no}
+                    onChangeText={v => setNewBankForm(p => ({ ...p, account_no: v }))}
+                    placeholder="e.g. 42137607814"
+                    placeholderTextColor="#94A3B8"
+                    style={styles.modalInput}
+                  />
+                </View>
+
+                <View>
+                  <Text style={styles.inputLbl}>IFSC Code (optional)</Text>
+                  <TextInput
+                    value={newBankForm.ifsc}
+                    onChangeText={v => setNewBankForm(p => ({ ...p, ifsc: v.toUpperCase() }))}
+                    placeholder="e.g. SBIN0063706"
+                    placeholderTextColor="#94A3B8"
+                    autoCapitalize="characters"
+                    style={styles.modalInput}
+                  />
+                </View>
+
+                <View>
+                  <Text style={styles.inputLbl}>Opening Balance (₹)</Text>
+                  <TextInput
+                    value={newBankForm.opening_balance}
+                    onChangeText={v => setNewBankForm(p => ({ ...p, opening_balance: v }))}
+                    keyboardType="numeric"
+                    placeholder="0.00"
+                    placeholderTextColor="#94A3B8"
+                    style={styles.modalInput}
+                  />
+                </View>
+              </ScrollView>
+
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                <Pressable
+                  onPress={() => setShowAddBankModal(false)}
+                  style={styles.modalCancelBtn}
+                  disabled={savingNewBank}
+                >
+                  <Text style={styles.modalCancelBtnTxt}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleSaveNewBank}
+                  style={styles.modalSaveBtn}
+                  disabled={savingNewBank}
+                >
+                  <Text style={styles.modalSaveBtnTxt}>{savingNewBank ? 'Saving...' : 'Save & Select Bank'}</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -763,4 +1079,151 @@ const styles = StyleSheet.create({
   quickFillTxt: { fontSize: 10, fontWeight: '800', color: colors.brandPrimary },
   addSplitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderStyle: 'dashed', borderRadius: radius.md, paddingVertical: 10 },
   addSplitTxt: { color: '#16A34A', fontWeight: '800', fontSize: 13 },
+  splitBankRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 8,
+  },
+  splitBankLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#1E40AF',
+  },
+  splitBankSelectBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#93C5FD',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  splitBankSelectTxt: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  splitAddBankBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#DBEAFE',
+    borderWidth: 1,
+    borderColor: '#93C5FD',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  splitAddBankTxt: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.brandPrimary,
+  },
+  quickAddBankBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  quickAddBankTxt: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  addBankModalBox: {
+    backgroundColor: '#FFF',
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    width: '94%',
+    maxWidth: 500,
+    alignSelf: 'center',
+    marginVertical: 40,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#0F172A',
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: colors.muted,
+    marginBottom: 8,
+  },
+  modalInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0F172A',
+    fontWeight: '600',
+  },
+  inputLbl: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
+    marginBottom: 3,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
+  modalCancelBtnTxt: {
+    fontWeight: '800',
+    color: '#475569',
+    fontSize: 13,
+  },
+  modalSaveBtn: {
+    flex: 2,
+    backgroundColor: colors.brandPrimary,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
+  modalSaveBtnTxt: {
+    fontWeight: '800',
+    color: '#FFF',
+    fontSize: 13,
+  },
+  errBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: radius.sm,
+    padding: 8,
+    marginBottom: 8,
+  },
+  errBannerTxt: {
+    color: '#B91C1C',
+    fontSize: 12,
+    fontWeight: '700',
+    flex: 1,
+  },
 });

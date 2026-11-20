@@ -726,15 +726,18 @@ export const api = {
   getAccountingReportsSummary: async () => {
     return request<any>('/accounting/reports/summary');
   },
-  getAccountingReportData: async (reportType: string, params?: { from_date?: string; to_date?: string; party_id?: string; category?: string; search?: string }) => {
+  getAccountingReportData: async (reportType: string, params?: { from_date?: string; to_date?: string; party_id?: string; category?: string; search?: string; bank_id?: string }) => {
     const sp = new URLSearchParams({ report_type: reportType });
     if (params?.from_date) sp.append('from_date', params.from_date);
     if (params?.to_date) sp.append('to_date', params.to_date);
     if (params?.party_id) sp.append('party_id', params.party_id);
     if (params?.category) sp.append('category', params.category);
     if (params?.search) sp.append('search', params.search);
+    if (params?.bank_id) sp.append('bank_id', params.bank_id);
     return request<any>(`/accounting/reports/data?${sp.toString()}`);
   },
+  deleteInvoice: (id: string) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),
+  deleteIncome: (id: string) => request<any>(`/income/${id}`, { method: 'DELETE' }),
   getCashBankAccounts: () => request<any[]>('/accounting/cash-bank/banks'),
   executeCashBankTransfer: (data: any) => request<any>('/accounting/cash-bank/transfer', { method: 'POST', body: JSON.stringify(data) }),
   getCashSummary: () => request<any>('/accounting/cash-bank/cash-summary'),

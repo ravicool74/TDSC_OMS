@@ -1021,6 +1021,9 @@ class Invoice(BaseModel):
     include_signature: bool = True
     payments: List[dict] = Field(default_factory=list)
     payment_splits: Optional[List[dict]] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
     linked_voucher_no: Optional[str] = None
@@ -1051,6 +1054,9 @@ class InvoiceInput(BaseModel):
     include_signature: Optional[bool] = True
     payments: Optional[List[dict]] = None
     payment_splits: Optional[List[dict]] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
 
 
 class AccountInput(BaseModel):
@@ -3664,7 +3670,7 @@ async def _record_payment_receipt_ledgers(
             continue
         mode = str(item.get("payment_mode") or item.get("mode") or "cash").lower()
         ref = str(item.get("reference") or item.get("ref") or "").strip()
-        b_id = item.get("bank_account_id") or default_bank_id
+        b_id = item.get("bank_account_id") or item.get("bank_id") or default_bank_id
 
         # 1. Bank Transfer / Online / UPI
         if any(kw in mode for kw in ["bank", "online", "upi", "neft", "rtgs", "imps", "card"]):
@@ -3695,13 +3701,16 @@ async def _record_payment_receipt_ledgers(
 
         # 2. Cheque
         elif "cheque" in mode:
+            target_bank = bank_map.get(b_id) or default_bank
+            target_bank_id = target_bank["id"] if target_bank else None
             chq_record = {
                 "id": f"chq_{new_id()}",
                 "type": "received",
                 "customer_name": party_name,
                 "amount": amt,
                 "cheque_no": ref or f"CHQ-{voucher_no}",
-                "bank_name": "Customer Bank",
+                "bank_name": (target_bank.get("bank_name") or "Bank") if target_bank else "Customer Bank",
+                "bank_account_id": target_bank_id,
                 "cheque_date": date_str,
                 "status": "received",
                 "reference": voucher_no,
@@ -5043,6 +5052,10 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
     
     # Process multiple payment splits (cash, upi, cheque, bank transfer, other)
     initial_payments = []
+    primary_bank_id = payload.bank_id
+    primary_bank_name = payload.bank_name
+    primary_account_no = payload.account_no
+
     if payload.payment_splits:
         running_tot = 0.0
         for idx, ps in enumerate(payload.payment_splits):
@@ -5050,6 +5063,13 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
             if p_amt > 0:
                 p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
                 p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+                p_b_id = ps.get("bank_id") or ps.get("bank_account_id") or payload.bank_id
+                p_b_name = ps.get("bank_name") or payload.bank_name
+                p_acc_no = ps.get("account_no") or payload.account_no
+                if not primary_bank_id and p_b_id:
+                    primary_bank_id = p_b_id
+                    primary_bank_name = p_b_name
+                    primary_account_no = p_acc_no
                 running_tot = round(running_tot + p_amt, 2)
                 initial_payments.append({
                     "payment_id": f"init_{no}_{idx+1}",
@@ -5057,6 +5077,10 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
                     "date": ps.get("date") or payload.date,
                     "amount": round(p_amt, 2),
                     "payment_mode": p_mode,
+                    "bank_id": p_b_id,
+                    "bank_account_id": p_b_id,
+                    "bank_name": p_b_name,
+                    "account_no": p_acc_no,
                     "reference": p_ref,
                     "payment_type": "Initial / Split Payment",
                     "remarks": (f"Payment via {p_mode.replace('_', ' ').title()}" + (f" (Ref: {p_ref})" if p_ref else "")).strip(),
@@ -5113,6 +5137,9 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
         include_signature=True if payload.include_signature is None else payload.include_signature,
         payments=initial_payments,
         payment_splits=payload.payment_splits,
+        bank_id=primary_bank_id,
+        bank_name=primary_bank_name,
+        account_no=primary_account_no,
         created_by=current.user_id, created_by_name=current.name,
     )
     await db.invoices.insert_one(inv.dict())
@@ -5570,6 +5597,10 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
     no = existing.get("invoice_no") or iid
 
     initial_payments = []
+    primary_bank_id = payload.bank_id or existing.get("bank_id")
+    primary_bank_name = payload.bank_name or existing.get("bank_name")
+    primary_account_no = payload.account_no or existing.get("account_no")
+
     if payload.payment_splits:
         running_tot = 0.0
         for idx, ps in enumerate(payload.payment_splits):
@@ -5577,6 +5608,13 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
             if p_amt > 0:
                 p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
                 p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+                p_b_id = ps.get("bank_id") or ps.get("bank_account_id") or payload.bank_id
+                p_b_name = ps.get("bank_name") or payload.bank_name
+                p_acc_no = ps.get("account_no") or payload.account_no
+                if not primary_bank_id and p_b_id:
+                    primary_bank_id = p_b_id
+                    primary_bank_name = p_b_name
+                    primary_account_no = p_acc_no
                 running_tot = round(running_tot + p_amt, 2)
                 initial_payments.append({
                     "payment_id": f"init_{no}_{idx+1}",
@@ -5584,6 +5622,10 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
                     "date": ps.get("date") or payload.date,
                     "amount": round(p_amt, 2),
                     "payment_mode": p_mode,
+                    "bank_id": p_b_id,
+                    "bank_account_id": p_b_id,
+                    "bank_name": p_b_name,
+                    "account_no": p_acc_no,
                     "reference": p_ref,
                     "payment_type": "Initial / Split Payment",
                     "remarks": (f"Payment via {p_mode.replace('_', ' ').title()}" + (f" (Ref: {p_ref})" if p_ref else "")).strip(),
@@ -5620,6 +5662,9 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
         "payment_mode": inv_payment_mode,
         "payment_splits": payload.payment_splits,
         "payments": initial_payments,
+        "bank_id": primary_bank_id,
+        "bank_name": primary_bank_name,
+        "account_no": primary_account_no,
         "date": payload.date, "payment_terms": payload.payment_terms, "due_date": payload.due_date,
         "party_id": payload.party_id, "party_name": payload.party_name,
         "party_mobile": payload.party_mobile, "party_gst": payload.party_gst,
