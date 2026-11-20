@@ -6,7 +6,7 @@ import {
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, radius, font } from '@/src/theme';
+import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { FormInput, OptionRow } from '@/src/forms';
 import { PrimaryButton } from '@/src/ui';
@@ -102,6 +102,60 @@ export default function NewExpense() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const set = (k: string) => (v: string) => setF(p => ({ ...p, [k]: v }));
 
+  // Add Bank Account modal state
+  const [showAddBankModal, setShowAddBankModal] = useState(false);
+  const [savingNewBank, setSavingNewBank] = useState(false);
+  const [bankSaveErr, setBankSaveErr] = useState<string | null>(null);
+  const [newBankForm, setNewBankForm] = useState({
+    name: '',
+    bank_name: '',
+    account_no: '',
+    ifsc: '',
+    opening_balance: '0',
+  });
+
+  const getBankShortLabel = (b: any) => {
+    if (!b) return 'Bank Account';
+    const acc = String(b.account_no || '');
+    const bankName = (b.bank_name || '').toUpperCase();
+    const name = (b.name || '').toUpperCase();
+    const ifsc = (b.ifsc || '').toUpperCase();
+
+    if (acc.includes('42137607814') || ifsc.startsWith('SBIN') || bankName.includes('STATE') || name.includes('STATE') || name.includes('TRIVENI')) {
+      return `SBI (${b.account_no || '42137607814'})`;
+    }
+    if (acc.includes('915020011528516') || ifsc.startsWith('UTIB') || bankName.includes('AXIS') || name.includes('AXIS') || name.includes('ANJU')) {
+      return `Axis Bank (${b.account_no || '915020011528516'})`;
+    }
+    return `${b.bank_name || b.name} (${b.account_no})`;
+  };
+
+  const handleSaveNewBank = async () => {
+    if (!newBankForm.name.trim() || !newBankForm.bank_name.trim() || !newBankForm.account_no.trim()) {
+      setBankSaveErr('Account Nickname, Bank Name, and Account Number are required.');
+      return;
+    }
+    setSavingNewBank(true);
+    setBankSaveErr(null);
+    try {
+      const created = await api.post<any>('/bank-accounts', {
+        name: newBankForm.name.trim(),
+        bank_name: newBankForm.bank_name.trim(),
+        account_no: newBankForm.account_no.trim(),
+        ifsc: (newBankForm.ifsc || '').trim().toUpperCase(),
+        opening_balance: parseFloat(newBankForm.opening_balance) || 0,
+      });
+      setBanks(prev => [...prev, created]);
+      setF(p => ({ ...p, bank_account_id: created.id }));
+      setShowAddBankModal(false);
+      setNewBankForm({ name: '', bank_name: '', account_no: '', ifsc: '', opening_balance: '0' });
+    } catch (e: any) {
+      setBankSaveErr(e?.message || 'Failed to save bank account');
+    } finally {
+      setSavingNewBank(false);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -111,9 +165,13 @@ export default function NewExpense() {
         ]);
         setMeta(m);
         setBanks(b);
-        if (m.expense_categories?.[0]) {
-          setF(p => ({ ...p, category: m.expense_categories[0] }));
-        }
+        const sbi = (b || []).find((x: any) => String(x.account_no || '').includes('42137607814') || (x.name || '').toUpperCase().includes('TRIVENI'));
+        const defaultBankId = sbi?.id || b?.[0]?.id || '';
+        setF(p => ({
+          ...p,
+          bank_account_id: p.bank_account_id || defaultBankId,
+          ...(m.expense_categories?.[0] ? { category: m.expense_categories[0] } : {})
+        }));
       } catch {}
     })();
   }, []);
@@ -295,12 +353,16 @@ export default function NewExpense() {
     setErr(null);
     setBusy(true);
     try {
+      const chosenBank = banks.find(b => b.id === f.bank_account_id) || banks[0];
       const payload: any = {
         date: f.date,
         category: f.category || (selectedPassOnItems.length === 1 ? `${selectedPassOnItems[0].name} Expense` : 'Pass-on Expense'),
         amount: amt,
         payment_mode: f.payment_mode,
-        bank_account_id: f.payment_mode !== 'cash' ? (f.bank_account_id || null) : null,
+        bank_account_id: f.payment_mode !== 'cash' ? (chosenBank?.id || null) : null,
+        bank_id: f.payment_mode !== 'cash' ? (chosenBank?.id || null) : null,
+        bank_name: f.payment_mode !== 'cash' ? (chosenBank?.bank_name || chosenBank?.name || null) : null,
+        account_no: f.payment_mode !== 'cash' ? (chosenBank?.account_no || null) : null,
         vendor: f.vendor || null,
         description: f.description || null,
       };
@@ -783,20 +845,45 @@ export default function NewExpense() {
 
           {/* Bank Account Selection (if not cash) */}
           {f.payment_mode !== 'cash' && banks.length > 0 ? (
-            <View style={{ gap: 6 }}>
+            <View style={{ gap: 6, marginVertical: 4 }}>
               <Text style={styles.label}>Bank Account</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {banks.map(b => (
-                  <Pressable
-                    key={b.id}
-                    onPress={() => setF(p => ({ ...p, bank_account_id: b.id }))}
-                    style={[styles.chip, f.bank_account_id === b.id && styles.chipActive]}
-                  >
-                    <Text style={[styles.chipText, f.bank_account_id === b.id && { color: colors.onBrandPrimary }]}>
-                      {b.name}
-                    </Text>
-                  </Pressable>
-                ))}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                {banks.map(b => {
+                  const isSelected = (f.bank_account_id || banks[0]?.id) === b.id;
+                  const lbl = getBankShortLabel(b);
+                  return (
+                    <Pressable
+                      key={b.id}
+                      onPress={() => setF(p => ({ ...p, bank_account_id: b.id }))}
+                      style={[
+                        styles.bankChipBtn,
+                        isSelected && styles.bankChipBtnActive
+                      ]}
+                      testID={`bank-chip-${b.id}`}
+                    >
+                      <Ionicons
+                        name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                        size={15}
+                        color={isSelected ? "#FFF" : "#2563EB"}
+                      />
+                      <Text style={[
+                        styles.bankChipTxt,
+                        isSelected && styles.bankChipTxtActive
+                      ]}>
+                        {lbl}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+
+                <Pressable
+                  onPress={() => setShowAddBankModal(true)}
+                  style={styles.addBankBtn}
+                  testID="btn-add-bank-account"
+                >
+                  <Ionicons name="add-circle" size={16} color="#2563EB" />
+                  <Text style={styles.addBankTxt}>+ Add Account</Text>
+                </Pressable>
               </View>
             </View>
           ) : null}
@@ -935,6 +1022,110 @@ export default function NewExpense() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Modal: Add New Bank Account */}
+      {showAddBankModal ? (
+        <Modal visible={true} transparent={true} animationType="fade" onRequestClose={() => setShowAddBankModal(false)}>
+          <Pressable style={styles.termsOverlay} onPress={() => setShowAddBankModal(false)}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', alignItems: 'center' }}>
+              <Pressable style={styles.addBankModalBox} onPress={e => e.stopPropagation()}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <Text style={styles.modalTitle}>Add New Bank Account</Text>
+                  <Pressable onPress={() => setShowAddBankModal(false)}>
+                    <Ionicons name="close" size={20} color="#64748B" />
+                  </Pressable>
+                </View>
+                <Text style={styles.modalSubtitle}>Create a new bank ledger for recording receipts & disbursements.</Text>
+
+                {bankSaveErr ? (
+                  <View style={styles.errBanner}>
+                    <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                    <Text style={styles.errBannerTxt}>{bankSaveErr}</Text>
+                  </View>
+                ) : null}
+
+                <View style={{ gap: 10, marginTop: 6 }}>
+                  <View>
+                    <Text style={styles.inputLbl}>Account Nickname / Ledger Name *</Text>
+                    <TextInput
+                      value={newBankForm.name}
+                      onChangeText={t => setNewBankForm(p => ({ ...p, name: t }))}
+                      placeholder="e.g. Current Account - SBI Main"
+                      placeholderTextColor="#94A3B8"
+                      style={styles.modalInput}
+                    />
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>Bank Name *</Text>
+                      <TextInput
+                        value={newBankForm.bank_name}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, bank_name: t }))}
+                        placeholder="e.g. State Bank of India"
+                        placeholderTextColor="#94A3B8"
+                        style={styles.modalInput}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>Account Number *</Text>
+                      <TextInput
+                        value={newBankForm.account_no}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, account_no: t }))}
+                        placeholder="e.g. 42137607814"
+                        placeholderTextColor="#94A3B8"
+                        keyboardType="numeric"
+                        style={styles.modalInput}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>IFSC Code (Optional)</Text>
+                      <TextInput
+                        value={newBankForm.ifsc}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, ifsc: t.toUpperCase() }))}
+                        placeholder="e.g. SBIN0063706"
+                        placeholderTextColor="#94A3B8"
+                        autoCapitalize="characters"
+                        style={styles.modalInput}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>Opening Balance (₹)</Text>
+                      <TextInput
+                        value={newBankForm.opening_balance}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, opening_balance: t }))}
+                        placeholder="0.00"
+                        placeholderTextColor="#94A3B8"
+                        keyboardType="numeric"
+                        style={styles.modalInput}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <Pressable
+                      onPress={() => setShowAddBankModal(false)}
+                      style={styles.modalCancelBtn}
+                    >
+                      <Text style={styles.modalCancelBtnTxt}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={handleSaveNewBank}
+                      disabled={savingNewBank}
+                      style={[styles.modalSaveBtn, savingNewBank && { opacity: 0.7 }]}
+                    >
+                      <Text style={styles.modalSaveBtnTxt}>{savingNewBank ? 'Saving...' : 'Save & Select Bank'}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </Pressable>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Modal>
+      ) : null}
 
     </View>
   );
@@ -1207,4 +1398,131 @@ const styles = StyleSheet.create({
   },
   chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
   chipText: { color: colors.onSurface, fontWeight: '600', fontSize: font.sm },
+
+  // Bank Chips & Modal Styles
+  bankChipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#93C5FD',
+  },
+  bankChipBtnActive: {
+    backgroundColor: '#1E40AF',
+    borderColor: '#1E40AF',
+  },
+  bankChipTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#1E40AF',
+  },
+  bankChipTxtActive: {
+    color: '#FFFFFF',
+  },
+  addBankBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: '#93C5FD',
+  },
+  addBankTxt: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#2563EB',
+  },
+  termsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.md,
+  },
+  addBankModalBox: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: '#FFF',
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...shadow.md,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: colors.muted,
+    marginBottom: 8,
+  },
+  modalInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0F172A',
+    fontWeight: '600',
+  },
+  inputLbl: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
+    marginBottom: 3,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
+  modalCancelBtnTxt: {
+    fontWeight: '800',
+    color: '#475569',
+    fontSize: 13,
+  },
+  modalSaveBtn: {
+    flex: 2,
+    backgroundColor: colors.brandPrimary,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
+  modalSaveBtnTxt: {
+    fontWeight: '800',
+    color: '#FFF',
+    fontSize: 13,
+  },
+  errBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: radius.sm,
+    padding: 8,
+    marginBottom: 4,
+  },
+  errBannerTxt: {
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
 });

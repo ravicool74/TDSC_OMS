@@ -11,10 +11,11 @@ import {
   Platform,
   Linking,
   ActivityIndicator,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, radius, font } from '@/src/theme';
+import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { EmptyState, ScreenLoader, StatusBadge } from '@/src/ui';
 import { ScreenHeader } from '@/src/ScreenHeader';
@@ -113,6 +114,82 @@ export default function ExpensesList() {
   const [newCatName, setNewCatName] = useState('');
   const [savingCat, setSavingCat] = useState(false);
 
+  // Bank Accounts & Helpers
+  const [banks, setBanks] = useState<any[]>([]);
+  const [showAddBankModal, setShowAddBankModal] = useState(false);
+  const [savingNewBank, setSavingNewBank] = useState(false);
+  const [bankSaveErr, setBankSaveErr] = useState<string | null>(null);
+  const [newBankForm, setNewBankForm] = useState({
+    name: '',
+    bank_name: '',
+    account_no: '',
+    ifsc: '',
+    opening_balance: '0',
+  });
+
+  const getBankShortLabel = (b: any) => {
+    if (!b) return 'Bank Account';
+    const acc = String(b.account_no || '');
+    const bankName = (b.bank_name || '').toUpperCase();
+    const name = (b.name || '').toUpperCase();
+    const ifsc = (b.ifsc || '').toUpperCase();
+
+    if (acc.includes('42137607814') || ifsc.startsWith('SBIN') || bankName.includes('STATE') || name.includes('STATE') || name.includes('TRIVENI')) {
+      return `SBI (${b.account_no || '42137607814'})`;
+    }
+    if (acc.includes('915020011528516') || ifsc.startsWith('UTIB') || bankName.includes('AXIS') || name.includes('AXIS') || name.includes('ANJU')) {
+      return `Axis Bank (${b.account_no || '915020011528516'})`;
+    }
+    return `${b.bank_name || b.name} (${b.account_no})`;
+  };
+
+  const getExpenseBankLabel = (item: any) => {
+    const mode = String(item.payment_mode || 'cash').toLowerCase();
+    if (mode === 'cash') return 'Cash';
+    const bId = item.bank_id || item.bank_account_id;
+    if (bId) {
+      const match = banks.find(b => b.id === bId);
+      if (match) return getBankShortLabel(match);
+    }
+    const acc = String(item.account_no || '');
+    const bName = String(item.bank_name || '').toUpperCase();
+    if (acc.includes('42137607814') || bName.includes('STATE') || bName.includes('TRIVENI') || bName.includes('SBI')) {
+      return `SBI (${acc || '42137607814'})`;
+    }
+    if (acc.includes('915020011528516') || bName.includes('AXIS') || bName.includes('ANJU')) {
+      return `Axis Bank (${acc || '915020011528516'})`;
+    }
+    const sbi = banks.find(b => String(b.account_no || '').includes('42137607814'));
+    if (sbi) return getBankShortLabel(sbi);
+    return banks[0] ? getBankShortLabel(banks[0]) : 'SBI (42137607814)';
+  };
+
+  const handleSaveNewBank = async () => {
+    if (!newBankForm.name.trim() || !newBankForm.bank_name.trim() || !newBankForm.account_no.trim()) {
+      setBankSaveErr('Account Nickname, Bank Name, and Account Number are required.');
+      return;
+    }
+    setSavingNewBank(true);
+    setBankSaveErr(null);
+    try {
+      const created = await api.post<any>('/bank-accounts', {
+        name: newBankForm.name.trim(),
+        bank_name: newBankForm.bank_name.trim(),
+        account_no: newBankForm.account_no.trim(),
+        ifsc: (newBankForm.ifsc || '').trim().toUpperCase(),
+        opening_balance: parseFloat(newBankForm.opening_balance) || 0,
+      });
+      setBanks(prev => [...prev, created]);
+      setEditForm(p => ({ ...p, bank_account_id: created.id }));
+      setShowAddBankModal(false);
+      setNewBankForm({ name: '', bank_name: '', account_no: '', ifsc: '', opening_balance: '0' });
+    } catch (e: any) {
+      setBankSaveErr(e?.message || 'Failed to save bank account');
+    } finally {
+      setSavingNewBank(false);
+    }
+  };
+
   // Edit Form State
   const [editingExp, setEditingExp] = useState<any | null>(null);
   const [editForm, setEditForm] = useState<{
@@ -120,6 +197,7 @@ export default function ExpensesList() {
     category: string;
     date: string;
     payment_mode: string;
+    bank_account_id: string;
     vendor: string;
     description: string;
     customer_name: string;
@@ -131,6 +209,7 @@ export default function ExpensesList() {
     category: 'Other Expenses',
     date: '',
     payment_mode: 'cash',
+    bank_account_id: '',
     vendor: '',
     description: '',
     customer_name: '',
@@ -150,12 +229,14 @@ export default function ExpensesList() {
     } catch {}
     try {
       setLoading(true);
-      const [expData, custList] = await Promise.all([
+      const [expData, custList, bList] = await Promise.all([
         api.get<any[]>('/expenses'),
         api.get<any[]>('/customers').catch(() => []),
+        api.get<any[]>('/bank-accounts').catch(() => []),
       ]);
       setList(Array.isArray(expData) ? expData : []);
       setCustomers(Array.isArray(custList) ? custList : []);
+      setBanks(Array.isArray(bList) ? bList : []);
     } catch (err: any) {
       console.error('Failed to load expenses', err);
       setList([]);
@@ -442,11 +523,14 @@ export default function ExpensesList() {
   // Open Edit Modal
   const openEdit = (item: any) => {
     setEditingExp(item);
+    const sbi = banks.find((b: any) => String(b.account_no || '').includes('42137607814'));
+    const defaultBankId = item.bank_id || item.bank_account_id || sbi?.id || banks[0]?.id || '';
     setEditForm({
       amount: String(item.amount || ''),
       category: item.category || 'Other Expenses',
       date: item.date || new Date().toISOString().slice(0, 10),
       payment_mode: item.payment_mode || 'cash',
+      bank_account_id: defaultBankId,
       vendor: item.vendor || '',
       description: item.description || '',
       customer_name: item.customer_name || '',
@@ -475,11 +559,16 @@ export default function ExpensesList() {
 
     try {
       setSaving(true);
+      const chosenBank = banks.find(b => b.id === editForm.bank_account_id) || banks[0];
       await api.patch(`/expenses/${editingExp.id}`, {
         amount: numAmt,
         category: editForm.category.trim(),
         date: editForm.date.trim(),
         payment_mode: editForm.payment_mode,
+        bank_account_id: editForm.payment_mode !== 'cash' ? (chosenBank?.id || null) : null,
+        bank_id: editForm.payment_mode !== 'cash' ? (chosenBank?.id || null) : null,
+        bank_name: editForm.payment_mode !== 'cash' ? (chosenBank?.bank_name || chosenBank?.name || null) : null,
+        account_no: editForm.payment_mode !== 'cash' ? (chosenBank?.account_no || null) : null,
         vendor: editForm.vendor.trim() || null,
         description: editForm.description.trim() || null,
         customer_name: editForm.customer_name.trim() || null,
@@ -505,13 +594,31 @@ export default function ExpensesList() {
       <ScreenHeader
         title="All Expenses"
         right={
-          <Pressable
-            onPress={() => router.push('/accounting/expenses/new' as any)}
-            style={styles.addBtn}
-            testID="new-expense-btn"
-          >
-            <Ionicons name="add" size={24} color="#FFF" />
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Pressable
+              onPress={() => router.push('/accounting/reports?report=bank_ledger' as any)}
+              style={styles.ledgerHeaderBtn}
+              testID="btn-bank-ledger"
+            >
+              <Ionicons name="business" size={14} color="#1E40AF" />
+              <Text style={styles.ledgerHeaderBtnTxt}>Bank Ledger</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => router.push('/accounting/reports?report=cash_ledger' as any)}
+              style={styles.ledgerHeaderBtn}
+              testID="btn-cash-ledger"
+            >
+              <Ionicons name="wallet" size={14} color="#059669" />
+              <Text style={[styles.ledgerHeaderBtnTxt, { color: '#059669' }]}>Cash Ledger</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => router.push('/accounting/expenses/new' as any)}
+              style={styles.addBtn}
+              testID="new-expense-btn"
+            >
+              <Ionicons name="add" size={24} color="#FFF" />
+            </Pressable>
+          </View>
         }
       />
 
@@ -870,9 +977,19 @@ export default function ExpensesList() {
                   <Text style={styles.vendorTxt}>
                     Paid To: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{item.vendor || 'N/A'}</Text>
                   </Text>
-                  <View style={styles.modeBadge}>
-                    <Text style={styles.modeBadgeTxt}>{String(item.payment_mode || 'cash').toUpperCase()}</Text>
-                  </View>
+                  {String(item.payment_mode || 'cash').toLowerCase() === 'cash' ? (
+                    <View style={[styles.modeBadge, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0', borderWidth: 1 }]}>
+                      <Ionicons name="cash-outline" size={12} color="#15803D" />
+                      <Text style={[styles.modeBadgeTxt, { color: '#15803D', fontWeight: '800' }]}>CASH</Text>
+                    </View>
+                  ) : (
+                    <View style={[styles.modeBadge, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }]}>
+                      <Ionicons name="business" size={12} color="#1E40AF" />
+                      <Text style={[styles.modeBadgeTxt, { color: '#1E40AF', fontWeight: '800' }]}>
+                        {getExpenseBankLabel(item)}
+                      </Text>
+                    </View>
+                  )}
                 </View>
 
                 {/* Customer & Sale Metadata Badges */}
@@ -1060,6 +1177,16 @@ export default function ExpensesList() {
                       <Text style={styles.detailLabel}>Paid To (Vendor):</Text>
                       <Text style={styles.detailValueBold}>{viewingExp.vendor || 'N/A'}</Text>
                     </View>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Payment Mode:</Text>
+                      <Text style={styles.detailValueBold}>{String(viewingExp.payment_mode || 'cash').toUpperCase()}</Text>
+                    </View>
+                    {String(viewingExp.payment_mode || 'cash').toLowerCase() !== 'cash' && (
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Bank Account:</Text>
+                        <Text style={[styles.detailValueBold, { color: '#1E40AF' }]}>{getExpenseBankLabel(viewingExp)}</Text>
+                      </View>
+                    )}
                     {viewingExp.description ? (
                       <View style={{ marginTop: 4 }}>
                         <Text style={styles.detailLabel}>Narration / Remarks:</Text>
@@ -1572,6 +1699,51 @@ export default function ExpensesList() {
                   </View>
                 </View>
 
+                {/* Bank Account Selection (if not cash) */}
+                {editForm.payment_mode !== 'cash' && banks.length > 0 ? (
+                  <View style={{ gap: 6, marginVertical: 6 }}>
+                    <Text style={styles.formLabel}>Bank Account</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                      {banks.map(b => {
+                        const isSelected = (editForm.bank_account_id || banks[0]?.id) === b.id;
+                        const lbl = getBankShortLabel(b);
+                        return (
+                          <Pressable
+                            key={b.id}
+                            onPress={() => setEditForm(p => ({ ...p, bank_account_id: b.id }))}
+                            style={[
+                              styles.bankChipBtn,
+                              isSelected && styles.bankChipBtnActive
+                            ]}
+                            testID={`edit-bank-chip-${b.id}`}
+                          >
+                            <Ionicons
+                              name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                              size={15}
+                              color={isSelected ? "#FFF" : "#2563EB"}
+                            />
+                            <Text style={[
+                              styles.bankChipTxt,
+                              isSelected && styles.bankChipTxtActive
+                            ]}>
+                              {lbl}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+
+                      <Pressable
+                        onPress={() => setShowAddBankModal(true)}
+                        style={styles.addBankBtn}
+                        testID="btn-add-bank-account-edit"
+                      >
+                        <Ionicons name="add-circle" size={16} color="#2563EB" />
+                        <Text style={styles.addBankTxt}>+ Add Account</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
+
                 {/* Category Quick Picks */}
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 4 }}>
                   <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -1775,6 +1947,112 @@ export default function ExpensesList() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Modal: Add New Bank Account */}
+      {showAddBankModal ? (
+        <Modal visible={true} transparent={true} animationType="fade" onRequestClose={() => setShowAddBankModal(false)}>
+          <Pressable style={styles.modalOverlay} onPress={() => setShowAddBankModal(false)}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', alignItems: 'center' }}>
+              <Pressable style={styles.addBankModalBox} onPress={e => e.stopPropagation()}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <Text style={styles.modalTitle}>Add New Bank Account</Text>
+                  <Pressable onPress={() => setShowAddBankModal(false)}>
+                    <Ionicons name="close" size={20} color="#64748B" />
+                  </Pressable>
+                </View>
+                <Text style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
+                  Create a new bank ledger for recording receipts & disbursements.
+                </Text>
+
+                {bankSaveErr ? (
+                  <View style={styles.errBanner}>
+                    <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                    <Text style={styles.errBannerTxt}>{bankSaveErr}</Text>
+                  </View>
+                ) : null}
+
+                <View style={{ gap: 10, marginTop: 6 }}>
+                  <View>
+                    <Text style={styles.inputLbl}>Account Nickname / Ledger Name *</Text>
+                    <TextInput
+                      value={newBankForm.name}
+                      onChangeText={t => setNewBankForm(p => ({ ...p, name: t }))}
+                      placeholder="e.g. Current Account - SBI Main"
+                      placeholderTextColor="#94A3B8"
+                      style={styles.formInput}
+                    />
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>Bank Name *</Text>
+                      <TextInput
+                        value={newBankForm.bank_name}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, bank_name: t }))}
+                        placeholder="e.g. State Bank of India"
+                        placeholderTextColor="#94A3B8"
+                        style={styles.formInput}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>Account Number *</Text>
+                      <TextInput
+                        value={newBankForm.account_no}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, account_no: t }))}
+                        placeholder="e.g. 42137607814"
+                        placeholderTextColor="#94A3B8"
+                        keyboardType="numeric"
+                        style={styles.formInput}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>IFSC Code (Optional)</Text>
+                      <TextInput
+                        value={newBankForm.ifsc}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, ifsc: t.toUpperCase() }))}
+                        placeholder="e.g. SBIN0063706"
+                        placeholderTextColor="#94A3B8"
+                        autoCapitalize="characters"
+                        style={styles.formInput}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLbl}>Opening Balance (₹)</Text>
+                      <TextInput
+                        value={newBankForm.opening_balance}
+                        onChangeText={t => setNewBankForm(p => ({ ...p, opening_balance: t }))}
+                        placeholder="0.00"
+                        placeholderTextColor="#94A3B8"
+                        keyboardType="numeric"
+                        style={styles.formInput}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <Pressable
+                      onPress={() => setShowAddBankModal(false)}
+                      style={styles.cancelBtn}
+                    >
+                      <Text style={styles.cancelBtnTxt}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={handleSaveNewBank}
+                      disabled={savingNewBank}
+                      style={[styles.saveBtn, savingNewBank && { opacity: 0.7 }]}
+                    >
+                      <Text style={styles.saveBtnTxt}>{savingNewBank ? 'Saving...' : 'Save & Select Bank'}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </Pressable>
+            </KeyboardAvoidingView>
+          </Pressable>
+        </Modal>
+      ) : null}
 
     </View>
   );
@@ -2686,5 +2964,94 @@ const styles = StyleSheet.create({
     color: '#0D9488',
     fontWeight: '800',
     textDecorationLine: 'underline',
+  },
+  ledgerHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  ledgerHeaderBtnTxt: {
+    fontSize: 11.5,
+    fontWeight: '800',
+    color: '#1E40AF',
+  },
+  bankChipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#93C5FD',
+  },
+  bankChipBtnActive: {
+    backgroundColor: '#1E40AF',
+    borderColor: '#1E40AF',
+  },
+  bankChipTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#1E40AF',
+  },
+  bankChipTxtActive: {
+    color: '#FFFFFF',
+  },
+  addBankBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: '#93C5FD',
+  },
+  addBankTxt: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#2563EB',
+  },
+  addBankModalBox: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: '#FFF',
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...shadow.md,
+  },
+  inputLbl: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
+    marginBottom: 3,
+  },
+  errBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: radius.sm,
+    padding: 8,
+    marginBottom: 4,
+  },
+  errBannerTxt: {
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
   },
 });

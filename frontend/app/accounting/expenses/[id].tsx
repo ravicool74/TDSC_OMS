@@ -49,6 +49,45 @@ export default function ExpenseDetail() {
   const [exp, setExp] = useState<any | null>(null);
   const [printing, setPrinting] = useState(false);
 
+  const [banks, setBanks] = useState<any[]>([]);
+
+  const getBankShortLabel = (b: any) => {
+    if (!b) return 'Bank Account';
+    const acc = String(b.account_no || '');
+    const bankName = (b.bank_name || '').toUpperCase();
+    const name = (b.name || '').toUpperCase();
+    const ifsc = (b.ifsc || '').toUpperCase();
+
+    if (acc.includes('42137607814') || ifsc.startsWith('SBIN') || bankName.includes('STATE') || name.includes('STATE') || name.includes('TRIVENI')) {
+      return `SBI (${b.account_no || '42137607814'})`;
+    }
+    if (acc.includes('915020011528516') || ifsc.startsWith('UTIB') || bankName.includes('AXIS') || name.includes('AXIS') || name.includes('ANJU')) {
+      return `Axis Bank (${b.account_no || '915020011528516'})`;
+    }
+    return `${b.bank_name || b.name} (${b.account_no})`;
+  };
+
+  const getExpenseBankLabel = (item: any) => {
+    const mode = String(item?.payment_mode || 'cash').toLowerCase();
+    if (mode === 'cash') return 'Cash';
+    const bId = item?.bank_id || item?.bank_account_id;
+    if (bId) {
+      const match = banks.find(b => b.id === bId);
+      if (match) return getBankShortLabel(match);
+    }
+    const acc = String(item?.account_no || '');
+    const bName = String(item?.bank_name || '').toUpperCase();
+    if (acc.includes('42137607814') || bName.includes('STATE') || bName.includes('TRIVENI') || bName.includes('SBI')) {
+      return `SBI (${acc || '42137607814'})`;
+    }
+    if (acc.includes('915020011528516') || bName.includes('AXIS') || bName.includes('ANJU')) {
+      return `Axis Bank (${acc || '915020011528516'})`;
+    }
+    const sbi = banks.find(b => String(b.account_no || '').includes('42137607814'));
+    if (sbi) return getBankShortLabel(sbi);
+    return banks[0] ? getBankShortLabel(banks[0]) : 'SBI (42137607814)';
+  };
+
   // Edit Modal State
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editForm, setEditForm] = useState<{
@@ -56,6 +95,7 @@ export default function ExpenseDetail() {
     category: string;
     date: string;
     payment_mode: string;
+    bank_account_id: string;
     vendor: string;
     description: string;
     customer_name: string;
@@ -67,6 +107,7 @@ export default function ExpenseDetail() {
     category: 'Other Expenses',
     date: '',
     payment_mode: 'cash',
+    bank_account_id: '',
     vendor: '',
     description: '',
     customer_name: '',
@@ -78,7 +119,12 @@ export default function ExpenseDetail() {
 
   const load = useCallback(async () => {
     try {
-      setExp(await api.get<any>(`/expenses/${id}`));
+      const [expDoc, bList] = await Promise.all([
+        api.get<any>(`/expenses/${id}`),
+        api.get<any[]>('/bank-accounts').catch(() => []),
+      ]);
+      setExp(expDoc);
+      setBanks(Array.isArray(bList) ? bList : []);
     } catch {}
   }, [id]);
 
@@ -135,11 +181,14 @@ export default function ExpenseDetail() {
 
   const openEdit = () => {
     if (!exp) return;
+    const sbi = banks.find((b: any) => String(b.account_no || '').includes('42137607814'));
+    const defaultBankId = exp.bank_id || exp.bank_account_id || sbi?.id || banks[0]?.id || '';
     setEditForm({
       amount: String(exp.amount || ''),
       category: exp.category || 'Other Expenses',
       date: exp.date || new Date().toISOString().slice(0, 10),
       payment_mode: exp.payment_mode || 'cash',
+      bank_account_id: defaultBankId,
       vendor: exp.vendor || '',
       description: exp.description || '',
       customer_name: exp.customer_name || '',
@@ -167,11 +216,16 @@ export default function ExpenseDetail() {
 
     try {
       setSaving(true);
+      const chosenBank = banks.find(b => b.id === editForm.bank_account_id) || banks[0];
       await api.patch(`/expenses/${id}`, {
         amount: numAmt,
         category: editForm.category.trim(),
         date: editForm.date.trim(),
         payment_mode: editForm.payment_mode,
+        bank_account_id: editForm.payment_mode !== 'cash' ? (chosenBank?.id || null) : null,
+        bank_id: editForm.payment_mode !== 'cash' ? (chosenBank?.id || null) : null,
+        bank_name: editForm.payment_mode !== 'cash' ? (chosenBank?.bank_name || chosenBank?.name || null) : null,
+        account_no: editForm.payment_mode !== 'cash' ? (chosenBank?.account_no || null) : null,
         vendor: editForm.vendor.trim() || null,
         description: editForm.description.trim() || null,
         customer_name: editForm.customer_name.trim() || null,
@@ -266,6 +320,11 @@ export default function ExpenseDetail() {
           <Text style={styles.meta}>
             Date: <Text style={{ fontWeight: '700', color: '#1E293B' }}>{exp.date}</Text> • Mode:{' '}
             <Text style={{ fontWeight: '700', color: '#1E293B' }}>{String(exp.payment_mode).toUpperCase()}</Text>
+            {String(exp.payment_mode || 'cash').toLowerCase() !== 'cash' ? (
+              <>
+                {' '}• Bank: <Text style={{ fontWeight: '700', color: '#1E40AF' }}>{getExpenseBankLabel(exp)}</Text>
+              </>
+            ) : null}
           </Text>
 
           {exp.vendor ? (
@@ -513,6 +572,42 @@ export default function ExpenseDetail() {
                     </View>
                   </View>
                 </View>
+
+                {/* Bank Account Selection (if not cash) */}
+                {editForm.payment_mode !== 'cash' && banks.length > 0 ? (
+                  <View style={{ gap: 6, marginVertical: 4 }}>
+                    <Text style={styles.formLabel}>Bank Account</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                      {banks.map(b => {
+                        const isSelected = (editForm.bank_account_id || banks[0]?.id) === b.id;
+                        const lbl = getBankShortLabel(b);
+                        return (
+                          <Pressable
+                            key={b.id}
+                            onPress={() => setEditForm(p => ({ ...p, bank_account_id: b.id }))}
+                            style={[
+                              styles.bankChipBtn,
+                              isSelected && styles.bankChipBtnActive
+                            ]}
+                            testID={`edit-bank-chip-${b.id}`}
+                          >
+                            <Ionicons
+                              name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                              size={15}
+                              color={isSelected ? "#FFF" : "#2563EB"}
+                            />
+                            <Text style={[
+                              styles.bankChipTxt,
+                              isSelected && styles.bankChipTxtActive
+                            ]}>
+                              {lbl}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                ) : null}
 
                 <View>
                   <Text style={styles.formLabel}>Paid To / Vendor Name</Text>
@@ -861,5 +956,28 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontWeight: '800',
     fontSize: font.sm,
+  },
+  bankChipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#93C5FD',
+  },
+  bankChipBtnActive: {
+    backgroundColor: '#1E40AF',
+    borderColor: '#1E40AF',
+  },
+  bankChipTxt: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#1E40AF',
+  },
+  bankChipTxtActive: {
+    color: '#FFFFFF',
   },
 });

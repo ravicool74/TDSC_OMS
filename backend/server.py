@@ -834,6 +834,9 @@ class Expense(BaseModel):
     amount: float
     payment_mode: str
     bank_account_id: Optional[str] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     vendor: Optional[str] = None
     description: Optional[str] = None
     status: str = "pending"  # pending, verified, approved, rejected
@@ -852,8 +855,6 @@ class Expense(BaseModel):
     sale_invoice_no: Optional[str] = None
     sale_invoice_date: Optional[str] = None
     sale_item_name: Optional[str] = None
-    sale_item_names: Optional[List[str]] = None
-    selected_items: Optional[List[dict]] = None
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
     created_by: Optional[str] = None
@@ -869,6 +870,9 @@ class ExpenseInput(BaseModel):
     amount: float
     payment_mode: str
     bank_account_id: Optional[str] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     vendor: Optional[str] = None
     description: Optional[str] = None
     customer_id: Optional[str] = None
@@ -894,6 +898,9 @@ class ExpenseUpdateInput(BaseModel):
     amount: Optional[float] = None
     payment_mode: Optional[str] = None
     bank_account_id: Optional[str] = None
+    bank_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
     vendor: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
@@ -4074,6 +4081,16 @@ async def update_income(iid: str, payload: IncomeUpdateInput, current: User = De
             if not upd.get("client_gst"): upd["client_gst"] = cust.get("gst_no")
             if not upd.get("client_code"): upd["client_code"] = cust.get("customer_code")
 
+    # If bank details updated, enrich bank name & account_no
+    b_id = upd.get("bank_id") or upd.get("bank_account_id")
+    if b_id:
+        target_bank = await db.bank_accounts.find_one({"id": b_id}, {"_id": 0})
+        if target_bank:
+            upd["bank_id"] = target_bank["id"]
+            upd["bank_account_id"] = target_bank["id"]
+            upd["bank_name"] = target_bank.get("bank_name") or target_bank.get("name")
+            upd["account_no"] = target_bank.get("account_no")
+
     upd["updated_at"] = now_utc()
     upd["updated_by"] = current.user_id
 
@@ -4297,6 +4314,23 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
             exp_dict["customer_pan"] = exp_dict.get("customer_pan") or cust.get("pan")
             exp_dict["customer_gst"] = exp_dict.get("customer_gst") or cust.get("gst_no")
             exp_dict["customer_code"] = exp_dict.get("customer_code") or cust.get("customer_code")
+
+    # Auto-resolve bank account details for non-cash expenses
+    if payload.payment_mode != "cash":
+        target_bank = None
+        target_bank_id = payload.bank_id or payload.bank_account_id
+        if target_bank_id:
+            target_bank = await db.bank_accounts.find_one({"id": target_bank_id}, {"_id": 0})
+        if not target_bank:
+            target_bank = await db.bank_accounts.find_one({"account_no": "42137607814"}, {"_id": 0})
+        if not target_bank:
+            target_bank = await db.bank_accounts.find_one({}, {"_id": 0})
+
+        if target_bank:
+            exp_dict["bank_id"] = target_bank["id"]
+            exp_dict["bank_account_id"] = target_bank["id"]
+            exp_dict["bank_name"] = target_bank.get("bank_name") or target_bank.get("name")
+            exp_dict["account_no"] = target_bank.get("account_no")
 
     # If linked to a Sale Invoice, perform strict pass-on item balance validation
     if payload.sale_invoice_id:
@@ -4574,6 +4608,34 @@ async def create_expense(payload: ExpenseInput, current: User = Depends(get_curr
     exp_doc["linked_voucher_no"] = app_voucher_no
     exp_doc["linked_approval_id"] = app_vid
     await db.expenses.insert_one(exp_doc)
+
+    # Auto-post to bank accounts & bank_transactions for non-cash expenses
+    if payload.payment_mode != "cash" and exp_doc.get("bank_id"):
+        b_id = exp_doc["bank_id"]
+        amt = float(payload.amount or 0.0)
+        if amt > 0:
+            await db.bank_accounts.update_one(
+                {"id": b_id},
+                {"$inc": {"opening_balance": -amt}}
+            )
+            tx_record = {
+                "id": new_id("tx"),
+                "transfer_type": "expense",
+                "direction": "withdrawal",
+                "transfer_date": payload.date or datetime.now().strftime("%Y-%m-%d"),
+                "withdraw_from": b_id,
+                "withdraw_from_name": exp_doc.get("bank_name") or "Bank",
+                "deposit_to": payload.vendor or "Operating Expense",
+                "amount": amt,
+                "description": f"Expense Outflow ({no}) - {payload.category} via {payload.payment_mode.upper()}",
+                "reference": no,
+                "source_voucher": no,
+                "source_id": e.id,
+                "created_at": now_utc(),
+                "created_by": current.user_id,
+            }
+            await db.bank_transactions.insert_one(tx_record)
+
     return e
 
 
@@ -4696,6 +4758,16 @@ async def update_expense(eid: str, payload: ExpenseUpdateInput, current: User = 
             if not upd.get("customer_gst"): upd["customer_gst"] = cust.get("gst_no")
             if not upd.get("customer_code"): upd["customer_code"] = cust.get("customer_code")
 
+    # If bank details updated, enrich bank name & account_no
+    b_id = upd.get("bank_id") or upd.get("bank_account_id")
+    if b_id:
+        target_bank = await db.bank_accounts.find_one({"id": b_id}, {"_id": 0})
+        if target_bank:
+            upd["bank_id"] = target_bank["id"]
+            upd["bank_account_id"] = target_bank["id"]
+            upd["bank_name"] = target_bank.get("bank_name") or target_bank.get("name")
+            upd["account_no"] = target_bank.get("account_no")
+
     upd["updated_at"] = now_utc()
     upd["updated_by"] = current.user_id
 
@@ -4764,6 +4836,23 @@ async def delete_expense(eid: str, current: User = Depends(require_admin_or_mana
         raise HTTPException(status_code=404, detail="Expense not found")
     if e.get("status") in ("approved", "verified"):
         raise HTTPException(status_code=400, detail="Cannot delete an approved or verified expense voucher. Financial records are locked.")
+
+    # Revert bank balance deduction if online expense
+    if e.get("payment_mode") != "cash" and (e.get("bank_id") or e.get("bank_account_id")):
+        b_id = e.get("bank_id") or e.get("bank_account_id")
+        amt = float(e.get("amount") or 0.0)
+        if amt > 0:
+            await db.bank_accounts.update_one(
+                {"id": b_id},
+                {"$inc": {"opening_balance": amt}}
+            )
+            await db.bank_transactions.delete_many({
+                "$or": [
+                    {"source_voucher": e.get("expense_no")},
+                    {"source_id": eid},
+                    {"reference": e.get("expense_no")}
+                ]
+            })
 
     res = await db.expenses.delete_one({"id": eid})
     await log_audit_entry(db, current, "expenses", "delete", eid, e, None)
