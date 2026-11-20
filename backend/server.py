@@ -6042,14 +6042,21 @@ async def bank_book(bank_id: Optional[str] = None, from_date: Optional[str] = No
     except Exception as e:
         print("bank_book generate_report fallback:", e)
 
-    # Fallback if specific bank
-    b = None
-    if bank_id and bank_id.lower() not in ["all", "consolidated"]:
+    # Consolidated / single-bank query
+    is_all = not bank_id or bank_id.lower() in ["all", "consolidated"]
+    if is_all:
+        b = {"id": "all", "name": "Consolidated (All Banks)", "bank_name": "Multi-Bank"}
+        all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
+        running = sum(float(x.get("opening_balance") or 0) for x in all_banks)
+    else:
         b = await db.bank_accounts.find_one({"id": bank_id}, {"_id": 0})
-    if not b:
-        b = await db.bank_accounts.find_one({}, {"_id": 0}) or {"id": "all", "name": "Consolidated (All Banks)", "bank_name": "Multi-Bank"}
+        if not b:
+            b = await db.bank_accounts.find_one({}, {"_id": 0}) or {"id": "all", "name": "Consolidated (All Banks)", "bank_name": "Multi-Bank"}
+        running = float(b.get("opening_balance") or 0)
+
     q_inc: dict = {}
     q_exp: dict = {}
+    q_inv: dict = {"invoice_type": "sale"}
     if b.get("id") != "all":
         q_inc["bank_account_id"] = b["id"]
         q_exp["bank_account_id"] = b["id"]
@@ -6057,16 +6064,21 @@ async def bank_book(bank_id: Optional[str] = None, from_date: Optional[str] = No
         d: dict = {}
         if from_date: d["$gte"] = from_date
         if to_date: d["$lte"] = to_date
-        q_inc["date"] = d; q_exp["date"] = d
+        q_inc["date"] = d; q_exp["date"] = d; q_inv["date"] = d
     inc = await db.income.find(q_inc, {"_id": 0}).to_list(2000)
     exp = await db.expenses.find(q_exp, {"_id": 0}).to_list(2000)
+    sales = await db.invoices.find(q_inv, {"_id": 0}).to_list(2000)
     entries = []
     for d in inc:
         entries.append({"date": d["date"], "type": "credit", "amount": d["amount"], "party": d.get("client_name"), "category": d.get("service_category"), "no": d.get("income_no"), "id": d["id"]})
     for d in exp:
         entries.append({"date": d["date"], "type": "debit", "amount": d["amount"], "party": d.get("vendor"), "category": d.get("category"), "no": d.get("expense_no"), "id": d["id"]})
-    entries.sort(key=lambda x: x["date"])
-    running = float(b.get("opening_balance") or 0)
+    for s in sales:
+        amt = float(s.get("paid_amount") or s.get("total_amount") or 0)
+        mode = (s.get("payment_mode") or "").lower()
+        if amt > 0 and ("bank" in mode or "online" in mode or "upi" in mode or "cheque" in mode or b.get("id") == "all"):
+            entries.append({"date": s.get("date") or s.get("invoice_date"), "type": "credit", "amount": amt, "party": s.get("party_name"), "category": "Sale Receipt", "no": s.get("invoice_no") or s.get("invoice_number"), "id": s.get("id") or str(s.get("_id", ""))})
+    entries.sort(key=lambda x: x["date"] or "")
     for e in entries:
         running += e["amount"] if e["type"] == "credit" else -e["amount"]
         e["running"] = round(running, 2)

@@ -45,7 +45,8 @@ export default function BooksScreen() {
         setData(await api.get<any>('/accounting/cash-book'));
       } else {
         const targetId = bankId || 'all';
-        setData(await api.get<any>(`/accounting/bank-book?bank_id=${targetId}`));
+        const repType = targetId === 'all' ? 'consolidated_bank_book' : 'bank_ledger';
+        setData(await api.getAccountingReportData(repType, { bank_id: targetId }));
       }
     } catch (e) {
       console.error('Failed to load book data:', e);
