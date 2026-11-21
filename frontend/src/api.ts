@@ -50,7 +50,7 @@ export const tokenStore = {
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const isGet = !opts.method || opts.method.toUpperCase() === 'GET';
-  let attempts = isGet ? 3 : 1;
+  let attempts = isGet ? 5 : 1;
   let lastErr: any = null;
 
   while (attempts > 0) {
@@ -79,9 +79,9 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     } catch (err: any) {
       lastErr = err;
       attempts--;
-      // Retry on network errors / Failed to fetch for GET requests (handles Render cold start)
-      if (isGet && attempts > 0 && (err?.message?.includes('fetch') || err?.name === 'TypeError')) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Retry on network errors / Failed to fetch for GET requests (handles Render cold start / spin up)
+      if (isGet && attempts > 0 && (err?.message?.includes('fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError'))) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
         continue;
       }
       throw err;

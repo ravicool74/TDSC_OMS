@@ -590,155 +590,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             else:
                 eff_scope = (accounting_scope or "consolidated").lower()
 
-            # Combine sales receipts, payment-in receipts, purchases, expenses into daily chronological order
-            entries = []
-            for s in sales:
-                d = s.get("date") or s.get("invoice_date")
-                if in_date_range(d):
-                    is_old = bool(s.get("is_old_accounting"))
-                    if eff_scope == "old" and not is_old:
-                        continue
-                    if eff_scope == "new" and is_old:
-                        continue
-
-                    s_id = s.get("id") or str(s.get("_id", ""))
-                    v_no = s.get("invoice_no") or s.get("invoice_number") or "SI"
-                    splits = s.get("payment_splits") or []
-                    p_m = (s.get("payment_mode") or "cash").upper()
-                    if splits:
-                        p_m = "/".join(set(str(ps.get("mode") or "").upper() for ps in splits if ps.get("mode"))) or p_m
-                    entries.append({
-                        "date": d,
-                        "ref_no": v_no,
-                        "type": "[Old] Sale Invoice" if is_old else "Sale Invoice",
-                        "stream": "Old" if is_old else "New",
-                        "is_old_accounting": is_old,
-                        "party": s.get("party_name") or "Direct Client",
-                        "mode": p_m,
-                        "in_amount": float(s.get("paid_amount") or s.get("total_amount") or 0),
-                        "out_amount": 0.0,
-                        "voucher_id": s_id,
-                        "voucher_type": "sale_invoice",
-                        "can_view": True,
-                        "can_edit": True,
-                        "can_delete": True,
-                    })
-            for inc in incomes:
-                d = inc.get("date")
-                if in_date_range(d):
-                    is_old = bool(inc.get("is_old_accounting"))
-                    if eff_scope == "old" and not is_old:
-                        continue
-                    if eff_scope == "new" and is_old:
-                        continue
-
-                    inc_id = inc.get("id") or str(inc.get("_id", ""))
-                    v_no = inc.get("income_no") or inc.get("voucher_no") or "PAYIN"
-                    entries.append({
-                        "date": d,
-                        "ref_no": v_no,
-                        "type": "[Old] Payment-In Receipt" if is_old else "Payment-In Receipt",
-                        "stream": "Old" if is_old else "New",
-                        "is_old_accounting": is_old,
-                        "party": inc.get("client_name") or "Customer",
-                        "mode": (inc.get("payment_mode") or "online").upper(),
-                        "in_amount": float(inc.get("amount") or 0),
-                        "out_amount": 0.0,
-                        "voucher_id": inc_id,
-                        "voucher_type": "payment_in",
-                        "can_view": True,
-                        "can_edit": True,
-                        "can_delete": True,
-                    })
-            for p in purchases:
-                d = p.get("date") or p.get("invoice_date")
-                if in_date_range(d):
-                    # Purchase is common across new and old
-                    p_id = p.get("id") or str(p.get("_id", ""))
-                    entries.append({
-                        "date": d,
-                        "ref_no": p.get("invoice_number") or p.get("bill_no") or "—",
-                        "type": "Purchase Bill",
-                        "stream": "Common",
-                        "is_old_accounting": False,
-                        "party": p.get("party_name") or "Vendor",
-                        "mode": (p.get("payment_mode") or "bank").upper(),
-                        "in_amount": 0.0,
-                        "out_amount": float(p.get("paid_amount") or p.get("total_amount") or 0),
-                        "voucher_id": p_id,
-                        "voucher_type": "purchase",
-                        "can_view": True,
-                        "can_edit": True,
-                        "can_delete": True,
-                    })
-            for e in expenses:
-                d = e.get("date")
-                if in_date_range(d):
-                    is_old = bool(e.get("is_old_accounting"))
-                    if eff_scope == "old" and not is_old:
-                        continue
-                    if eff_scope == "new" and is_old:
-                        continue
-
-                    e_id = e.get("id") or str(e.get("_id", ""))
-                    entries.append({
-                        "date": d,
-                        "ref_no": e.get("expense_no") or e.get("voucher_no") or "EXP",
-                        "type": f"[Old] Expense ({e.get('category') or 'General'})" if is_old else f"Expense ({e.get('category') or 'General'})",
-                        "stream": "Old" if is_old else "New",
-                        "is_old_accounting": is_old,
-                        "party": e.get("vendor") or "Various",
-                        "mode": (e.get("payment_mode") or "cash").upper(),
-                        "in_amount": 0.0,
-                        "out_amount": float(e.get("amount") or 0),
-                        "voucher_id": e_id,
-                        "voucher_type": "expense",
-                        "can_view": True,
-                        "can_edit": True,
-                        "can_delete": True,
-                    })
-
-            entries.sort(key=lambda x: x["date"] or "", reverse=True)
-            running = 0.0
-            tot_in = sum(x["in_amount"] for x in entries)
-            tot_out = sum(x["out_amount"] for x in entries)
-
-            rows = []
-            for item in entries:
-                running += (item["in_amount"] - item["out_amount"])
-                rows.append({
-                    "date": item["date"],
-                    "ref_no": item["ref_no"],
-                    "type": item["type"],
-                    "stream": item.get("stream", "New"),
-                    "is_old_accounting": bool(item.get("is_old_accounting")),
-                    "party": item["party"],
-                    "mode": item["mode"],
-                    "debit": inr(item["in_amount"]) if item["in_amount"] > 0 else "—",
-                    "credit": inr(item["out_amount"]) if item["out_amount"] > 0 else "—",
-                    "balance": inr(running),
-                    "receipt_raw": item["in_amount"],
-                    "payment_raw": item["out_amount"],
-                    "voucher_id": item.get("voucher_id"),
-                    "voucher_type": item.get("voucher_type"),
-                    "can_view": True,
-                    "can_edit": True,
-                    "can_delete": True,
-                })
-
-            # Compute Opening & Closing Balances with strict roll-forward
-            # 1. Fetch initial balances configuration
-            setting = await db.settings.find_one({"key": "day_book_initial_balances"}, {"_id": 0})
-            if setting:
-                start_date = setting.get("start_date") or "2026-11-17"
-                init_cash = float(setting.get("cash_in_hand", 0.0))
-                init_acc_map = setting.get("accounts", {})
-            else:
-                start_date = "2026-11-17"
-                c_setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
-                init_cash = float(c_setting.get("value", 0.0)) if c_setting else 0.0
-                init_acc_map = {}
-
+            # 1. Fetch all bank accounts and identify SBI and Axis
             all_banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
             if not all_banks:
                 all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
@@ -746,21 +598,78 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             def b_sort(b):
                 acc = str(b.get("account_no") or "")
                 name = (b.get("name") or "").upper()
-                if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name:
-                    return 0
-                if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name:
-                    return 1
+                if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name: return 0
+                if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name: return 1
                 return 2
             all_banks.sort(key=b_sort)
 
-            idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)", "(vii)", "(viii)"]
-            r_idx = 0
-
-            initial_balances_display = []
-            running_balances = {"cash_in_hand": init_cash}
-
             sbi_id = None
             axis_id = None
+            for b in all_banks:
+                acc = str(b.get("account_no") or "")
+                name = (b.get("name") or "").upper()
+                if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name:
+                    sbi_id = b.get("id")
+                if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name:
+                    axis_id = b.get("id")
+            if not sbi_id and all_banks:
+                sbi_id = all_banks[0].get("id")
+            if not axis_id and len(all_banks) > 1:
+                axis_id = all_banks[1].get("id")
+
+            # 2. Account resolver function
+            def resolve_acc(item):
+                mode = str(item.get("payment_mode") or item.get("mode") or "").lower()
+                b_id = item.get("bank_id") or item.get("bank_account_id")
+                b_name = item.get("bank_name") or ""
+                acc_no = str(item.get("account_no") or "")
+                splits = item.get("payment_splits") or []
+                if splits:
+                    sp = splits[0]
+                    if "cash" in str(sp.get("mode") or "").lower():
+                        return "cash_in_hand", "Cash in Hand", "Cash", "cash"
+                    b_id = b_id or sp.get("bank_id") or sp.get("bank_account_id")
+                    b_name = b_name or sp.get("bank_name") or ""
+                    acc_no = acc_no or str(sp.get("account_no") or "")
+
+                combined = f"{b_id or ''} {b_name} {acc_no}".lower()
+                if "cash" in mode and not any(k in mode for k in ["bank", "online", "upi", "cheque", "transfer"]):
+                    return "cash_in_hand", "Cash in Hand", "Cash", "cash"
+
+                if axis_id and (axis_id.lower() in combined or "915020011528516" in combined or "axis" in combined or "utib" in combined or "anju" in combined):
+                    return axis_id, "Axis Bank", "Axis", "axis"
+                if sbi_id and (sbi_id.lower() in combined or "42137607814" in combined or "sbin" in combined or "state" in combined or "triveni" in combined):
+                    return sbi_id, "State Bank of India", "SBI", "sbi"
+
+                for b in all_banks:
+                    bid = str(b.get("id") or "").lower()
+                    bacc = str(b.get("account_no") or "").lower()
+                    bnm = str(b.get("name") or b.get("bank_name") or "").lower()
+                    if (bid and bid in combined) or (bacc and bacc in combined) or (bnm and bnm in combined):
+                        tag = "Axis" if "axis" in bnm else "SBI" if "sbi" in bnm else b.get("bank_name") or "Bank"
+                        grp = "axis" if "axis" in bnm else "sbi" if "sbi" in bnm else "sbi"
+                        return b.get("id"), b.get("name") or b.get("bank_name"), tag, grp
+
+                if any(k in mode for k in ["bank", "online", "upi", "cheque", "transfer"]):
+                    return sbi_id, "State Bank of India", "SBI", "sbi"
+                return "cash_in_hand", "Cash in Hand", "Cash", "cash"
+
+            # 3. Retrieve base opening balances (start_date)
+            setting = await db.settings.find_one({"key": "day_book_initial_balances"}, {"_id": 0})
+            if setting:
+                start_date = setting.get("start_date") or "2026-11-17"
+                init_cash = float(setting.get("cash_in_hand", 10701.0))
+                init_acc_map = setting.get("accounts", {})
+            else:
+                start_date = "2026-11-17"
+                c_setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+                init_cash = float(c_setting.get("value", 10701.0)) if c_setting else 10701.0
+                init_acc_map = {}
+
+            running_balances = {"cash_in_hand": init_cash}
+            initial_balances_display = []
+            idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)", "(vii)", "(viii)"]
+            r_idx = 0
 
             for b in all_banks:
                 b_id = b.get("id")
@@ -769,18 +678,12 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 name = b.get("name") or b.get("bank_name") or "Bank Account"
                 bank_name = b.get("bank_name") or "Bank"
 
-                if "42137607814" in acc_no or "SBIN" in str(ifsc) or "TRIVENI" in name.upper():
-                    sbi_id = b_id
-                if "915020011528516" in acc_no or "UTIB" in str(ifsc) or "AXIS" in name.upper():
-                    axis_id = b_id
-
                 configured_init = init_acc_map.get(b_id)
                 if configured_init is None:
                     configured_init = init_acc_map.get(acc_no)
                 if configured_init is None:
                     configured_init = float(b.get("opening_balance") or b.get("balance") or 0.0)
                 configured_init = float(configured_init)
-
                 running_balances[b_id] = configured_init
 
                 initial_balances_display.append({
@@ -791,12 +694,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "account_no": acc_no,
                     "ifsc": ifsc,
                     "balance": round(configured_init, 2),
-                    "formatted_balance": f"₹{configured_init:,.2f}",
+                    "formatted_balance": inr(configured_init),
                 })
                 r_idx += 1
-
-            if not sbi_id and all_banks:
-                sbi_id = all_banks[0].get("id")
 
             initial_balances_display.append({
                 "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
@@ -806,21 +706,10 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "account_no": "—",
                 "ifsc": "—",
                 "balance": round(init_cash, 2),
-                "formatted_balance": f"₹{init_cash:,.2f}",
+                "formatted_balance": inr(init_cash),
             })
 
-            def resolve_bank_id(b_id_val, b_name_val):
-                b_str = (str(b_id_val or "") + " " + str(b_name_val or "")).lower()
-                if axis_id and ("axis" in b_str or "915020011528516" in b_str or axis_id.lower() in b_str):
-                    return axis_id
-                for b in all_banks:
-                    if b.get("id") and b.get("id").lower() in b_str:
-                        return b.get("id")
-                    if b.get("account_no") and str(b.get("account_no")) in b_str:
-                        return b.get("id")
-                return sbi_id
-
-            # Roll forward prior transactions (from start_date to from_date - 1)
+            # 4. Strict roll forward prior transactions (from start_date to from_date - 1)
             eff_from = from_date or start_date
             if eff_from > start_date:
                 prior_invoices = await db.invoices.find(
@@ -828,80 +717,40 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"_id": 0}
                 ).to_list(5000)
                 for inv in prior_invoices:
+                    acc_id, _, _, _ = resolve_acc(inv)
                     amt = float(inv.get("paid_amount") or inv.get("total_amount") or 0.0)
-                    if amt <= 0: continue
-                    mode = (inv.get("payment_mode") or "cash").lower()
-                    splits = inv.get("payment_splits") or []
-                    if splits:
-                        for ps in splits:
-                            p_amt = float(ps.get("amount") or 0.0)
-                            if p_amt <= 0: continue
-                            p_m = str(ps.get("mode") or "").lower()
-                            if "cash" in p_m:
-                                running_balances["cash_in_hand"] += p_amt
-                            else:
-                                tgt = resolve_bank_id(ps.get("bank_id"), ps.get("bank_name"))
-                                if tgt in running_balances:
-                                    running_balances[tgt] += p_amt
-                                elif sbi_id in running_balances:
-                                    running_balances[sbi_id] += p_amt
-                    elif "cash" in mode:
-                        running_balances["cash_in_hand"] += amt
-                    else:
-                        tgt = resolve_bank_id(inv.get("bank_id"), inv.get("bank_name"))
-                        if tgt in running_balances:
-                            running_balances[tgt] += amt
-                        elif sbi_id in running_balances:
-                            running_balances[sbi_id] += amt
+                    if amt > 0:
+                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) + amt
 
                 prior_income = await db.income.find(
                     {"date": {"$gte": start_date, "$lt": eff_from}},
                     {"_id": 0}
                 ).to_list(5000)
                 for inc in prior_income:
+                    acc_id, _, _, _ = resolve_acc(inc)
                     amt = float(inc.get("amount") or 0.0)
-                    if amt <= 0: continue
-                    mode = (inc.get("payment_mode") or "cash").lower()
-                    splits = inc.get("payment_splits") or []
-                    if splits:
-                        for ps in splits:
-                            p_amt = float(ps.get("amount") or 0.0)
-                            if p_amt <= 0: continue
-                            p_m = str(ps.get("mode") or "").lower()
-                            if "cash" in p_m:
-                                running_balances["cash_in_hand"] += p_amt
-                            else:
-                                tgt = resolve_bank_id(ps.get("bank_id"), ps.get("bank_name"))
-                                if tgt in running_balances:
-                                    running_balances[tgt] += p_amt
-                                elif sbi_id in running_balances:
-                                    running_balances[sbi_id] += p_amt
-                    elif "cash" in mode:
-                        running_balances["cash_in_hand"] += amt
-                    else:
-                        tgt = resolve_bank_id(inc.get("bank_id"), inc.get("bank_name"))
-                        if tgt in running_balances:
-                            running_balances[tgt] += amt
-                        elif sbi_id in running_balances:
-                            running_balances[sbi_id] += amt
+                    if amt > 0:
+                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) + amt
+
+                prior_purchases = await db.purchases.find(
+                    {"date": {"$gte": start_date, "$lt": eff_from}},
+                    {"_id": 0}
+                ).to_list(5000)
+                for pur in prior_purchases:
+                    acc_id, _, _, _ = resolve_acc(pur)
+                    amt = float(pur.get("paid_amount") or pur.get("total_amount") or 0.0)
+                    if amt > 0:
+                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) - amt
 
                 prior_expenses = await db.expenses.find(
-                    {"date": {"$gte": start_date, "$lt": eff_from}, "status": {"$ne": "rejected"}},
+                    {"date": {"$gte": start_date, "$lt": eff_from}, "status": {"$in": ["verified", "approved", "pending"]}},
                     {"_id": 0}
                 ).to_list(5000)
                 for exp in prior_expenses:
+                    acc_id, _, _, _ = resolve_acc(exp)
                     amt = float(exp.get("amount") or 0.0)
-                    if amt <= 0: continue
-                    mode = str(exp.get("payment_mode") or "cash").lower()
-                    is_online = any(k in mode for k in ["bank", "online", "upi", "cheque", "neft", "rtgs", "card"])
-                    if is_online:
-                        tgt = resolve_bank_id(exp.get("bank_id") or exp.get("bank_account_id"), exp.get("bank_name"))
-                        if tgt in running_balances:
-                            running_balances[tgt] -= amt
-                        elif sbi_id in running_balances:
-                            running_balances[sbi_id] -= amt
-                    else:
-                        running_balances["cash_in_hand"] -= amt
+                    if amt > 0:
+                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) - amt
 
                 prior_contra = await db.bank_transactions.find(
                     {"transfer_date": {"$gte": start_date, "$lt": eff_from}},
@@ -929,6 +778,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                         if d_to in running_balances:
                             running_balances[d_to] += amt
 
+            # 5. Opening balances for this period
             opening_balances = []
             tot_bank_ob = 0.0
             r_idx = 0
@@ -944,7 +794,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "account_no": b.get("account_no") or "—",
                     "ifsc": b.get("ifsc") or "—",
                     "balance": bal,
-                    "formatted_balance": f"₹{bal:,.2f}",
+                    "formatted_balance": inr(bal),
                 })
                 r_idx += 1
 
@@ -957,43 +807,159 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "account_no": "—",
                 "ifsc": "—",
                 "balance": cash_ob,
-                "formatted_balance": f"₹{cash_ob:,.2f}",
+                "formatted_balance": inr(cash_ob),
             })
             total_previous_ob = round(tot_bank_ob + cash_ob, 2)
 
-            # Apply period transactions
-            cash_in_period = 0.0
-            bank_in_period = 0.0
-            for item in entries:
-                if item["in_amount"] > 0:
-                    mode = str(item.get("mode") or "").lower()
-                    if "cash" in mode:
-                        cash_in_period += item["in_amount"]
-                        running_balances["cash_in_hand"] += item["in_amount"]
-                    else:
-                        bank_in_period += item["in_amount"]
-                        tgt = resolve_bank_id(item.get("bank_id"), item.get("bank_name"))
-                        if tgt in running_balances:
-                            running_balances[tgt] += item["in_amount"]
-                        elif sbi_id in running_balances:
-                            running_balances[sbi_id] += item["in_amount"]
+            # 6. Build period transactions
+            entries = []
+            for s in sales:
+                d = s.get("date") or s.get("invoice_date")
+                if in_date_range(d):
+                    is_old = bool(s.get("is_old_accounting"))
+                    if eff_scope == "old" and not is_old: continue
+                    if eff_scope == "new" and is_old: continue
 
-            cash_out_period = 0.0
-            bank_out_period = 0.0
-            for item in entries:
-                if item["out_amount"] > 0:
-                    mode = str(item.get("mode") or "").lower()
-                    if "cash" in mode:
-                        cash_out_period += item["out_amount"]
-                        running_balances["cash_in_hand"] -= item["out_amount"]
-                    else:
-                        bank_out_period += item["out_amount"]
-                        tgt = resolve_bank_id(item.get("bank_id"), item.get("bank_name"))
-                        if tgt in running_balances:
-                            running_balances[tgt] -= item["out_amount"]
-                        elif sbi_id in running_balances:
-                            running_balances[sbi_id] -= item["out_amount"]
+                    amt = float(s.get("paid_amount") or s.get("total_amount") or 0.0)
+                    acc_id, acc_name, acc_tag, acc_grp = resolve_acc(s)
+                    v_no = s.get("invoice_no") or s.get("invoice_number") or "SI"
+                    s_id = s.get("id") or str(s.get("_id", ""))
+                    splits = s.get("payment_splits") or []
+                    p_m = (s.get("payment_mode") or "cash").upper()
+                    if splits:
+                        p_m = "/".join(set(str(ps.get("mode") or "").upper() for ps in splits if ps.get("mode"))) or p_m
 
+                    entries.append({
+                        "date": d,
+                        "ref_no": v_no,
+                        "type": "[Old] Sale Invoice" if is_old else "Sale Invoice",
+                        "stream": "Old" if is_old else "New",
+                        "is_old_accounting": is_old,
+                        "party": s.get("party_name") or "Direct Client",
+                        "mode": p_m,
+                        "in_amount": amt,
+                        "out_amount": 0.0,
+                        "receipt_by_cash": amt if acc_grp == "cash" else 0.0,
+                        "receipt_in_ac": amt if acc_grp != "cash" else 0.0,
+                        "payment_by_ac": 0.0,
+                        "pay_out_by_cash": 0.0,
+                        "account_id": acc_id,
+                        "account_name": acc_name,
+                        "account_tag": acc_tag,
+                        "account_group": acc_grp,
+                        "voucher_id": s_id,
+                        "voucher_type": "sale_invoice",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
+                    })
+
+            for inc in incomes:
+                d = inc.get("date")
+                if in_date_range(d):
+                    is_old = bool(inc.get("is_old_accounting"))
+                    if eff_scope == "old" and not is_old: continue
+                    if eff_scope == "new" and is_old: continue
+
+                    amt = float(inc.get("amount") or 0.0)
+                    acc_id, acc_name, acc_tag, acc_grp = resolve_acc(inc)
+                    v_no = inc.get("income_no") or inc.get("voucher_no") or "PAYIN"
+                    inc_id = inc.get("id") or str(inc.get("_id", ""))
+
+                    entries.append({
+                        "date": d,
+                        "ref_no": v_no,
+                        "type": "[Old] Payment-In Receipt" if is_old else "Payment-In Receipt",
+                        "stream": "Old" if is_old else "New",
+                        "is_old_accounting": is_old,
+                        "party": inc.get("client_name") or "Customer",
+                        "mode": (inc.get("payment_mode") or "online").upper(),
+                        "in_amount": amt,
+                        "out_amount": 0.0,
+                        "receipt_by_cash": amt if acc_grp == "cash" else 0.0,
+                        "receipt_in_ac": amt if acc_grp != "cash" else 0.0,
+                        "payment_by_ac": 0.0,
+                        "pay_out_by_cash": 0.0,
+                        "account_id": acc_id,
+                        "account_name": acc_name,
+                        "account_tag": acc_tag,
+                        "account_group": acc_grp,
+                        "voucher_id": inc_id,
+                        "voucher_type": "payment_in",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
+                    })
+
+            for p in purchases:
+                d = p.get("date") or p.get("invoice_date")
+                if in_date_range(d):
+                    amt = float(p.get("paid_amount") or p.get("total_amount") or 0.0)
+                    acc_id, acc_name, acc_tag, acc_grp = resolve_acc(p)
+                    p_id = p.get("id") or str(p.get("_id", ""))
+
+                    entries.append({
+                        "date": d,
+                        "ref_no": p.get("invoice_number") or p.get("bill_no") or "—",
+                        "type": "Purchase Bill",
+                        "stream": "Common",
+                        "is_old_accounting": False,
+                        "party": p.get("party_name") or "Vendor",
+                        "mode": (p.get("payment_mode") or "bank").upper(),
+                        "in_amount": 0.0,
+                        "out_amount": amt,
+                        "receipt_by_cash": 0.0,
+                        "receipt_in_ac": 0.0,
+                        "payment_by_ac": amt if acc_grp != "cash" else 0.0,
+                        "pay_out_by_cash": amt if acc_grp == "cash" else 0.0,
+                        "account_id": acc_id,
+                        "account_name": acc_name,
+                        "account_tag": acc_tag,
+                        "account_group": acc_grp,
+                        "voucher_id": p_id,
+                        "voucher_type": "purchase",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
+                    })
+
+            for e in expenses:
+                d = e.get("date")
+                if in_date_range(d):
+                    is_old = bool(e.get("is_old_accounting"))
+                    if eff_scope == "old" and not is_old: continue
+                    if eff_scope == "new" and is_old: continue
+
+                    amt = float(e.get("amount") or 0.0)
+                    acc_id, acc_name, acc_tag, acc_grp = resolve_acc(e)
+                    e_id = e.get("id") or str(e.get("_id", ""))
+
+                    entries.append({
+                        "date": d,
+                        "ref_no": e.get("expense_no") or e.get("voucher_no") or "EXP",
+                        "type": f"[Old] Expense ({e.get('category') or 'General'})" if is_old else f"Expense ({e.get('category') or 'General'})",
+                        "stream": "Old" if is_old else "New",
+                        "is_old_accounting": is_old,
+                        "party": e.get("vendor") or "Various",
+                        "mode": (e.get("payment_mode") or "cash").upper(),
+                        "in_amount": 0.0,
+                        "out_amount": amt,
+                        "receipt_by_cash": 0.0,
+                        "receipt_in_ac": 0.0,
+                        "payment_by_ac": amt if acc_grp != "cash" else 0.0,
+                        "pay_out_by_cash": amt if acc_grp == "cash" else 0.0,
+                        "account_id": acc_id,
+                        "account_name": acc_name,
+                        "account_tag": acc_tag,
+                        "account_group": acc_grp,
+                        "voucher_id": e_id,
+                        "voucher_type": "expense",
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
+                    })
+
+            # Contra Transfers in period
             contra_query = {}
             if from_date and to_date:
                 contra_query["transfer_date"] = {"$gte": from_date, "$lte": to_date}
@@ -1002,28 +968,238 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             elif to_date:
                 contra_query["transfer_date"] = {"$lte": to_date}
             contra_period = await db.bank_transactions.find(contra_query, {"_id": 0}).to_list(2000)
+
             for ct in contra_period:
                 amt = float(ct.get("amount") or 0.0)
                 if amt <= 0: continue
-                w_from = ct.get("withdraw_from")
-                d_to = ct.get("deposit_to")
-                ttype = ct.get("transfer_type")
-                if w_from == "Cash in Hand" or ttype == "cash_to_bank":
-                    running_balances["cash_in_hand"] -= amt
-                    tgt = d_to if d_to in running_balances else sbi_id
-                    if tgt in running_balances:
-                        running_balances[tgt] += amt
-                elif d_to == "Cash in Hand" or ttype == "bank_to_cash":
-                    running_balances["cash_in_hand"] += amt
-                    src = w_from if w_from in running_balances else sbi_id
-                    if src in running_balances:
-                        running_balances[src] -= amt
-                else:
-                    if w_from in running_balances:
-                        running_balances[w_from] -= amt
-                    if d_to in running_balances:
-                        running_balances[d_to] += amt
+                c_id = ct.get("id") or str(ct.get("_id", ""))
+                d = ct.get("transfer_date") or ct.get("date")
+                w_from = ct.get("withdraw_from") or ""
+                d_to = ct.get("deposit_to") or ""
+                ttype = ct.get("transfer_type") or "contra"
+                v_no = ct.get("reference_no") or ct.get("voucher_no") or f"CONTRA-{c_id[:6]}"
 
+                if w_from == "Cash in Hand" or ttype == "cash_to_bank":
+                    desc = f"Cash Deposit to Bank ({d_to})"
+                    p_mode = "CONTRA (CASH->BANK)"
+                    rec_cash = 0.0
+                    rec_ac = amt
+                    pay_ac = 0.0
+                    pay_cash = amt
+                elif d_to == "Cash in Hand" or ttype == "bank_to_cash":
+                    desc = f"Cash Withdrawal from Bank ({w_from})"
+                    p_mode = "CONTRA (BANK->CASH)"
+                    rec_cash = amt
+                    rec_ac = 0.0
+                    pay_ac = amt
+                    pay_cash = 0.0
+                else:
+                    desc = f"Bank Transfer: {w_from} -> {d_to}"
+                    p_mode = "CONTRA (BANK->BANK)"
+                    rec_cash = 0.0
+                    rec_ac = amt
+                    pay_ac = amt
+                    pay_cash = 0.0
+
+                entries.append({
+                    "date": d,
+                    "ref_no": v_no,
+                    "type": "Contra Transfer",
+                    "stream": "Common",
+                    "is_old_accounting": False,
+                    "party": desc,
+                    "mode": p_mode,
+                    "in_amount": amt,
+                    "out_amount": amt,
+                    "receipt_by_cash": rec_cash,
+                    "receipt_in_ac": rec_ac,
+                    "payment_by_ac": pay_ac,
+                    "pay_out_by_cash": pay_cash,
+                    "account_id": "contra",
+                    "account_name": "Contra Account",
+                    "account_tag": "Contra",
+                    "account_group": "contra",
+                    "voucher_id": c_id,
+                    "voucher_type": "contra",
+                    "withdraw_from": w_from,
+                    "deposit_to": d_to,
+                    "can_view": True,
+                    "can_edit": True,
+                    "can_delete": True,
+                })
+
+            # 7. Apply entries strictly to their respective accounts
+            online_exp_period = 0.0
+            cash_exp_period = 0.0
+
+            for item in entries:
+                if item["account_group"] == "contra":
+                    w_from = item.get("withdraw_from")
+                    d_to = item.get("deposit_to")
+                    amt = item["in_amount"]
+                    if w_from == "Cash in Hand":
+                        running_balances["cash_in_hand"] -= amt
+                        tgt = d_to if d_to in running_balances else sbi_id
+                        if tgt in running_balances:
+                            running_balances[tgt] += amt
+                    elif d_to == "Cash in Hand":
+                        running_balances["cash_in_hand"] += amt
+                        src = w_from if w_from in running_balances else sbi_id
+                        if src in running_balances:
+                            running_balances[src] -= amt
+                    else:
+                        if w_from in running_balances:
+                            running_balances[w_from] -= amt
+                        if d_to in running_balances:
+                            running_balances[d_to] += amt
+                else:
+                    acc_id = item["account_id"]
+                    if item["in_amount"] > 0:
+                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) + item["in_amount"]
+                    if item["out_amount"] > 0:
+                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) - item["out_amount"]
+                        if item["account_group"] == "cash":
+                            cash_exp_period += item["out_amount"]
+                        else:
+                            online_exp_period += item["out_amount"]
+
+            # 8. Separate into Parts (A: SBI, B: Axis, C: Cash, D: Contra)
+            sbi_entries = [x for x in entries if x["account_group"] == "sbi"]
+            axis_entries = [x for x in entries if x["account_group"] == "axis"]
+            cash_entries = [x for x in entries if x["account_group"] == "cash"]
+            contra_entries = [x for x in entries if x["account_group"] == "contra"]
+
+            sbi_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+            axis_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+            cash_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+            contra_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+
+            ordered_entries = sbi_entries + axis_entries + cash_entries + contra_entries
+
+            rows = []
+            running = 0.0
+            prev_grp = None
+
+            for idx, e in enumerate(ordered_entries, 1):
+                grp = e["account_group"]
+                is_first_of_grp = (grp != prev_grp)
+                prev_grp = grp
+
+                part_title = ""
+                part_badge = ""
+                if is_first_of_grp:
+                    if grp == "sbi":
+                        part_title = "PART A — STATE BANK OF INDIA (SBI • 42137607814)"
+                        part_badge = "SBI ACCOUNT"
+                    elif grp == "axis":
+                        part_title = "PART B — AXIS BANK (915020011528516)"
+                        part_badge = "AXIS ACCOUNT"
+                    elif grp == "cash":
+                        part_title = "PART C — CASH IN HAND (CASH LEDGER)"
+                        part_badge = "CASH REGISTER"
+                    elif grp == "contra":
+                        part_title = "PART D — CASH & BANK CONTRA (DEPOSITS & WITHDRAWALS)"
+                        part_badge = "CONTRA TRANSFERS"
+
+                running += (e["in_amount"] - e["out_amount"])
+
+                rows.append({
+                    "sl_no": idx,
+                    "date": e["date"],
+                    "ref_no": e["ref_no"],
+                    "type": e["type"],
+                    "stream": e.get("stream", "New"),
+                    "is_old_accounting": bool(e.get("is_old_accounting")),
+                    "party": e["party"],
+                    "mode": e["mode"],
+                    "receipt_by_cash": inr(e["receipt_by_cash"]) if e["receipt_by_cash"] > 0 else "—",
+                    "receipt_in_ac": f"{inr(e['receipt_in_ac'])} ({e['account_tag']})" if e["receipt_in_ac"] > 0 else "—",
+                    "receipt_in": inr(e["in_amount"]) if e["in_amount"] > 0 else "—",
+                    "debit": inr(e["in_amount"]) if e["in_amount"] > 0 else "—",
+                    "payment_by_ac": f"{inr(e['payment_by_ac'])} ({e['account_tag']})" if e["payment_by_ac"] > 0 else "—",
+                    "payment_out": inr(e["out_amount"]) if e["out_amount"] > 0 else "—",
+                    "credit": inr(e["out_amount"]) if e["out_amount"] > 0 else "—",
+                    "pay_out_by_cash": inr(e["pay_out_by_cash"]) if e["pay_out_by_cash"] > 0 else "—",
+                    "balance": inr(running),
+                    "account_group": e["account_group"],
+                    "account_tag": e["account_tag"],
+                    "part_title": part_title,
+                    "part_badge": part_badge,
+                    "is_first_of_part": is_first_of_grp,
+                    "receipt_raw": e["in_amount"],
+                    "payment_raw": e["out_amount"],
+                    "voucher_id": e.get("voucher_id"),
+                    "voucher_type": e.get("voucher_type"),
+                    "can_view": True,
+                    "can_edit": True,
+                    "can_delete": True,
+                })
+
+            # 9. Compute Grand Totals & Part Subtotals
+            tot_in = sum(x["in_amount"] for x in entries)
+            tot_out = sum(x["out_amount"] for x in entries)
+
+            tot_receipt_by_cash = sum(x["receipt_by_cash"] for x in entries)
+            tot_receipt_in_ac = sum(x["receipt_in_ac"] for x in entries)
+            tot_payment_by_ac = sum(x["payment_by_ac"] for x in entries)
+            tot_pay_out_by_cash = sum(x["pay_out_by_cash"] for x in entries)
+
+            column_totals = {
+                "sl_no": "TOTAL",
+                "party": "TOTALS",
+                "receipt_by_cash": inr(tot_receipt_by_cash),
+                "receipt_in_ac": inr(tot_receipt_in_ac),
+                "receipt_in": inr(tot_in),
+                "debit": inr(tot_in),
+                "payment_by_ac": inr(tot_payment_by_ac),
+                "payment_out": inr(tot_out),
+                "credit": inr(tot_out),
+                "pay_out_by_cash": inr(tot_pay_out_by_cash),
+                "balance": inr(tot_in - tot_out),
+                "receipt_by_cash_num": tot_receipt_by_cash,
+                "receipt_in_ac_num": tot_receipt_in_ac,
+                "receipt_in_num": tot_in,
+                "payment_by_ac_num": tot_payment_by_ac,
+                "payment_out_num": tot_out,
+                "pay_out_by_cash_num": tot_pay_out_by_cash,
+            }
+
+            part_summaries = [
+                {
+                    "part": "A",
+                    "title": "PART A — State Bank of India (SBI • 42137607814)",
+                    "count": len(sbi_entries),
+                    "total_in": sum(x["in_amount"] for x in sbi_entries),
+                    "total_out": sum(x["out_amount"] for x in sbi_entries),
+                    "net": sum(x["in_amount"] for x in sbi_entries) - sum(x["out_amount"] for x in sbi_entries),
+                },
+                {
+                    "part": "B",
+                    "title": "PART B — Axis Bank (915020011528516)",
+                    "count": len(axis_entries),
+                    "total_in": sum(x["in_amount"] for x in axis_entries),
+                    "total_out": sum(x["out_amount"] for x in axis_entries),
+                    "net": sum(x["in_amount"] for x in axis_entries) - sum(x["out_amount"] for x in axis_entries),
+                },
+                {
+                    "part": "C",
+                    "title": "PART C — Cash in Hand (Cash Ledger)",
+                    "count": len(cash_entries),
+                    "total_in": sum(x["in_amount"] for x in cash_entries),
+                    "total_out": sum(x["out_amount"] for x in cash_entries),
+                    "net": sum(x["in_amount"] for x in cash_entries) - sum(x["out_amount"] for x in cash_entries),
+                },
+                {
+                    "part": "D",
+                    "title": "PART D — Cash & Bank Contra Transfers",
+                    "count": len(contra_entries),
+                    "total_in": sum(x["in_amount"] for x in contra_entries),
+                    "total_out": sum(x["out_amount"] for x in contra_entries),
+                    "net": sum(x["in_amount"] for x in contra_entries) - sum(x["out_amount"] for x in contra_entries),
+                },
+            ]
+
+            # 10. Compute Closing Balances strictly account-specific
             closing_balances = []
             c_idx = 0
             allocated_bank_cb = 0.0
@@ -1039,7 +1215,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "account_no": b.get("account_no") or "—",
                     "ifsc": b.get("ifsc") or "—",
                     "balance": b_cb,
-                    "formatted_balance": f"₹{b_cb:,.2f}",
+                    "formatted_balance": inr(b_cb),
                 })
                 c_idx += 1
 
@@ -1050,8 +1226,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "bank_name": "Online / Bank",
                 "account_no": "—",
                 "ifsc": "—",
-                "balance": round(bank_out_period, 2),
-                "formatted_balance": f"₹{bank_out_period:,.2f}",
+                "balance": round(online_exp_period, 2),
+                "formatted_balance": inr(online_exp_period),
             })
             c_idx += 1
 
@@ -1062,8 +1238,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "bank_name": "Cash",
                 "account_no": "—",
                 "ifsc": "—",
-                "balance": round(cash_out_period, 2),
-                "formatted_balance": f"₹{cash_out_period:,.2f}",
+                "balance": round(cash_exp_period, 2),
+                "formatted_balance": inr(cash_exp_period),
             })
             c_idx += 1
 
@@ -1076,21 +1252,19 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "account_no": "—",
                 "ifsc": "—",
                 "balance": cash_cb,
-                "formatted_balance": f"₹{cash_cb:,.2f}",
+                "formatted_balance": inr(cash_cb),
             })
 
-            total_expenses = round(bank_out_period + cash_out_period, 2)
-            total_day_receipts = round(bank_in_period + cash_in_period, 2)
+            total_expenses = round(online_exp_period + cash_exp_period, 2)
             total_closing_accounts = round(allocated_bank_cb + cash_cb, 2)
 
-            receipt_side_total = round(total_previous_ob + total_day_receipts, 2)
+            receipt_side_total = round(total_previous_ob + tot_in, 2)
             payment_side_total = round(total_expenses + total_closing_accounts, 2)
-            total_cb = round(allocated_bank_cb + bank_out_period + cash_out_period + cash_cb, 2)
+            total_cb = round(allocated_bank_cb + online_exp_period + cash_exp_period + cash_cb, 2)
 
             diff = round(abs(receipt_side_total - payment_side_total), 2)
             is_balanced = (diff < 0.01)
 
-            total_all_bank_ob = sum(round(running_balances.get(b.get("id"), 0.0), 2) for b in all_banks)
             available_banks = [
                 {
                     "id": "all",
@@ -1117,7 +1291,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             if report_type == "old_day_book":
                 title = "Old Day Book (Cash & Bank Ledger)"
             elif is_cons:
-                title = "Consolidated Bank Book (All Accounts)"
+                title = "Consolidated Bank Book (All Accounts & Cash)"
             elif report_type == "day_book":
                 title = f"Day Book - {eff_scope.capitalize()} Accounting" if eff_scope != "consolidated" else "Consolidated Day Book (Cash & Bank Ledger)"
             else:
@@ -1132,6 +1306,23 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "old_inflow": sum(x["in_amount"] for x in entries if x.get("is_old_accounting")),
                 "old_outflow": sum(x["out_amount"] for x in entries if x.get("is_old_accounting")),
             }
+
+            columns = [
+                {"key": "sl_no", "label": "Sl. No."},
+                {"key": "date", "label": "Date"},
+                {"key": "ref_no", "label": "Voucher / Ref #"},
+                {"key": "type", "label": "Transaction Type"},
+                {"key": "party", "label": "Party / Particulars"},
+                {"key": "mode", "label": "Payment Mode"},
+                {"key": "receipt_by_cash", "label": "Receipt by cash"},
+                {"key": "receipt_in_ac", "label": "Receipt in a/c"},
+                {"key": "receipt_in", "label": "Receipt (In)"},
+                {"key": "payment_by_ac", "label": "Payment by a/c"},
+                {"key": "payment_out", "label": "Payment (Out)"},
+                {"key": "pay_out_by_cash", "label": "Pay out by (Cash)"},
+                {"key": "balance", "label": "Cumulative Bal."},
+                {"key": "actions", "label": "Actions"},
+            ]
 
             return {
                 "report_type": report_type,
@@ -1150,17 +1341,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"label": "Net Closing Movement", "value": inr(tot_in - tot_out), "numeric": tot_in - tot_out, "color": "#2563EB"},
                     {"label": "Total Transaction Count", "value": str(len(entries)), "numeric": len(entries), "color": "#7C3AED"},
                 ],
-                "columns": [
-                    {"key": "date", "label": "Date"},
-                    {"key": "ref_no", "label": "Voucher / Ref #"},
-                    {"key": "type", "label": "Transaction Type"},
-                    {"key": "party", "label": "Party / Particulars"},
-                    {"key": "mode", "label": "Payment Mode"},
-                    {"key": "debit", "label": "Receipt (In)"},
-                    {"key": "credit", "label": "Payment (Out)"},
-                    {"key": "balance", "label": "Cumulative Bal."},
-                    {"key": "actions", "label": "Actions"},
-                ],
+                "columns": columns,
+                "column_totals": column_totals,
+                "part_summaries": part_summaries,
                 "rows": rows,
                 "opening_balances": opening_balances,
                 "closing_balances": closing_balances,
@@ -1171,15 +1354,14 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "total_ob_with_receipts": receipt_side_total,
                 "receipt_side_total": receipt_side_total,
                 "payment_side_total": payment_side_total,
-                "expenses_online": bank_out_period,
-                "expenses_cash": cash_out_period,
+                "expenses_online": online_exp_period,
+                "expenses_cash": cash_exp_period,
                 "is_balanced": is_balanced,
                 "reconciliation_status": "ok" if is_balanced else "mismatch",
                 "reconciliation_message": rec_msg,
                 "difference": diff,
                 "difference_message": rec_msg,
             }
-
 
         elif report_type in ["bank_ledger", "cash_ledger"]:
             # Exact Golden Roll-Forward from account start date (2026-11-17)

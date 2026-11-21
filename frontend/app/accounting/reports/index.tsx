@@ -59,8 +59,20 @@ const formatCellValue = (colKey: string, val: any): string => {
 
 const getColWidth = (colKey: string): number => {
   const k = colKey.toLowerCase();
-  if (k === '#' || k === 'sr' || k === 'sn') return 44;
+  if (k === 'sl_no' || k === '#' || k === 'sr' || k === 'sn') return 48;
   if (k === 'actions') return 110;
+  if (k === 'date') return 95;
+  if (k === 'ref_no') return 130;
+  if (k === 'type') return 130;
+  if (k === 'party') return 175;
+  if (k === 'mode') return 90;
+  if (k === 'receipt_by_cash') return 115;
+  if (k === 'receipt_in_ac') return 145;
+  if (k === 'receipt_in' || k === 'debit') return 110;
+  if (k === 'payment_by_ac') return 145;
+  if (k === 'payment_out' || k === 'credit') return 110;
+  if (k === 'pay_out_by_cash') return 120;
+  if (k === 'balance') return 115;
   if (k.includes('date')) return 100;
   if (k.includes('ref')) return 120;
   if (k.includes('inv') || k.includes('bill_no') || k.includes('voucher') || k.includes('order_no')) return 130;
@@ -411,6 +423,15 @@ export default function AccountingReportsHub() {
     );
   }, [reportData, tableSearch]);
 
+  const hasSlNo = useMemo(() => {
+    return (reportData?.columns || []).some((c: any) => c.key === 'sl_no');
+  }, [reportData]);
+
+  const totalTableWidth = useMemo(() => {
+    if (!reportData?.columns) return 1200;
+    return reportData.columns.reduce((acc: number, c: any) => acc + getColWidth(c.key), hasSlNo ? 0 : 44);
+  }, [reportData, hasSlNo]);
+
   const shareReport = async () => {
     if (!reportData) return;
     let text = `*TDSC Office Management System*\n`;
@@ -532,12 +553,14 @@ export default function AccountingReportsHub() {
       </div>
     ` : '';
 
+    const hasSlNo = cols.some((c: any) => c.key === 'sl_no');
+
     const theadHtml = `
       <thead>
         <tr>
-          <th style="width: 32px; text-align: center;">#</th>
+          ${!hasSlNo ? '<th style="width: 32px; text-align: center;">#</th>' : ''}
           ${cols.map((c: any) => {
-            const isColAmount = ['taxable', 'tax', 'gst', 'amount', 'amt', 'total', 'paid', 'balance', 'price', 'debit', 'credit', 'rate'].some((k: string) => c.key.toLowerCase().includes(k));
+            const isColAmount = ['taxable', 'tax', 'gst', 'amount', 'amt', 'total', 'paid', 'balance', 'price', 'debit', 'credit', 'rate', 'receipt', 'payment', 'pay_out'].some((k: string) => c.key.toLowerCase().includes(k));
             return `<th style="${isColAmount ? 'text-align: right;' : 'text-align: left;'}">${c.label}</th>`;
           }).join('')}
         </tr>
@@ -548,16 +571,35 @@ export default function AccountingReportsHub() {
       <tbody>
         ${rows.map((row: any, idx: number) => {
           const isBold = !!row.is_bold;
+          const partHeaderHtml = row.part_title ? `
+            <tr style="background: #1E293B; color: #FFFFFF; font-weight: 800;">
+              <td colspan="${cols.length + (!hasSlNo ? 1 : 0)}" style="padding: 6px 8px; font-size: 10px; letter-spacing: 0.5px; background: #1E293B; color: #FFF;">
+                ${row.part_title} ${row.part_badge ? `<span style="background: rgba(255,255,255,0.2); padding: 1px 6px; border-radius: 3px; font-size: 8.5px; margin-left: 6px; color: #38BDF8;">${row.part_badge}</span>` : ''}
+              </td>
+            </tr>
+          ` : '';
+
           return `
+            ${partHeaderHtml}
             <tr class="${isBold ? 'bold-row' : ''}">
-              <td style="text-align: center; color: #64748B;">${idx + 1}</td>
+              ${!hasSlNo ? `<td style="text-align: center; color: #64748B;">${idx + 1}</td>` : ''}
               ${cols.map((c: any) => {
                 const val = row[c.key];
                 const formattedStr = formatCellValue(c.key, val);
-                const isNumeric = formattedStr.startsWith('₹') || formattedStr.startsWith('-₹') || /^-?\d+(\.\d+)?%?$/.test(formattedStr.replace(/,/g, ''));
+                const isInCol = ['receipt_by_cash', 'receipt_in_ac', 'receipt_in', 'debit'].includes(c.key);
+                const isOutCol = ['payment_by_ac', 'payment_out', 'credit', 'pay_out_by_cash'].includes(c.key);
+                const isNonZero = formattedStr && formattedStr !== '—' && formattedStr !== '₹0.00';
+
+                let cellColor = '#1E293B';
+                if (isInCol && isNonZero) cellColor = '#059669';
+                else if (isOutCol && isNonZero) cellColor = '#DC2626';
+                else if (c.key === 'balance') cellColor = '#1E40AF';
+
+                const isNumeric = formattedStr.startsWith('₹') || formattedStr.startsWith('-₹') || isInCol || isOutCol || /^-?\d+(\.\d+)?%?$/.test(formattedStr.replace(/,/g, ''));
                 const isAlert = formattedStr.includes('LOW') || formattedStr.includes('OVERDUE') || formattedStr.includes('Unpaid');
+
                 return `
-                  <td class="${isNumeric ? 'cell-numeric' : ''}" style="${isAlert ? 'color: #DC2626; font-weight: bold;' : ''}">
+                  <td class="${isNumeric ? 'cell-numeric' : ''}" style="${isAlert ? 'color: #DC2626; font-weight: bold;' : ''} color: ${cellColor}; ${isInCol || isOutCol ? 'font-weight: 700;' : ''}">
                     ${formattedStr}
                   </td>
                 `;
@@ -569,12 +611,27 @@ export default function AccountingReportsHub() {
     ` : `
       <tbody>
         <tr>
-          <td colspan="${cols.length + 1}" style="text-align: center; padding: 20px; color: #64748B;">
+          <td colspan="${cols.length + (!hasSlNo ? 1 : 0)}" style="text-align: center; padding: 20px; color: #64748B;">
             No records found for this period.
           </td>
         </tr>
       </tbody>
     `;
+
+    const tfootHtml = reportData?.column_totals ? `
+      <tfoot>
+        <tr style="background: #0F172A; color: #FFFFFF; font-weight: 800; border-top: 2px solid #0F172A;">
+          ${!hasSlNo ? '<td style="padding: 6px 4px; text-align: center; color: #94A3B8;">—</td>' : ''}
+          ${cols.map((c: any) => {
+            const isInCol = ['receipt_by_cash', 'receipt_in_ac', 'receipt_in', 'debit'].includes(c.key);
+            const isOutCol = ['payment_by_ac', 'payment_out', 'credit', 'pay_out_by_cash'].includes(c.key);
+            const totVal = reportData.column_totals[c.key] || (c.key === 'sl_no' ? 'TOTAL' : c.key === 'party' ? 'GRAND TOTAL (All Accounts & Cash)' : '—');
+            const color = isInCol ? '#10B981' : isOutCol ? '#F87171' : c.key === 'balance' ? '#60A5FA' : '#FFFFFF';
+            return `<td style="padding: 6px 4px; text-align: ${isInCol || isOutCol || c.key === 'balance' ? 'right' : c.key === 'sl_no' ? 'center' : 'left'}; color: ${color}; font-weight: 900; background: #0F172A;">${totVal}</td>`;
+          }).join('')}
+        </tr>
+      </tfoot>
+    ` : '';
 
     const htmlContent = `
 <!DOCTYPE html>
@@ -889,6 +946,7 @@ export default function AccountingReportsHub() {
     <table class="report-table">
       ${theadHtml}
       ${tbodyHtml}
+      ${tfootHtml}
     </table>
 
     ${cbHtml}
@@ -1268,18 +1326,36 @@ export default function AccountingReportsHub() {
                 </View>
               )}
 
+              {/* Part Summaries Bar (For Consolidated Multi-Account Statements) */}
+              {reportData.part_summaries && reportData.part_summaries.length > 0 && (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: spacing.xs }}>
+                  {reportData.part_summaries.map((ps: any, pIdx: number) => (
+                    <View key={pIdx} style={styles.partSummaryCard}>
+                      <Text style={styles.partSummaryTitle} numberOfLines={1}>{ps.title}</Text>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 6 }}>
+                        <Text style={styles.partSummaryIn}>In: {inr(ps.total_in)}</Text>
+                        <Text style={styles.partSummaryOut}>Out: {inr(ps.total_out)}</Text>
+                      </View>
+                      <Text style={styles.partSummaryNet}>Net: {inr(ps.net)} ({ps.count} txns)</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
               {/* Tabular Statement View */}
               <View style={styles.tableCard}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={true}>
                   <View>
                     {/* Header Row */}
                     <View style={styles.tHeadRow}>
-                      <View style={[styles.tHeadCell, { width: 44 }]}>
-                        <Text style={[styles.tHeadTxt, { textAlign: 'center' }]}>#</Text>
-                      </View>
+                      {!hasSlNo && (
+                        <View style={[styles.tHeadCell, { width: 44 }]}>
+                          <Text style={[styles.tHeadTxt, { textAlign: 'center' }]}>#</Text>
+                        </View>
+                      )}
                       {reportData.columns?.map((col: any) => {
                         const colW = getColWidth(col.key);
-                        const isColAmount = ['taxable', 'tax', 'gst', 'amount', 'amt', 'total', 'paid', 'balance', 'price', 'debit', 'credit', 'rate'].some((k: string) => col.key.toLowerCase().includes(k));
+                        const isColAmount = ['taxable', 'tax', 'gst', 'amount', 'amt', 'total', 'paid', 'balance', 'price', 'debit', 'credit', 'rate', 'receipt', 'payment', 'pay_out'].some((k: string) => col.key.toLowerCase().includes(k));
                         return (
                           <View key={col.key} style={[styles.tHeadCell, { width: colW }]}>
                             <Text style={[styles.tHeadTxt, isColAmount && { textAlign: 'right' }]} numberOfLines={1}>{col.label}</Text>
@@ -1299,78 +1375,141 @@ export default function AccountingReportsHub() {
                         const isEven = rIdx % 2 === 0;
                         const isBold = !!row.is_bold;
                         return (
-                          <View key={rIdx} style={[styles.tDataRow, isEven && styles.tDataRowAlt, isBold && styles.tDataRowBold]}>
-                            <View style={[styles.tDataCell, { width: 44 }]}>
-                              <Text style={[styles.tDataTxt, { color: '#94A3B8', fontSize: 11, textAlign: 'center' }]}>{rIdx + 1}</Text>
-                            </View>
-                            {reportData.columns?.map((col: any) => {
-                              const colW = getColWidth(col.key);
-                              if (col.key === 'actions') {
+                          <React.Fragment key={rIdx}>
+                            {row.part_title ? (
+                              <View style={[styles.partHeaderRow, { width: totalTableWidth }]}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                  <Ionicons name="folder-open" size={14} color="#38BDF8" />
+                                  <Text style={styles.partHeaderTxt}>{row.part_title}</Text>
+                                </View>
+                                {row.part_badge && (
+                                  <View style={styles.partBadge}>
+                                    <Text style={styles.partBadgeTxt}>{row.part_badge}</Text>
+                                  </View>
+                                )}
+                              </View>
+                            ) : null}
+                            <View style={[styles.tDataRow, isEven && styles.tDataRowAlt, isBold && styles.tDataRowBold]}>
+                              {!hasSlNo && (
+                                <View style={[styles.tDataCell, { width: 44 }]}>
+                                  <Text style={[styles.tDataTxt, { color: '#94A3B8', fontSize: 11, textAlign: 'center' }]}>{rIdx + 1}</Text>
+                                </View>
+                              )}
+                              {reportData.columns?.map((col: any) => {
+                                const colW = getColWidth(col.key);
+                                if (col.key === 'actions') {
+                                  return (
+                                    <View key={col.key} style={[styles.tDataCell, { width: colW, flexDirection: 'row', gap: 6, justifyContent: 'center', alignItems: 'center' }]}>
+                                      {row.can_view && (
+                                        <Pressable
+                                          onPress={() => handleViewVoucher(row)}
+                                          hitSlop={6}
+                                          style={styles.actionBtnView}
+                                          testID={`btn-view-${row.voucher_id || rIdx}`}
+                                        >
+                                          <Ionicons name="eye" size={13} color="#0284C7" />
+                                        </Pressable>
+                                      )}
+                                      {row.can_edit && (
+                                        <Pressable
+                                          onPress={() => handleEditVoucher(row)}
+                                          hitSlop={6}
+                                          style={styles.actionBtnEdit}
+                                          testID={`btn-edit-${row.voucher_id || rIdx}`}
+                                        >
+                                          <Ionicons name="pencil" size={13} color="#D97706" />
+                                        </Pressable>
+                                      )}
+                                      {row.can_delete && (
+                                        <Pressable
+                                          onPress={() => handleDeleteVoucher(row)}
+                                          hitSlop={6}
+                                          style={styles.actionBtnDelete}
+                                          testID={`btn-delete-${row.voucher_id || rIdx}`}
+                                        >
+                                          <Ionicons name="trash" size={13} color="#DC2626" />
+                                        </Pressable>
+                                      )}
+                                    </View>
+                                  );
+                                }
+                                const val = formatCellValue(col.key, row[col.key]);
+                                const isInCol = ['receipt_by_cash', 'receipt_in_ac', 'receipt_in', 'debit'].includes(col.key);
+                                const isOutCol = ['payment_by_ac', 'payment_out', 'credit', 'pay_out_by_cash'].includes(col.key);
+                                const isAmount = String(val).startsWith('₹') || String(val).startsWith('-₹') || isInCol || isOutCol;
+                                const isAlert = String(val).includes('LOW') || String(val).includes('OVERDUE') || String(val).includes('Unpaid');
+                                const isOld = row.stream === 'Old' || row.is_old_accounting === true;
+                                const isNonZero = val && val !== '—' && val !== '₹0.00';
+
+                                let cellTextColor = '#1E293B';
+                                if (isAlert) cellTextColor = '#DC2626';
+                                else if (isInCol && isNonZero) cellTextColor = '#059669';
+                                else if (isOutCol && isNonZero) cellTextColor = '#DC2626';
+                                else if (col.key === 'balance') cellTextColor = '#1E40AF';
+
                                 return (
-                                  <View key={col.key} style={[styles.tDataCell, { width: colW, flexDirection: 'row', gap: 6, justifyContent: 'center', alignItems: 'center' }]}>
-                                    {row.can_view && (
-                                      <Pressable
-                                        onPress={() => handleViewVoucher(row)}
-                                        hitSlop={6}
-                                        style={styles.actionBtnView}
-                                        testID={`btn-view-${row.voucher_id || rIdx}`}
+                                  <View key={col.key} style={[styles.tDataCell, { width: colW }]}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap', justifyContent: isAmount ? 'flex-end' : 'flex-start' }}>
+                                      <Text
+                                        numberOfLines={2}
+                                        style={[
+                                          styles.tDataTxt,
+                                          { color: cellTextColor },
+                                          isBold && { fontWeight: '800' },
+                                          isAmount && { fontWeight: '700', textAlign: 'right' },
+                                          isAlert && { fontWeight: '800' },
+                                          col.key === 'sl_no' && { textAlign: 'center', width: '100%', color: '#64748B' }
+                                        ]}
                                       >
-                                        <Ionicons name="eye" size={13} color="#0284C7" />
-                                      </Pressable>
-                                    )}
-                                    {row.can_edit && (
-                                      <Pressable
-                                        onPress={() => handleEditVoucher(row)}
-                                        hitSlop={6}
-                                        style={styles.actionBtnEdit}
-                                        testID={`btn-edit-${row.voucher_id || rIdx}`}
-                                      >
-                                        <Ionicons name="pencil" size={13} color="#D97706" />
-                                      </Pressable>
-                                    )}
-                                    {row.can_delete && (
-                                      <Pressable
-                                        onPress={() => handleDeleteVoucher(row)}
-                                        hitSlop={6}
-                                        style={styles.actionBtnDelete}
-                                        testID={`btn-delete-${row.voucher_id || rIdx}`}
-                                      >
-                                        <Ionicons name="trash" size={13} color="#DC2626" />
-                                      </Pressable>
-                                    )}
+                                        {val}
+                                      </Text>
+                                      {col.key === 'ref_no' && isOld && (
+                                        <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, borderWidth: 0.5, borderColor: '#D8B4FE' }}>
+                                          <Text style={{ fontSize: 9, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
+                                        </View>
+                                      )}
+                                    </View>
                                   </View>
                                 );
-                              }
-                              const val = formatCellValue(col.key, row[col.key]);
-                              const isAmount = String(val).startsWith('₹') || String(val).startsWith('-₹');
-                              const isAlert = String(val).includes('LOW') || String(val).includes('OVERDUE') || String(val).includes('Unpaid');
-                              const isOld = row.stream === 'Old' || row.is_old_accounting === true;
-                              return (
-                                <View key={col.key} style={[styles.tDataCell, { width: colW }]}>
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap', justifyContent: isAmount ? 'flex-end' : 'flex-start' }}>
-                                    <Text
-                                      numberOfLines={2}
-                                      style={[
-                                        styles.tDataTxt,
-                                        isBold && { fontWeight: '800', color: '#0F172A' },
-                                        isAmount && { fontWeight: '700', color: '#0F172A', textAlign: 'right' },
-                                        isAlert && { color: '#DC2626', fontWeight: '800' }
-                                      ]}
-                                    >
-                                      {val}
-                                    </Text>
-                                    {col.key === 'voucher_no' && isOld && (
-                                      <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, borderWidth: 0.5, borderColor: '#D8B4FE' }}>
-                                        <Text style={{ fontSize: 9, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
-                                      </View>
-                                    )}
-                                  </View>
-                                </View>
-                              );
-                            })}
-                          </View>
+                              })}
+                            </View>
+                          </React.Fragment>
                         );
                       })
+                    )}
+
+                    {/* GRAND TOTAL ROW (Payment-In Green, Payment-Out Red) */}
+                    {reportData.column_totals && filteredReportRows.length > 0 && (
+                      <View style={[styles.tDataRow, { backgroundColor: '#0F172A', borderTopWidth: 2, borderColor: '#334155' }]}>
+                        {!hasSlNo && (
+                          <View style={[styles.tDataCell, { width: 44 }]}>
+                            <Text style={[styles.tDataTxt, { color: '#94A3B8', fontSize: 11, textAlign: 'center', fontWeight: '900' }]}>—</Text>
+                          </View>
+                        )}
+                        {reportData.columns?.map((col: any) => {
+                          const colW = getColWidth(col.key);
+                          const isInCol = ['receipt_by_cash', 'receipt_in_ac', 'receipt_in', 'debit'].includes(col.key);
+                          const isOutCol = ['payment_by_ac', 'payment_out', 'credit', 'pay_out_by_cash'].includes(col.key);
+                          const totVal = reportData.column_totals[col.key] || (col.key === 'sl_no' ? 'TOTAL' : col.key === 'party' ? 'GRAND TOTAL (All Accounts & Cash)' : '—');
+                          return (
+                            <View key={col.key} style={[styles.tDataCell, { width: colW }]}>
+                              <Text
+                                numberOfLines={1}
+                                style={[
+                                  styles.tDataTxt,
+                                  { fontWeight: '900', color: '#F8FAFC' },
+                                  isInCol && { color: '#10B981', textAlign: 'right' },
+                                  isOutCol && { color: '#F87171', textAlign: 'right' },
+                                  col.key === 'balance' && { color: '#60A5FA', textAlign: 'right' },
+                                  col.key === 'sl_no' && { textAlign: 'center', color: '#F8FAFC' },
+                                ]}
+                              >
+                                {totVal}
+                              </Text>
+                            </View>
+                          );
+                        })}
+                      </View>
                     )}
                   </View>
                 </ScrollView>
@@ -1864,6 +2003,18 @@ const styles = StyleSheet.create({
   actionBtnView: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#E0F2FE', alignItems: 'center', justifyContent: 'center' },
   actionBtnEdit: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#FEF3C7', alignItems: 'center', justifyContent: 'center' },
   actionBtnDelete: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#FEE2E2', alignItems: 'center', justifyContent: 'center' },
+
+  /* Part Header & Summary Styles for Consolidated Ledger */
+  partHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1E293B', paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 2, borderTopColor: '#0EA5E9' },
+  partHeaderTxt: { fontSize: 11.5, fontWeight: '900', color: '#F8FAFC', letterSpacing: 0.5 },
+  partBadge: { backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
+  partBadgeTxt: { fontSize: 9.5, fontWeight: '800', color: '#38BDF8' },
+
+  partSummaryCard: { backgroundColor: '#FFF', borderRadius: radius.md, borderWidth: 1, borderColor: '#CBD5E1', padding: 10, flex: 1, minWidth: 160, ...shadow.card },
+  partSummaryTitle: { fontSize: 11, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
+  partSummaryIn: { fontSize: 11, fontWeight: '700', color: '#059669' },
+  partSummaryOut: { fontSize: 11, fontWeight: '700', color: '#DC2626' },
+  partSummaryNet: { fontSize: 11, fontWeight: '800', color: '#2563EB', marginTop: 2 },
 
   /* Modals */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },

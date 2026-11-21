@@ -333,16 +333,33 @@ const BankPanel: React.FC = () => {
   const router = useRouter();
   const [banks, setBanks] = useState<any[] | null>(null);
   const [balances, setBalances] = useState<Record<string, number>>({});
+  const [cashBalance, setCashBalance] = useState<number>(0);
 
   const load = useCallback(async () => {
     try {
-      const b = await api.get<any[]>('/bank-accounts');
-      setBanks(b);
-      const dash = await api.get<any>('/accounting/dashboard').catch(() => null);
+      const [b, dash, cashInfo] = await Promise.all([
+        api.get<any[]>('/bank-accounts').catch(() => []),
+        api.get<any>('/accounting/dashboard').catch(() => null),
+        api.get<any>('/cash-bank/cash-in-hand').catch(() => null),
+      ]);
+      setBanks(b || []);
       const map: Record<string, number> = {};
-      for (const x of b) map[x.id] = Number(x.opening_balance || 0);
-      if (dash?.bank_balances) Object.assign(map, dash.bank_balances);
+      for (const x of b || []) map[x.id] = Number(x.opening_balance || 0);
+      if (dash?.bank_balances) {
+        if (Array.isArray(dash.bank_balances)) {
+          for (const item of dash.bank_balances) {
+            if (item?.id) map[item.id] = Number(item.balance || 0);
+          }
+        } else {
+          Object.assign(map, dash.bank_balances);
+        }
+      }
       setBalances(map);
+      if (cashInfo?.cash_in_hand !== undefined) {
+        setCashBalance(Number(cashInfo.cash_in_hand));
+      } else if (dash?.cash_in_hand !== undefined) {
+        setCashBalance(Number(dash.cash_in_hand));
+      }
     } catch { setBanks([]); }
   }, []);
 
@@ -361,7 +378,7 @@ const BankPanel: React.FC = () => {
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.bankHeader}>
-        <Text style={styles.bankTitle}>Bank Accounts</Text>
+        <Text style={styles.bankTitle}>Bank Accounts & Cash</Text>
         <View style={{ flexDirection: 'row', gap: 6 }}>
           <Pressable testID="open-consolidated-book" onPress={() => router.push('/accounting/reports?report=consolidated_bank_book' as any)} style={[styles.bankAdd, { backgroundColor: '#00104A' }]}>
             <Ionicons name="journal-outline" size={14} color="#FFF" />
@@ -391,6 +408,54 @@ const BankPanel: React.FC = () => {
           data={banks}
           keyExtractor={i => i.id}
           contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: spacing.xxxl }}
+          ListFooterComponent={
+            <View style={[styles.bankCard, { borderColor: '#A7F3D0', backgroundColor: '#F0FDF4', marginTop: 4 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={[styles.bankLogo, { backgroundColor: '#059669' }]}>
+                  <Ionicons name="cash" size={22} color="#FFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.bankName, { color: '#064E3B' }]}>Cash in Hand (Cash Ledger)</Text>
+                  <Text style={[styles.bankSub, { color: '#047857' }]}>Physical Cash Register • Primary Cash Account</Text>
+                </View>
+                <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: '#D1FAE5' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: '#065F46' }}>CASH REGISTER</Text>
+                </View>
+              </View>
+              <View style={styles.bankBody}>
+                <Text style={[styles.bankLbl, { color: '#047857' }]}>Current Cash Balance</Text>
+                <Text style={[styles.bankBal, { color: cashBalance >= 0 ? '#059669' : '#DC2626' }]}>
+                  {cashBalance < 0 ? '-' : ''}{inr(Math.abs(cashBalance))}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 6, marginTop: 8 }}>
+                <Pressable
+                  testID="cash-book-btn"
+                  onPress={() => router.push('/accounting/books?tab=cash' as any)}
+                  style={[styles.bankBtn, { backgroundColor: '#FFF', borderColor: '#10B981', borderWidth: 1 }]}
+                >
+                  <Ionicons name="book" size={14} color="#059669" />
+                  <Text style={[styles.bankBtnTxt, { color: '#059669' }]}>Cash Book</Text>
+                </Pressable>
+                <Pressable
+                  testID="cash-ledger-btn"
+                  onPress={() => router.push('/accounting/reports?report=cash_ledger' as any)}
+                  style={[styles.bankBtn, { backgroundColor: '#ECFDF5', borderColor: '#059669', borderWidth: 1 }]}
+                >
+                  <Ionicons name="document-text" size={14} color="#047857" />
+                  <Text style={[styles.bankBtnTxt, { color: '#047857', fontWeight: '800' }]}>Cash Ledger</Text>
+                </Pressable>
+                <Pressable
+                  testID="cash-contra-btn"
+                  onPress={() => router.push('/accounting/cash-bank' as any)}
+                  style={[styles.bankBtn, { backgroundColor: '#FFF' }]}
+                >
+                  <Ionicons name="swap-vertical" size={14} color="#059669" />
+                  <Text style={[styles.bankBtnTxt, { color: '#059669' }]}>Contra Deposit</Text>
+                </Pressable>
+              </View>
+            </View>
+          }
           renderItem={({ item }) => {
             const bal = balances[item.id] ?? Number(item.opening_balance || 0);
             const pos = bal >= 0;

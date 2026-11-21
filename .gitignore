@@ -65,3 +65,5 @@ backend/uploads/
 .vercel
 
 backend/backups/
+
+scratch/
