@@ -34,6 +34,15 @@ const formatCellValue = (colKey: string, val: any): string => {
     return str.replace(/^([+-]?)(₹)\s*/, '$1₹');
   }
 
+  const lowerKey = (colKey || '').toLowerCase();
+  const nonMoneyCols = [
+    'sl_no', '#', 'sr', 'sn', 'sno', 'count', 'entries', 'id', 'ref_no', 'voucher_no',
+    'year', 'qty', 'quantity', 'phone', 'mobile', 'status', 'action', 'actions', 'global_sl_no'
+  ];
+  if (nonMoneyCols.some(c => lowerKey === c || lowerKey.endsWith('_id') || lowerKey.includes('count') || lowerKey.includes('serial'))) {
+    return str;
+  }
+
   const moneyColKeywords = [
     'taxable', 'tax', 'gst', 'amount', 'amt', 'paid', 'balance', 'price',
     'total', 'subtotal', 'received', 'turnover', 'profit', 'debit', 'credit',
@@ -41,10 +50,10 @@ const formatCellValue = (colKey: string, val: any): string => {
     'sales', 'purchases', 'expenses', 'discount', 'fee', 'charge', 'cost',
     'receivable', 'payable', 'opening', 'closing'
   ];
-  const isMoneyCol = moneyColKeywords.some(kw => colKey.toLowerCase().includes(kw));
+  const isMoneyCol = moneyColKeywords.some(kw => lowerKey.includes(kw));
   const isNumericStr = /^-?\d+(\.\d+)?$/.test(str.replace(/,/g, ''));
 
-  if (isMoneyCol || isNumericStr) {
+  if (isMoneyCol || (isNumericStr && !nonMoneyCols.some(c => lowerKey === c))) {
     const num = Number(str.replace(/,/g, ''));
     if (!isNaN(num)) {
       const isNeg = num < 0;
@@ -180,6 +189,16 @@ export default function AccountingReportsHub() {
       openReport(rId, undefined, undefined, undefined, bId);
     }
   }, [params?.report, params?.bank]);
+
+  // Auto-retry once on cold start fetch failure so users aren't stranded on "Unable to load report"
+  useEffect(() => {
+    if (reportError && (reportError.includes('fetch') || reportError.includes('network') || reportError.includes('connection')) && activeReportId) {
+      const timer = setTimeout(() => {
+        openReport(activeReportId);
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [reportError, activeReportId]);
 
   // Inject native @media print style for web so Ctrl+P prints cleanly with full-width table
   useEffect(() => {
@@ -544,14 +563,118 @@ export default function AccountingReportsHub() {
 
     const kpiHtml = kpis.length > 0 ? `
       <div class="kpi-grid">
-        ${kpis.map((k: any) => `
+        ${kpis.map((k: any) => {
+          const isCount = k.label?.toLowerCase().includes('count') || k.label?.toLowerCase().includes('entries') || String(k.value).includes('%');
+          const kpiVal = isCount ? String(k.value) : inr(k.value);
+          return `
           <div class="kpi-card" style="border-left-color: ${k.color || '#2563EB'};">
             <div class="kpi-lbl">${k.label}</div>
-            <div class="kpi-val" style="color: ${k.color || '#0F172A'};">${inr(k.value)}</div>
+            <div class="kpi-val" style="color: ${k.color || '#0F172A'};">${kpiVal}</div>
           </div>
-        `).join('')}
+          `;
+        }).join('')}
       </div>
     ` : '';
+
+    const recStmt = reportData?.reconciliation_statement;
+    let recStmtHtml = '';
+    if (recStmt) {
+      const e = recStmt.opening_balance_E || {};
+      const f = recStmt.receipts_during_day_F || {};
+      const h = recStmt.total_expenses_H || {};
+      const i = recStmt.closing_balance_I || {};
+      const isOk = recStmt.is_balanced;
+
+      recStmtHtml = `
+        <div style="margin-top: 14px; margin-bottom: 14px; border: 1.5px solid #00104A; border-radius: 6px; overflow: hidden; background: #FFFFFF; page-break-inside: avoid;">
+          <div style="background: #00104A; color: #FFFFFF; padding: 8px 12px; font-weight: 800; font-size: 11px; display: flex; justify-content: space-between; align-items: center;">
+            <span>RECONCILIATION STATEMENT (DUAL-LEDGER EQUATION)</span>
+            <span style="font-size: 9.5px; opacity: 0.9;">Period: ${dateLabel}</span>
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 9.5px;">
+            <thead>
+              <tr style="background: #F8FAFC; border-bottom: 1.5px solid #CBD5E1;">
+                <th style="width: 50%; padding: 8px 12px; text-align: left; color: #065F46; border-right: 1.5px solid #CBD5E1; font-weight: 800; font-size: 10px;">
+                  RECEIPT SIDE (INFLOW) &bull; (G) = (E) + (F)
+                </th>
+                <th style="width: 50%; padding: 8px 12px; text-align: left; color: #991B1B; font-weight: 800; font-size: 10px;">
+                  PAYMENT SIDE (OUTFLOW &amp; FUNDS) &bull; (K) = (H) + (I)
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="padding: 10px 12px; vertical-align: top; border-right: 1.5px solid #CBD5E1; background: #F0FDF4;">
+                  <div style="font-weight: 800; color: #064E3B; margin-bottom: 4px;">Opening Balance (E):</div>
+                  <div style="padding-left: 8px; line-height: 1.6; color: #1E293B;">
+                    <div>Part A &ndash; S.B.I Ac: <strong>${inr(e.part_a)}</strong></div>
+                    <div>Part B &ndash; Axis Bank Ac: <strong>${inr(e.part_b)}</strong></div>
+                    <div>Part C &ndash; Cash in Hand: <strong>${inr(e.part_c)}</strong></div>
+                    <div>Part D &ndash; Cash in Bank: <strong>${inr(e.part_d)}</strong></div>
+                    <div style="border-top: 1px dashed #A7F3D0; margin-top: 4px; padding-top: 3px; font-weight: 800; color: #065F46;">
+                      (E) Total O.B = ${inr(e.total_ob)}
+                    </div>
+                  </div>
+
+                  <div style="font-weight: 800; color: #064E3B; margin-top: 10px; margin-bottom: 4px;">Receipt During the Day (F):</div>
+                  <div style="padding-left: 8px; line-height: 1.6; color: #1E293B;">
+                    <div>Part A: <strong>${inr(f.part_a)}</strong></div>
+                    <div>Part B: <strong>${inr(f.part_b)}</strong></div>
+                    <div>Part C: <strong>${inr(f.part_c)}</strong></div>
+                    <div>Part D: <strong>${inr(f.part_d)}</strong></div>
+                    <div style="border-top: 1px dashed #A7F3D0; margin-top: 4px; padding-top: 3px; font-weight: 800; color: #065F46;">
+                      (F) Total Receipts = ${inr(f.total_receipts)}
+                    </div>
+                  </div>
+
+                  <div style="margin-top: 12px; padding: 6px 8px; background: #DCFCE7; border-radius: 4px; border: 1px solid #86EFAC; font-weight: 900; font-size: 10.5px; color: #166534; display: flex; justify-content: space-between;">
+                    <span>(G) Total of Receipt Side = (E) + (F):</span>
+                    <span>${inr(recStmt.total_receipt_side_G)}</span>
+                  </div>
+                </td>
+
+                <td style="padding: 10px 12px; vertical-align: top; background: #FEF2F2;">
+                  <div style="font-weight: 800; color: #7F1D1D; margin-bottom: 4px;">Total Expences (H):</div>
+                  <div style="padding-left: 8px; line-height: 1.6; color: #1E293B;">
+                    <div>Part A: <strong>${inr(h.part_a)}</strong></div>
+                    <div>Part B: <strong>${inr(h.part_b)}</strong></div>
+                    <div>Part C: <strong>${inr(h.part_c)}</strong></div>
+                    <div>Part D: <strong>${inr(h.part_d)}</strong></div>
+                    <div style="border-top: 1px dashed #FECACA; margin-top: 4px; padding-top: 3px; font-weight: 800; color: #991B1B;">
+                      (H) Total Expenses = ${inr(h.total_expenses)}
+                    </div>
+                  </div>
+
+                  <div style="font-weight: 800; color: #7F1D1D; margin-top: 10px; margin-bottom: 4px;">Closing Balance of Funds (I):</div>
+                  <div style="padding-left: 8px; line-height: 1.6; color: #1E293B;">
+                    <div>(i) S.B.I Ac: <strong>${inr(i.sbi_ac)}</strong></div>
+                    <div>(ii) Axis Bank Ac: <strong>${inr(i.axis_ac)}</strong></div>
+                    <div>(iii) Cash in Hand: <strong>${inr(i.cash_in_hand)}</strong></div>
+                    <div>(iv) Cash in Bank: <strong>${inr(i.cash_in_bank)}</strong></div>
+                    <div style="border-top: 1px dashed #FECACA; margin-top: 4px; padding-top: 3px; font-weight: 800; color: #991B1B;">
+                      Total Funds = ${inr(i.total_closing_funds)}
+                    </div>
+                  </div>
+
+                  <div style="margin-top: 12px; padding: 6px 8px; background: #FEE2E2; border-radius: 4px; border: 1px solid #FCA5A5; font-weight: 900; font-size: 10.5px; color: #991B1B; display: flex; justify-content: space-between;">
+                    <span>(K) Total of Payment Side = (H) + (I):</span>
+                    <span>${inr(recStmt.total_payment_side_K)}</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="padding: 8px 12px; background: ${isOk ? '#ECFDF5' : '#FEF2F2'}; border-top: 1.5px solid ${isOk ? '#A7F3D0' : '#FECACA'}; display: flex; justify-content: space-between; align-items: center;">
+            <div style="font-weight: 900; font-size: 11px; color: ${isOk ? '#065F46' : '#DC2626'};">
+              ${isOk ? '&#10004; If (G) = (K) &mdash; Account is ok (Matched Perfectly)' : '&#9888; If (G) &ne; (K) &mdash; Account Mismatch!'}
+            </div>
+            <div style="font-size: 10px; font-weight: 700; color: ${isOk ? '#047857' : '#B91C1C'};">
+              Difference: ${inr(recStmt.difference || 0)}
+            </div>
+          </div>
+        </div>
+      `;
+    }
 
     const hasSlNo = cols.some((c: any) => c.key === 'sl_no');
 
@@ -571,6 +694,7 @@ export default function AccountingReportsHub() {
       <tbody>
         ${rows.map((row: any, idx: number) => {
           const isBold = !!row.is_bold;
+          const isSub = !!row.is_subtotal;
           const partHeaderHtml = row.part_title ? `
             <tr style="background: #1E293B; color: #FFFFFF; font-weight: 800;">
               <td colspan="${cols.length + (!hasSlNo ? 1 : 0)}" style="padding: 6px 8px; font-size: 10px; letter-spacing: 0.5px; background: #1E293B; color: #FFF;">
@@ -581,7 +705,7 @@ export default function AccountingReportsHub() {
 
           return `
             ${partHeaderHtml}
-            <tr class="${isBold ? 'bold-row' : ''}">
+            <tr class="${isBold ? 'bold-row' : ''}" style="${isSub ? 'background: #F1F5F9; font-weight: 800; border-top: 1.5px solid #CBD5E1; border-bottom: 1.5px solid #CBD5E1;' : ''}">
               ${!hasSlNo ? `<td style="text-align: center; color: #64748B;">${idx + 1}</td>` : ''}
               ${cols.map((c: any) => {
                 const val = row[c.key];
@@ -594,12 +718,13 @@ export default function AccountingReportsHub() {
                 if (isInCol && isNonZero) cellColor = '#059669';
                 else if (isOutCol && isNonZero) cellColor = '#DC2626';
                 else if (c.key === 'balance') cellColor = '#1E40AF';
+                else if (isSub) cellColor = '#0F172A';
 
                 const isNumeric = formattedStr.startsWith('₹') || formattedStr.startsWith('-₹') || isInCol || isOutCol || /^-?\d+(\.\d+)?%?$/.test(formattedStr.replace(/,/g, ''));
                 const isAlert = formattedStr.includes('LOW') || formattedStr.includes('OVERDUE') || formattedStr.includes('Unpaid');
 
                 return `
-                  <td class="${isNumeric ? 'cell-numeric' : ''}" style="${isAlert ? 'color: #DC2626; font-weight: bold;' : ''} color: ${cellColor}; ${isInCol || isOutCol ? 'font-weight: 700;' : ''}">
+                  <td class="${isNumeric ? 'cell-numeric' : ''}" style="${isAlert ? 'color: #DC2626; font-weight: bold;' : ''} color: ${cellColor}; ${isInCol || isOutCol || isSub ? 'font-weight: 700;' : ''}">
                     ${formattedStr}
                   </td>
                 `;
@@ -949,7 +1074,7 @@ export default function AccountingReportsHub() {
       ${tfootHtml}
     </table>
 
-    ${cbHtml}
+    ${recStmtHtml ? recStmtHtml : cbHtml}
 
     <div class="report-footer">
       <div class="footer-left">
@@ -1389,15 +1514,22 @@ export default function AccountingReportsHub() {
                                 )}
                               </View>
                             ) : null}
-                            <View style={[styles.tDataRow, isEven && styles.tDataRowAlt, isBold && styles.tDataRowBold]}>
+                            <View style={[styles.tDataRow, isEven && styles.tDataRowAlt, isBold && styles.tDataRowBold, row.is_subtotal && { backgroundColor: '#F1F5F9', borderTopWidth: 1.5, borderTopColor: '#CBD5E1', borderBottomWidth: 1.5, borderBottomColor: '#CBD5E1' }]}>
                               {!hasSlNo && (
                                 <View style={[styles.tDataCell, { width: 44 }]}>
-                                  <Text style={[styles.tDataTxt, { color: '#94A3B8', fontSize: 11, textAlign: 'center' }]}>{rIdx + 1}</Text>
+                                  <Text style={[styles.tDataTxt, { color: '#94A3B8', fontSize: 11, textAlign: 'center' }]}>{row.is_subtotal ? '—' : rIdx + 1}</Text>
                                 </View>
                               )}
                               {reportData.columns?.map((col: any) => {
                                 const colW = getColWidth(col.key);
                                 if (col.key === 'actions') {
+                                  if (row.is_subtotal) {
+                                    return (
+                                      <View key={col.key} style={[styles.tDataCell, { width: colW, alignItems: 'center', justifyContent: 'center' }]}>
+                                        <Text style={{ color: '#94A3B8', fontSize: 11 }}>—</Text>
+                                      </View>
+                                    );
+                                  }
                                   return (
                                     <View key={col.key} style={[styles.tDataCell, { width: colW, flexDirection: 'row', gap: 6, justifyContent: 'center', alignItems: 'center' }]}>
                                       {row.can_view && (
@@ -1446,6 +1578,7 @@ export default function AccountingReportsHub() {
                                 else if (isInCol && isNonZero) cellTextColor = '#059669';
                                 else if (isOutCol && isNonZero) cellTextColor = '#DC2626';
                                 else if (col.key === 'balance') cellTextColor = '#1E40AF';
+                                else if (row.is_subtotal) cellTextColor = '#0F172A';
 
                                 return (
                                   <View key={col.key} style={[styles.tDataCell, { width: colW }]}>
@@ -1455,10 +1588,10 @@ export default function AccountingReportsHub() {
                                         style={[
                                           styles.tDataTxt,
                                           { color: cellTextColor },
-                                          isBold && { fontWeight: '800' },
+                                          (isBold || row.is_subtotal) && { fontWeight: '800' },
                                           isAmount && { fontWeight: '700', textAlign: 'right' },
                                           isAlert && { fontWeight: '800' },
-                                          col.key === 'sl_no' && { textAlign: 'center', width: '100%', color: '#64748B' }
+                                          col.key === 'sl_no' && { textAlign: 'center', width: '100%', color: row.is_subtotal ? '#0F172A' : '#64748B', fontWeight: row.is_subtotal ? '900' : '600' }
                                         ]}
                                       >
                                         {val}
@@ -1515,8 +1648,204 @@ export default function AccountingReportsHub() {
                 </ScrollView>
               </View>
 
-              {/* Closing Balance (For Day Book & Ledger Statements) */}
-              {reportData.closing_balances && reportData.closing_balances.length > 0 && (
+              {/* Reconciliation Statement (Dual-Ledger Equation) */}
+              {reportData.reconciliation_statement ? (
+                <View style={styles.recStmtCard}>
+                  <View style={styles.recStmtHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="scale-outline" size={18} color="#00104A" />
+                      <Text style={styles.recStmtTitle}>Consolidated Accounts Reconciliation Statement</Text>
+                    </View>
+                    <View style={styles.recStmtBadge}>
+                      <Text style={styles.recStmtBadgeTxt}>Dual-Ledger Equation (Receipt Side = Payment Side)</Text>
+                    </View>
+                  </View>
+
+                  {/* Dual Columns: Left (Receipt Side) vs Right (Payment Side) */}
+                  <View style={styles.recDualContainer}>
+                    {/* LEFT COLUMN: Receipt Side (G) = (E) + (F) */}
+                    <View style={[styles.recSideBox, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}>
+                      <View style={[styles.recSideHdr, { backgroundColor: '#DCFCE7', borderBottomColor: '#86EFAC' }]}>
+                        <Ionicons name="arrow-down-circle" size={16} color="#059669" />
+                        <Text style={[styles.recSideHdrTxt, { color: '#065F46' }]}>RECEIPT SIDE (INFLOW) • (G) = (E) + (F)</Text>
+                      </View>
+
+                      <View style={{ padding: 12, gap: 10 }}>
+                        {/* Section 1: Opening Balance (E) */}
+                        <View>
+                          <Text style={[styles.recSectionLbl, { color: '#065F46' }]}>Opening Balance (E):</Text>
+                          <Text style={styles.recSectionSub}>Fixed on 17-11-2026, then rolled forward daily</Text>
+                          <View style={{ marginTop: 6, gap: 4 }}>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part A – S.B.I Ac (42137607814):</Text>
+                              <Text style={styles.recLineVal}>{inr(reportData.reconciliation_statement.opening_balance_E?.part_a)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part B – Axis Bank Ac (915020011528516):</Text>
+                              <Text style={styles.recLineVal}>{inr(reportData.reconciliation_statement.opening_balance_E?.part_b)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part C – Cash in Hand (Register):</Text>
+                              <Text style={styles.recLineVal}>{inr(reportData.reconciliation_statement.opening_balance_E?.part_c)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part D – Cash in Bank (Contra):</Text>
+                              <Text style={styles.recLineVal}>{inr(reportData.reconciliation_statement.opening_balance_E?.part_d)}</Text>
+                            </View>
+                            <View style={[styles.recSubtotalLine, { borderTopColor: '#86EFAC' }]}>
+                              <Text style={[styles.recSubtotalLbl, { color: '#065F46' }]}>Total O.B (E) = (Part A+B+C+D):</Text>
+                              <Text style={[styles.recSubtotalVal, { color: '#065F46' }]}>{inr(reportData.reconciliation_statement.opening_balance_E?.total_ob)}</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* Section 2: Receipt During the Day (F) */}
+                        <View style={{ marginTop: 4 }}>
+                          <Text style={[styles.recSectionLbl, { color: '#065F46' }]}>Receipt During the Day (F):</Text>
+                          <View style={{ marginTop: 6, gap: 4 }}>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part A – S.B.I Receipts:</Text>
+                              <Text style={[styles.recLineVal, { color: '#059669' }]}>{inr(reportData.reconciliation_statement.receipts_during_day_F?.part_a)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part B – Axis Bank Receipts:</Text>
+                              <Text style={[styles.recLineVal, { color: '#059669' }]}>{inr(reportData.reconciliation_statement.receipts_during_day_F?.part_b)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part C – Cash Receipts:</Text>
+                              <Text style={[styles.recLineVal, { color: '#059669' }]}>{inr(reportData.reconciliation_statement.receipts_during_day_F?.part_c)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part D – Contra Receipts:</Text>
+                              <Text style={[styles.recLineVal, { color: '#059669' }]}>{inr(reportData.reconciliation_statement.receipts_during_day_F?.part_d)}</Text>
+                            </View>
+                            <View style={[styles.recSubtotalLine, { borderTopColor: '#86EFAC' }]}>
+                              <Text style={[styles.recSubtotalLbl, { color: '#065F46' }]}>Total Receipts (F) = (Part A+B+C+D):</Text>
+                              <Text style={[styles.recSubtotalVal, { color: '#059669' }]}>{inr(reportData.reconciliation_statement.receipts_during_day_F?.total_receipts)}</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* Total of Receipt Side (G) = (E) + (F) */}
+                        <View style={[styles.recGrandTotalLine, { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }]}>
+                          <Text style={[styles.recGrandTotalLbl, { color: '#14532D' }]}>
+                            (G) Total of Receipt Side = (E) + (F) :
+                          </Text>
+                          <Text style={[styles.recGrandTotalVal, { color: '#15803D' }]}>
+                            {inr(reportData.reconciliation_statement.total_receipt_side_G)}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* RIGHT COLUMN: Payment Side (K) = (H) + (I) */}
+                    <View style={[styles.recSideBox, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+                      <View style={[styles.recSideHdr, { backgroundColor: '#FEE2E2', borderBottomColor: '#FCA5A5' }]}>
+                        <Ionicons name="arrow-up-circle" size={16} color="#DC2626" />
+                        <Text style={[styles.recSideHdrTxt, { color: '#991B1B' }]}>PAYMENT SIDE (OUTFLOW &amp; FUNDS) • (K) = (H) + (I)</Text>
+                      </View>
+
+                      <View style={{ padding: 12, gap: 10 }}>
+                        {/* Section 1: Total Expences (H) */}
+                        <View>
+                          <Text style={[styles.recSectionLbl, { color: '#991B1B' }]}>Total Expences (H):</Text>
+                          <Text style={styles.recSectionSub}>All approved vouchers and outflows</Text>
+                          <View style={{ marginTop: 6, gap: 4 }}>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part A – S.B.I Expenses:</Text>
+                              <Text style={[styles.recLineVal, { color: '#DC2626' }]}>{inr(reportData.reconciliation_statement.total_expenses_H?.part_a)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part B – Axis Bank Expenses:</Text>
+                              <Text style={[styles.recLineVal, { color: '#DC2626' }]}>{inr(reportData.reconciliation_statement.total_expenses_H?.part_b)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part C – Cash Expenses:</Text>
+                              <Text style={[styles.recLineVal, { color: '#DC2626' }]}>{inr(reportData.reconciliation_statement.total_expenses_H?.part_c)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>Part D – Contra Expenses:</Text>
+                              <Text style={[styles.recLineVal, { color: '#DC2626' }]}>{inr(reportData.reconciliation_statement.total_expenses_H?.part_d)}</Text>
+                            </View>
+                            <View style={[styles.recSubtotalLine, { borderTopColor: '#FCA5A5' }]}>
+                              <Text style={[styles.recSubtotalLbl, { color: '#991B1B' }]}>Total Expences (H) = (Part A+B+C+D):</Text>
+                              <Text style={[styles.recSubtotalVal, { color: '#DC2626' }]}>{inr(reportData.reconciliation_statement.total_expenses_H?.total_expenses)}</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* Section 2: Closing Balance Details (Right Side Reflected) */}
+                        <View style={{ marginTop: 4 }}>
+                          <Text style={[styles.recSectionLbl, { color: '#991B1B' }]}>Closing Balance of Funds (I):</Text>
+                          <View style={{ marginTop: 6, gap: 4 }}>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>(i) S.B.I Ac:</Text>
+                              <Text style={[styles.recLineVal, { color: '#1E40AF' }]}>{inr(reportData.reconciliation_statement.closing_balance_I?.sbi_ac)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>(ii) Axis Bank Ac:</Text>
+                              <Text style={[styles.recLineVal, { color: '#1E40AF' }]}>{inr(reportData.reconciliation_statement.closing_balance_I?.axis_ac)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>(iii) Cash in Hand:</Text>
+                              <Text style={[styles.recLineVal, { color: '#059669' }]}>{inr(reportData.reconciliation_statement.closing_balance_I?.cash_in_hand)}</Text>
+                            </View>
+                            <View style={styles.recLineItem}>
+                              <Text style={styles.recLineKey}>(iv) Cash in Bank:</Text>
+                              <Text style={[styles.recLineVal, { color: '#475569' }]}>{inr(reportData.reconciliation_statement.closing_balance_I?.cash_in_bank)}</Text>
+                            </View>
+                            <View style={[styles.recSubtotalLine, { borderTopColor: '#FCA5A5' }]}>
+                              <Text style={[styles.recSubtotalLbl, { color: '#991B1B' }]}>Total (I) = (i) + (ii) + (iii) + (iv):</Text>
+                              <Text style={[styles.recSubtotalVal, { color: '#00104A' }]}>{inr(reportData.reconciliation_statement.closing_balance_I?.total_closing_funds)}</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* Total of Payment Side (K) = (H) + (I) */}
+                        <View style={[styles.recGrandTotalLine, { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
+                          <Text style={[styles.recGrandTotalLbl, { color: '#7F1D1D' }]}>
+                            (K) Total of Payment Side = (H) + (I) :
+                          </Text>
+                          <Text style={[styles.recGrandTotalVal, { color: '#B91C1C' }]}>
+                            {inr(reportData.reconciliation_statement.total_payment_side_K)}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Reconciliation Equation Outcome Banner */}
+                  <View style={[
+                    styles.recBanner,
+                    reportData.reconciliation_statement.is_balanced ? styles.recBannerOk : styles.recBannerErr,
+                    { marginTop: 14 }
+                  ]}>
+                    <Ionicons
+                      name={reportData.reconciliation_statement.is_balanced ? "checkmark-circle" : "alert-circle"}
+                      size={20}
+                      color={reportData.reconciliation_statement.is_balanced ? "#059669" : "#DC2626"}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[
+                        styles.recBannerTitle,
+                        { color: reportData.reconciliation_statement.is_balanced ? "#065F46" : "#DC2626" }
+                      ]}>
+                        {reportData.reconciliation_statement.is_balanced
+                          ? "Account is ok — Total Receipt Side (G) = Total Payment Side (K)"
+                          : "Account Mismatch — Total Receipt Side (G) ≠ Total Payment Side (K)"}
+                      </Text>
+                      <Text style={[
+                        styles.recBannerSub,
+                        { color: reportData.reconciliation_statement.is_balanced ? "#047857" : "#B91C1C" }
+                      ]}>
+                        {reportData.reconciliation_statement.is_balanced
+                          ? `Receipt Side ${inr(reportData.reconciliation_statement.total_receipt_side_G)} equals Payment Side ${inr(reportData.reconciliation_statement.total_payment_side_K)} perfectly (Difference: ₹0.00).`
+                          : `Difference: ${inr(reportData.reconciliation_statement.difference || 0)}. Please verify voucher allocations.`}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              ) : reportData.closing_balances && reportData.closing_balances.length > 0 ? (
                 <View style={styles.obCbCard}>
                   <View style={styles.obCbHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -1578,7 +1907,7 @@ export default function AccountingReportsHub() {
                     </View>
                   </View>
                 </View>
-              )}
+              ) : null}
 
               {/* Action Toolbar */}
               <View style={styles.reportActionsRow}>
@@ -1990,6 +2319,28 @@ const styles = StyleSheet.create({
   recBannerErr: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
   recBannerTitle: { fontSize: 13, fontWeight: '800' },
   recBannerSub: { fontSize: 11, marginTop: 1 },
+
+  /* Dual-Ledger Reconciliation Statement Styles */
+  recStmtCard: { backgroundColor: '#FFFFFF', borderRadius: radius.md, borderWidth: 1.5, borderColor: '#00104A', padding: spacing.md, overflow: 'hidden', ...shadow.card },
+  recStmtHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1.5, borderBottomColor: '#CBD5E1', paddingBottom: 10, flexWrap: 'wrap', gap: 6 },
+  recStmtTitle: { fontSize: 14, fontWeight: '900', color: '#00104A', letterSpacing: 0.3 },
+  recStmtBadge: { backgroundColor: '#EEF2FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#C7D2FE' },
+  recStmtBadgeTxt: { fontSize: 11, fontWeight: '800', color: '#3730A3' },
+  recDualContainer: { flexDirection: Platform.OS === 'web' ? 'row' : 'column', gap: 14, marginTop: 12 },
+  recSideBox: { flex: 1, borderRadius: 8, borderWidth: 1, overflow: 'hidden' },
+  recSideHdr: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1 },
+  recSideHdrTxt: { fontSize: 11.5, fontWeight: '900', letterSpacing: 0.4 },
+  recSectionLbl: { fontSize: 12, fontWeight: '900' },
+  recSectionSub: { fontSize: 10, color: '#64748B', marginTop: 1 },
+  recLineItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 2 },
+  recLineKey: { fontSize: 11.5, color: '#334155', fontWeight: '600' },
+  recLineVal: { fontSize: 11.5, fontWeight: '800', color: '#0F172A' },
+  recSubtotalLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#E2E8F0', borderStyle: 'dashed', paddingTop: 4, marginTop: 2 },
+  recSubtotalLbl: { fontSize: 11.5, fontWeight: '800' },
+  recSubtotalVal: { fontSize: 12.5, fontWeight: '900' },
+  recGrandTotalLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 10, borderRadius: 6, borderWidth: 1, marginTop: 8 },
+  recGrandTotalLbl: { fontSize: 12, fontWeight: '900' },
+  recGrandTotalVal: { fontSize: 14, fontWeight: '900' },
 
   /* Bank Selector in Bank Report Ledger */
   bankSelectBarCard: { backgroundColor: '#FFFFFF', borderRadius: radius.md, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, ...shadow.card },

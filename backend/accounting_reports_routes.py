@@ -590,7 +590,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             else:
                 eff_scope = (accounting_scope or "consolidated").lower()
 
-            # 1. Fetch all bank accounts and identify SBI and Axis
+            # 1. Fetch bank accounts and identify Part A (SBI) & Part B (Axis Bank)
             all_banks = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
             if not all_banks:
                 all_banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
@@ -603,19 +603,25 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 return 2
             all_banks.sort(key=b_sort)
 
-            sbi_id = None
-            axis_id = None
+            sbi_bank = None
+            axis_bank = None
             for b in all_banks:
                 acc = str(b.get("account_no") or "")
                 name = (b.get("name") or "").upper()
                 if "42137607814" in acc or "SBIN" in str(b.get("ifsc") or "") or "TRIVENI" in name:
-                    sbi_id = b.get("id")
+                    sbi_bank = b
                 if "915020011528516" in acc or "UTIB" in str(b.get("ifsc") or "") or "AXIS" in name:
-                    axis_id = b.get("id")
-            if not sbi_id and all_banks:
-                sbi_id = all_banks[0].get("id")
-            if not axis_id and len(all_banks) > 1:
-                axis_id = all_banks[1].get("id")
+                    axis_bank = b
+
+            sbi_id = sbi_bank.get("id") if sbi_bank else (all_banks[0].get("id") if all_banks else "bnk_sbi_01")
+            axis_id = axis_bank.get("id") if axis_bank else (all_banks[1].get("id") if len(all_banks) > 1 else "bnk_hdfc_02")
+
+            sbi_name = sbi_bank.get("name") if sbi_bank else "TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED"
+            axis_name = axis_bank.get("name") if axis_bank else "ANJU KUMARI (AXIS BANK)"
+            sbi_acc = sbi_bank.get("account_no") if sbi_bank else "42137607814"
+            axis_acc = axis_bank.get("account_no") if axis_bank else "915020011528516"
+            sbi_ifsc = sbi_bank.get("ifsc") if sbi_bank else "SBIN0063706"
+            axis_ifsc = axis_bank.get("ifsc") if axis_bank else "UTIB0000873"
 
             # 2. Account resolver function
             def resolve_acc(item):
@@ -654,7 +660,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     return sbi_id, "State Bank of India", "SBI", "sbi"
                 return "cash_in_hand", "Cash in Hand", "Cash", "cash"
 
-            # 3. Retrieve base opening balances (start_date)
+            # 3. Retrieve base fixed opening balances on start_date (17-11-2026)
             setting = await db.settings.find_one({"key": "day_book_initial_balances"}, {"_id": 0})
             if setting:
                 start_date = setting.get("start_date") or "2026-11-17"
@@ -666,50 +672,20 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 init_cash = float(c_setting.get("value", 10701.0)) if c_setting else 10701.0
                 init_acc_map = {}
 
-            running_balances = {"cash_in_hand": init_cash}
-            initial_balances_display = []
-            idx_roman = ["(i)", "(ii)", "(iii)", "(iv)", "(v)", "(vi)", "(vii)", "(viii)"]
-            r_idx = 0
+            fixed_sbi_ob = float(init_acc_map.get(sbi_id, init_acc_map.get("42137607814", 131553.72)))
+            fixed_axis_ob = float(init_acc_map.get(axis_id, init_acc_map.get("915020011528516", 270338.13)))
+            fixed_cash_ob = float(init_cash)
+            fixed_bank_d_ob = float(init_acc_map.get("cash_in_bank", 0.0))
 
-            for b in all_banks:
-                b_id = b.get("id")
-                acc_no = str(b.get("account_no") or "")
-                ifsc = b.get("ifsc") or "—"
-                name = b.get("name") or b.get("bank_name") or "Bank Account"
-                bank_name = b.get("bank_name") or "Bank"
+            running_balances = {
+                sbi_id: fixed_sbi_ob,
+                axis_id: fixed_axis_ob,
+                "cash_in_hand": fixed_cash_ob,
+                "cash_in_bank": fixed_bank_d_ob,
+            }
 
-                configured_init = init_acc_map.get(b_id)
-                if configured_init is None:
-                    configured_init = init_acc_map.get(acc_no)
-                if configured_init is None:
-                    configured_init = float(b.get("opening_balance") or b.get("balance") or 0.0)
-                configured_init = float(configured_init)
-                running_balances[b_id] = configured_init
-
-                initial_balances_display.append({
-                    "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
-                    "id": b_id,
-                    "name": name,
-                    "bank_name": bank_name,
-                    "account_no": acc_no,
-                    "ifsc": ifsc,
-                    "balance": round(configured_init, 2),
-                    "formatted_balance": inr(configured_init),
-                })
-                r_idx += 1
-
-            initial_balances_display.append({
-                "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
-                "id": "cash_in_hand",
-                "name": "Cash in Hand",
-                "bank_name": "Cash",
-                "account_no": "—",
-                "ifsc": "—",
-                "balance": round(init_cash, 2),
-                "formatted_balance": inr(init_cash),
-            })
-
-            # 4. Strict roll forward prior transactions (from start_date to from_date - 1)
+            # 4. Strict Golden Roll-Forward for dates after start_date (17-11-2026)
+            # Rule: on 17-11-2026 fixed OB set by admin; after 17-11-2026 closing balance of previous day
             eff_from = from_date or start_date
             if eff_from > start_date:
                 prior_invoices = await db.invoices.find(
@@ -778,40 +754,15 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                         if d_to in running_balances:
                             running_balances[d_to] += amt
 
-            # 5. Opening balances for this period
-            opening_balances = []
-            tot_bank_ob = 0.0
-            r_idx = 0
-            for b in all_banks:
-                b_id = b.get("id")
-                bal = round(running_balances.get(b_id, 0.0), 2)
-                tot_bank_ob += bal
-                opening_balances.append({
-                    "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
-                    "id": b_id,
-                    "name": b.get("name") or b.get("bank_name") or "Bank Account",
-                    "bank_name": b.get("bank_name") or "Bank",
-                    "account_no": b.get("account_no") or "—",
-                    "ifsc": b.get("ifsc") or "—",
-                    "balance": bal,
-                    "formatted_balance": inr(bal),
-                })
-                r_idx += 1
+            # Part Opening Balances for this statement:
+            part_a_ob = round(running_balances.get(sbi_id, 0.0), 2)
+            part_b_ob = round(running_balances.get(axis_id, 0.0), 2)
+            part_c_ob = round(running_balances.get("cash_in_hand", 0.0), 2)
+            part_d_ob = round(running_balances.get("cash_in_bank", 0.0), 2)
 
-            cash_ob = round(running_balances.get("cash_in_hand", 0.0), 2)
-            opening_balances.append({
-                "index": idx_roman[r_idx] if r_idx < len(idx_roman) else f"({r_idx+1})",
-                "id": "cash_in_hand",
-                "name": "Cash in Hand",
-                "bank_name": "Cash",
-                "account_no": "—",
-                "ifsc": "—",
-                "balance": cash_ob,
-                "formatted_balance": inr(cash_ob),
-            })
-            total_previous_ob = round(tot_bank_ob + cash_ob, 2)
+            total_ob_E = round(part_a_ob + part_b_ob + part_c_ob + part_d_ob, 2)
 
-            # 6. Build period transactions
+            # 5. Extract period entries (Sales, Incomes, Purchases, Expenses, Contra)
             entries = []
             for s in sales:
                 d = s.get("date") or s.get("invoice_date")
@@ -1028,42 +979,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "can_delete": True,
                 })
 
-            # 7. Apply entries strictly to their respective accounts
-            online_exp_period = 0.0
-            cash_exp_period = 0.0
-
-            for item in entries:
-                if item["account_group"] == "contra":
-                    w_from = item.get("withdraw_from")
-                    d_to = item.get("deposit_to")
-                    amt = item["in_amount"]
-                    if w_from == "Cash in Hand":
-                        running_balances["cash_in_hand"] -= amt
-                        tgt = d_to if d_to in running_balances else sbi_id
-                        if tgt in running_balances:
-                            running_balances[tgt] += amt
-                    elif d_to == "Cash in Hand":
-                        running_balances["cash_in_hand"] += amt
-                        src = w_from if w_from in running_balances else sbi_id
-                        if src in running_balances:
-                            running_balances[src] -= amt
-                    else:
-                        if w_from in running_balances:
-                            running_balances[w_from] -= amt
-                        if d_to in running_balances:
-                            running_balances[d_to] += amt
-                else:
-                    acc_id = item["account_id"]
-                    if item["in_amount"] > 0:
-                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) + item["in_amount"]
-                    if item["out_amount"] > 0:
-                        running_balances[acc_id] = running_balances.get(acc_id, 0.0) - item["out_amount"]
-                        if item["account_group"] == "cash":
-                            cash_exp_period += item["out_amount"]
-                        else:
-                            online_exp_period += item["out_amount"]
-
-            # 8. Separate into Parts (A: SBI, B: Axis, C: Cash, D: Contra)
+            # 6. Group entries into the 4 Parts specified by user
             sbi_entries = [x for x in entries if x["account_group"] == "sbi"]
             axis_entries = [x for x in entries if x["account_group"] == "axis"]
             cash_entries = [x for x in entries if x["account_group"] == "cash"]
@@ -1074,238 +990,307 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             cash_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
             contra_entries.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
 
-            ordered_entries = sbi_entries + axis_entries + cash_entries + contra_entries
+            # Receipt During the Day:
+            part_a_receipts = sum(x["in_amount"] for x in sbi_entries)
+            part_b_receipts = sum(x["in_amount"] for x in axis_entries)
+            part_c_receipts = sum(x["in_amount"] for x in cash_entries)
+            part_d_receipts = sum(x["in_amount"] for x in contra_entries)
+            total_receipts_F = round(part_a_receipts + part_b_receipts + part_c_receipts + part_d_receipts, 2)
 
-            rows = []
-            running = 0.0
-            prev_grp = None
+            # (G) Total of Receipt Side = (E) + (F)
+            total_receipt_side_G = round(total_ob_E + total_receipts_F, 2)
 
-            for idx, e in enumerate(ordered_entries, 1):
-                grp = e["account_group"]
-                is_first_of_grp = (grp != prev_grp)
-                prev_grp = grp
+            # Total Expences During the Day:
+            part_a_expenses = sum(x["out_amount"] for x in sbi_entries)
+            part_b_expenses = sum(x["out_amount"] for x in axis_entries)
+            part_c_expenses = sum(x["out_amount"] for x in cash_entries)
+            part_d_expenses = sum(x["out_amount"] for x in contra_entries)
+            total_expenses_H = round(part_a_expenses + part_b_expenses + part_c_expenses + part_d_expenses, 2)
 
-                part_title = ""
-                part_badge = ""
-                if is_first_of_grp:
-                    if grp == "sbi":
-                        part_title = "PART A — STATE BANK OF INDIA (SBI • 42137607814)"
-                        part_badge = "SBI ACCOUNT"
-                    elif grp == "axis":
-                        part_title = "PART B — AXIS BANK (915020011528516)"
-                        part_badge = "AXIS ACCOUNT"
-                    elif grp == "cash":
-                        part_title = "PART C — CASH IN HAND (CASH LEDGER)"
-                        part_badge = "CASH REGISTER"
-                    elif grp == "contra":
-                        part_title = "PART D — CASH & BANK CONTRA (DEPOSITS & WITHDRAWALS)"
-                        part_badge = "CONTRA TRANSFERS"
+            # Calculate contra impact on each specific account for accurate closing balances
+            contra_sbi_net = 0.0
+            contra_axis_net = 0.0
+            contra_cash_net = 0.0
+            for ct in contra_entries:
+                amt = float(ct.get("in_amount") or 0.0)
+                wf = str(ct.get("withdraw_from") or "").lower()
+                dt = str(ct.get("deposit_to") or "").lower()
+                pm = str(ct.get("mode") or "").lower()
+                if "cash" in wf or "cash->bank" in pm:
+                    contra_cash_net -= amt
+                    if "axis" in dt or (axis_id and axis_id.lower() in dt):
+                        contra_axis_net += amt
+                    else:
+                        contra_sbi_net += amt
+                elif "cash" in dt or "bank->cash" in pm:
+                    contra_cash_net += amt
+                    if "axis" in wf or (axis_id and axis_id.lower() in wf):
+                        contra_axis_net -= amt
+                    else:
+                        contra_sbi_net -= amt
+                else:
+                    if "axis" in wf or (axis_id and axis_id.lower() in wf):
+                        contra_axis_net -= amt
+                    elif "sbi" in wf or (sbi_id and sbi_id.lower() in wf):
+                        contra_sbi_net -= amt
+                    if "axis" in dt or (axis_id and axis_id.lower() in dt):
+                        contra_axis_net += amt
+                    elif "sbi" in dt or (sbi_id and sbi_id.lower() in dt):
+                        contra_sbi_net += amt
 
-                running += (e["in_amount"] - e["out_amount"])
+            # Closing Balances of each Part:
+            part_a_cb = round(part_a_ob + part_a_receipts - part_a_expenses + contra_sbi_net, 2)
+            part_b_cb = round(part_b_ob + part_b_receipts - part_b_expenses + contra_axis_net, 2)
+            part_c_cb = round(part_c_ob + part_c_receipts - part_c_expenses + contra_cash_net, 2)
+            part_d_cb = round(part_d_ob + part_d_receipts - part_d_expenses - (contra_sbi_net + contra_axis_net + contra_cash_net), 2)
 
-                rows.append({
-                    "sl_no": idx,
-                    "date": e["date"],
-                    "ref_no": e["ref_no"],
-                    "type": e["type"],
-                    "stream": e.get("stream", "New"),
-                    "is_old_accounting": bool(e.get("is_old_accounting")),
-                    "party": e["party"],
-                    "mode": e["mode"],
-                    "receipt_by_cash": inr(e["receipt_by_cash"]) if e["receipt_by_cash"] > 0 else "—",
-                    "receipt_in_ac": f"{inr(e['receipt_in_ac'])} ({e['account_tag']})" if e["receipt_in_ac"] > 0 else "—",
-                    "receipt_in": inr(e["in_amount"]) if e["in_amount"] > 0 else "—",
-                    "debit": inr(e["in_amount"]) if e["in_amount"] > 0 else "—",
-                    "payment_by_ac": f"{inr(e['payment_by_ac'])} ({e['account_tag']})" if e["payment_by_ac"] > 0 else "—",
-                    "payment_out": inr(e["out_amount"]) if e["out_amount"] > 0 else "—",
-                    "credit": inr(e["out_amount"]) if e["out_amount"] > 0 else "—",
-                    "pay_out_by_cash": inr(e["pay_out_by_cash"]) if e["pay_out_by_cash"] > 0 else "—",
+            # (I) Closing Balance of Accounts = (E) + (F) - (H)
+            closing_balance_I = round(part_a_cb + part_b_cb + part_c_cb + part_d_cb, 2)
+
+            # (K) Total of Payment Side = (H) + (I)
+            total_payment_side_K = round(total_expenses_H + closing_balance_I, 2)
+
+            diff = round(abs(total_receipt_side_G - total_payment_side_K), 2)
+            is_balanced = (diff < 0.01)
+            status_text = "Account is ok" if is_balanced else "Account Mismatch"
+
+            # 7. Helper to build section rows and section subtotals
+            def build_section_rows(part_items, part_letter, part_title, part_ob):
+                sec_rows = []
+                running = part_ob
+                for idx, e in enumerate(part_items, 1):
+                    running += (e["in_amount"] - e["out_amount"])
+                    sec_rows.append({
+                        "sl_no": idx,  # plain integer (never currency)
+                        "date": e["date"],
+                        "ref_no": e["ref_no"],
+                        "type": e["type"],
+                        "stream": e.get("stream", "New"),
+                        "is_old_accounting": bool(e.get("is_old_accounting")),
+                        "party": e["party"],
+                        "mode": e["mode"],
+                        "receipt_by_cash": inr(e["receipt_by_cash"]) if e["receipt_by_cash"] > 0 else "—",
+                        "receipt_in_ac": f"{inr(e['receipt_in_ac'])} ({e['account_tag']})" if e["receipt_in_ac"] > 0 else "—",
+                        "receipt_in": inr(e["in_amount"]) if e["in_amount"] > 0 else "—",
+                        "debit": inr(e["in_amount"]) if e["in_amount"] > 0 else "—",
+                        "payment_by_ac": f"{inr(e['payment_by_ac'])} ({e['account_tag']})" if e["payment_by_ac"] > 0 else "—",
+                        "payment_out": inr(e["out_amount"]) if e["out_amount"] > 0 else "—",
+                        "credit": inr(e["out_amount"]) if e["out_amount"] > 0 else "—",
+                        "pay_out_by_cash": inr(e["pay_out_by_cash"]) if e["pay_out_by_cash"] > 0 else "—",
+                        "balance": inr(running),
+                        "account_group": e["account_group"],
+                        "account_tag": e["account_tag"],
+                        "receipt_raw": e["in_amount"],
+                        "payment_raw": e["out_amount"],
+                        "voucher_id": e.get("voucher_id"),
+                        "voucher_type": e.get("voucher_type"),
+                        "can_view": True,
+                        "can_edit": True,
+                        "can_delete": True,
+                    })
+
+                tot_rec_cash = sum(x["receipt_by_cash"] for x in part_items)
+                tot_rec_ac = sum(x["receipt_in_ac"] for x in part_items)
+                tot_rec_in = sum(x["in_amount"] for x in part_items)
+                tot_pay_ac = sum(x["payment_by_ac"] for x in part_items)
+                tot_pay_out = sum(x["out_amount"] for x in part_items)
+                tot_pay_cash = sum(x["pay_out_by_cash"] for x in part_items)
+
+                subtotal = {
+                    "sl_no": "SUB TOTAL",
+                    "party": f"Sub Total ({part_letter})",
+                    "receipt_by_cash": inr(tot_rec_cash) if tot_rec_cash > 0 else "—",
+                    "receipt_in_ac": inr(tot_rec_ac) if tot_rec_ac > 0 else "—",
+                    "receipt_in": inr(tot_rec_in) if tot_rec_in > 0 else "—",
+                    "debit": inr(tot_rec_in) if tot_rec_in > 0 else "—",
+                    "payment_by_ac": inr(tot_pay_ac) if tot_pay_ac > 0 else "—",
+                    "payment_out": inr(tot_pay_out) if tot_pay_out > 0 else "—",
+                    "credit": inr(tot_pay_out) if tot_pay_out > 0 else "—",
+                    "pay_out_by_cash": inr(tot_pay_cash) if tot_pay_cash > 0 else "—",
                     "balance": inr(running),
-                    "account_group": e["account_group"],
-                    "account_tag": e["account_tag"],
-                    "part_title": part_title,
-                    "part_badge": part_badge,
-                    "is_first_of_part": is_first_of_grp,
-                    "receipt_raw": e["in_amount"],
-                    "payment_raw": e["out_amount"],
-                    "voucher_id": e.get("voucher_id"),
-                    "voucher_type": e.get("voucher_type"),
-                    "can_view": True,
-                    "can_edit": True,
-                    "can_delete": True,
-                })
+                    "receipt_raw": tot_rec_in,
+                    "payment_raw": tot_pay_out,
+                }
+                return sec_rows, subtotal
 
-            # 9. Compute Grand Totals & Part Subtotals
-            tot_in = sum(x["in_amount"] for x in entries)
-            tot_out = sum(x["out_amount"] for x in entries)
+            sbi_rows, sbi_subtotal = build_section_rows(sbi_entries, "Part A — S.B.I Ac", "PART A — S.B.I AC", part_a_ob)
+            axis_rows, axis_subtotal = build_section_rows(axis_entries, "Part B — Axis Bank Ac", "PART B — AXIS BANK AC", part_b_ob)
+            cash_rows, cash_subtotal = build_section_rows(cash_entries, "Part C — Cash in Hand", "PART C — CASH IN HAND", part_c_ob)
+            contra_rows, contra_subtotal = build_section_rows(contra_entries, "Part D — Cash in Bank / Contra", "PART D — CASH IN BANK / CONTRA", part_d_ob)
 
-            tot_receipt_by_cash = sum(x["receipt_by_cash"] for x in entries)
-            tot_receipt_in_ac = sum(x["receipt_in_ac"] for x in entries)
-            tot_payment_by_ac = sum(x["payment_by_ac"] for x in entries)
-            tot_pay_out_by_cash = sum(x["pay_out_by_cash"] for x in entries)
+            # Combined flat rows (with section headers & subtotals)
+            flat_rows = []
+            global_idx = 1
+
+            for s_name, s_badge, s_rows, s_sub, s_ob in [
+                ("PART A — S.B.I AC (State Bank of India • 42137607814)", "SBI ACCOUNT", sbi_rows, sbi_subtotal, part_a_ob),
+                ("PART B — AXIS BANK AC (915020011528516)", "AXIS ACCOUNT", axis_rows, axis_subtotal, part_b_ob),
+                ("PART C — CASH IN HAND (Physical Cash Register)", "CASH REGISTER", cash_rows, cash_subtotal, part_c_ob),
+                ("PART D — CASH IN BANK (Contra Deposits & Withdrawals)", "CONTRA TRANSFERS", contra_rows, contra_subtotal, part_d_ob),
+            ]:
+                if s_rows:
+                    for i, r in enumerate(s_rows):
+                        row_copy = dict(r)
+                        row_copy["global_sl_no"] = global_idx
+                        global_idx += 1
+                        if i == 0:
+                            row_copy["part_title"] = s_name
+                            row_copy["part_badge"] = s_badge
+                            row_copy["is_first_of_part"] = True
+                        flat_rows.append(row_copy)
+                    # Append subtotal row
+                    sub_copy = dict(s_sub)
+                    sub_copy["is_subtotal"] = True
+                    flat_rows.append(sub_copy)
+
+            # Grand Total across all sections
+            tot_rec_by_cash_all = sum(x["receipt_by_cash"] for x in entries)
+            tot_rec_in_ac_all = sum(x["receipt_in_ac"] for x in entries)
+            tot_payment_by_ac_all = sum(x["payment_by_ac"] for x in entries)
+            tot_pay_out_by_cash_all = sum(x["pay_out_by_cash"] for x in entries)
 
             column_totals = {
-                "sl_no": "TOTAL",
-                "party": "TOTALS",
-                "receipt_by_cash": inr(tot_receipt_by_cash),
-                "receipt_in_ac": inr(tot_receipt_in_ac),
-                "receipt_in": inr(tot_in),
-                "debit": inr(tot_in),
-                "payment_by_ac": inr(tot_payment_by_ac),
-                "payment_out": inr(tot_out),
-                "credit": inr(tot_out),
-                "pay_out_by_cash": inr(tot_pay_out_by_cash),
-                "balance": inr(tot_in - tot_out),
-                "receipt_by_cash_num": tot_receipt_by_cash,
-                "receipt_in_ac_num": tot_receipt_in_ac,
-                "receipt_in_num": tot_in,
-                "payment_by_ac_num": tot_payment_by_ac,
-                "payment_out_num": tot_out,
-                "pay_out_by_cash_num": tot_pay_out_by_cash,
+                "sl_no": "GRAND TOTAL",
+                "party": "TOTAL (Part A + Part B + Part C + Part D)",
+                "receipt_by_cash": inr(tot_rec_by_cash_all) if tot_rec_by_cash_all > 0 else "₹0.00",
+                "receipt_in_ac": inr(tot_rec_in_ac_all),
+                "receipt_in": inr(total_receipts_F),
+                "debit": inr(total_receipts_F),
+                "payment_by_ac": inr(tot_payment_by_ac_all),
+                "payment_out": inr(total_expenses_H),
+                "credit": inr(total_expenses_H),
+                "pay_out_by_cash": inr(tot_pay_out_by_cash_all),
+                "balance": inr(total_receipts_F - total_expenses_H),
+                "receipt_by_cash_num": tot_rec_by_cash_all,
+                "receipt_in_ac_num": tot_rec_in_ac_all,
+                "receipt_in_num": total_receipts_F,
+                "payment_by_ac_num": tot_payment_by_ac_all,
+                "payment_out_num": total_expenses_H,
+                "pay_out_by_cash_num": tot_pay_out_by_cash_all,
             }
 
-            part_summaries = [
+            # 8. Structured Section Objects
+            sections = [
                 {
-                    "part": "A",
-                    "title": "PART A — State Bank of India (SBI • 42137607814)",
-                    "count": len(sbi_entries),
-                    "total_in": sum(x["in_amount"] for x in sbi_entries),
-                    "total_out": sum(x["out_amount"] for x in sbi_entries),
-                    "net": sum(x["in_amount"] for x in sbi_entries) - sum(x["out_amount"] for x in sbi_entries),
+                    "part_id": "part_a",
+                    "part_letter": "Part A",
+                    "title": "PART A — S.B.I AC (State Bank of India • 42137607814)",
+                    "short_title": "S.B.I Ac",
+                    "account_name": sbi_name,
+                    "bank_name": "State Bank of India",
+                    "account_no": sbi_acc,
+                    "ifsc": sbi_ifsc,
+                    "opening_balance": part_a_ob,
+                    "receipts": part_a_receipts,
+                    "expenses": part_a_expenses,
+                    "closing_balance": part_a_cb,
+                    "rows": sbi_rows,
+                    "subtotal": sbi_subtotal,
                 },
                 {
-                    "part": "B",
-                    "title": "PART B — Axis Bank (915020011528516)",
-                    "count": len(axis_entries),
-                    "total_in": sum(x["in_amount"] for x in axis_entries),
-                    "total_out": sum(x["out_amount"] for x in axis_entries),
-                    "net": sum(x["in_amount"] for x in axis_entries) - sum(x["out_amount"] for x in axis_entries),
+                    "part_id": "part_b",
+                    "part_letter": "Part B",
+                    "title": "PART B — AXIS BANK AC (915020011528516)",
+                    "short_title": "Axis Bank Ac",
+                    "account_name": axis_name,
+                    "bank_name": "AXIS BANK",
+                    "account_no": axis_acc,
+                    "ifsc": axis_ifsc,
+                    "opening_balance": part_b_ob,
+                    "receipts": part_b_receipts,
+                    "expenses": part_b_expenses,
+                    "closing_balance": part_b_cb,
+                    "rows": axis_rows,
+                    "subtotal": axis_subtotal,
                 },
                 {
-                    "part": "C",
-                    "title": "PART C — Cash in Hand (Cash Ledger)",
-                    "count": len(cash_entries),
-                    "total_in": sum(x["in_amount"] for x in cash_entries),
-                    "total_out": sum(x["out_amount"] for x in cash_entries),
-                    "net": sum(x["in_amount"] for x in cash_entries) - sum(x["out_amount"] for x in cash_entries),
+                    "part_id": "part_c",
+                    "part_letter": "Part C",
+                    "title": "PART C — CASH IN HAND (Physical Cash Register)",
+                    "short_title": "Cash in Hand",
+                    "account_name": "Cash in Hand",
+                    "bank_name": "Cash",
+                    "account_no": "—",
+                    "ifsc": "—",
+                    "opening_balance": part_c_ob,
+                    "receipts": part_c_receipts,
+                    "expenses": part_c_expenses,
+                    "closing_balance": part_c_cb,
+                    "rows": cash_rows,
+                    "subtotal": cash_subtotal,
                 },
                 {
-                    "part": "D",
-                    "title": "PART D — Cash & Bank Contra Transfers",
-                    "count": len(contra_entries),
-                    "total_in": sum(x["in_amount"] for x in contra_entries),
-                    "total_out": sum(x["out_amount"] for x in contra_entries),
-                    "net": sum(x["in_amount"] for x in contra_entries) - sum(x["out_amount"] for x in contra_entries),
+                    "part_id": "part_d",
+                    "part_letter": "Part D",
+                    "title": "PART D — CASH IN BANK (Contra Deposits & Withdrawals)",
+                    "short_title": "Cash in Bank",
+                    "account_name": "Cash in Bank / Contra Account",
+                    "bank_name": "Contra Account",
+                    "account_no": "—",
+                    "ifsc": "—",
+                    "opening_balance": part_d_ob,
+                    "receipts": part_d_receipts,
+                    "expenses": part_d_expenses,
+                    "closing_balance": part_d_cb,
+                    "rows": contra_rows,
+                    "subtotal": contra_subtotal,
                 },
             ]
 
-            # 10. Compute Closing Balances strictly account-specific
-            closing_balances = []
-            c_idx = 0
-            allocated_bank_cb = 0.0
-            for b in all_banks:
-                b_id = b.get("id")
-                b_cb = round(running_balances.get(b_id, 0.0), 2)
-                allocated_bank_cb += b_cb
-                closing_balances.append({
-                    "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
-                    "id": b_id,
-                    "name": b.get("name") or b.get("bank_name") or "Bank Account",
-                    "bank_name": b.get("bank_name") or "Bank",
-                    "account_no": b.get("account_no") or "—",
-                    "ifsc": b.get("ifsc") or "—",
-                    "balance": b_cb,
-                    "formatted_balance": inr(b_cb),
-                })
-                c_idx += 1
+            # 9. Dual-Ledger Reconciliation Statement Object
+            reconciliation_statement = {
+                "opening_balance_E": {
+                    "part_a": part_a_ob,
+                    "part_b": part_b_ob,
+                    "part_c": part_c_ob,
+                    "part_d": part_d_ob,
+                    "total_ob": total_ob_E,
+                },
+                "receipts_during_day_F": {
+                    "part_a": part_a_receipts,
+                    "part_b": part_b_receipts,
+                    "part_c": part_c_receipts,
+                    "part_d": part_d_receipts,
+                    "total_receipts": total_receipts_F,
+                },
+                "total_receipt_side_G": total_receipt_side_G,
+                "total_expenses_H": {
+                    "part_a": part_a_expenses,
+                    "part_b": part_b_expenses,
+                    "part_c": part_c_expenses,
+                    "part_d": part_d_expenses,
+                    "total_expenses": total_expenses_H,
+                },
+                "closing_balance_I": {
+                    "sbi_ac": part_a_cb,
+                    "axis_ac": part_b_cb,
+                    "cash_in_hand": part_c_cb,
+                    "cash_in_bank": part_d_cb,
+                    "total_closing_funds": closing_balance_I,
+                },
+                "total_payment_side_K": total_payment_side_K,
+                "is_balanced": is_balanced,
+                "difference": diff,
+                "status_text": status_text,
+            }
 
-            closing_balances.append({
-                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
-                "id": "exp_online",
-                "name": "Total Expenses Online",
-                "bank_name": "Online / Bank",
-                "account_no": "—",
-                "ifsc": "—",
-                "balance": round(online_exp_period, 2),
-                "formatted_balance": inr(online_exp_period),
-            })
-            c_idx += 1
-
-            closing_balances.append({
-                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
-                "id": "exp_cash",
-                "name": "Total Expenses by Cash",
-                "bank_name": "Cash",
-                "account_no": "—",
-                "ifsc": "—",
-                "balance": round(cash_exp_period, 2),
-                "formatted_balance": inr(cash_exp_period),
-            })
-            c_idx += 1
-
-            cash_cb = round(running_balances.get("cash_in_hand", 0.0), 2)
-            closing_balances.append({
-                "index": idx_roman[c_idx] if c_idx < len(idx_roman) else f"({c_idx+1})",
-                "id": "cash_in_hand",
-                "name": "Cash in Hand",
-                "bank_name": "Cash",
-                "account_no": "—",
-                "ifsc": "—",
-                "balance": cash_cb,
-                "formatted_balance": inr(cash_cb),
-            })
-
-            total_expenses = round(online_exp_period + cash_exp_period, 2)
-            total_closing_accounts = round(allocated_bank_cb + cash_cb, 2)
-
-            receipt_side_total = round(total_previous_ob + tot_in, 2)
-            payment_side_total = round(total_expenses + total_closing_accounts, 2)
-            total_cb = round(allocated_bank_cb + online_exp_period + cash_exp_period + cash_cb, 2)
-
-            diff = round(abs(receipt_side_total - payment_side_total), 2)
-            is_balanced = (diff < 0.01)
-
-            available_banks = [
-                {
-                    "id": "all",
-                    "name": "Consolidated (All Banks)",
-                    "bank_name": "All Banks",
-                    "account_no": "Multi-Bank",
-                    "opening_balance": total_previous_ob,
-                    "formatted_balance": inr(total_previous_ob),
-                }
-            ] + [
-                {
-                    "id": b.get("id"),
-                    "name": b.get("name") or b.get("bank_name"),
-                    "bank_name": b.get("bank_name") or "Bank",
-                    "account_no": b.get("account_no") or "—",
-                    "ifsc": b.get("ifsc") or "—",
-                    "opening_balance": round(running_balances.get(b.get("id"), 0.0), 2),
-                    "formatted_balance": inr(running_balances.get(b.get("id"), 0.0)),
-                }
-                for b in all_banks
+            # Opening Balances List (for backward compatibility)
+            opening_balances = [
+                {"index": "(i)", "id": sbi_id, "name": sbi_name, "bank_name": "State Bank of India", "account_no": sbi_acc, "ifsc": sbi_ifsc, "balance": part_a_ob, "formatted_balance": inr(part_a_ob)},
+                {"index": "(ii)", "id": axis_id, "name": axis_name, "bank_name": "AXIS BANK", "account_no": axis_acc, "ifsc": axis_ifsc, "balance": part_b_ob, "formatted_balance": inr(part_b_ob)},
+                {"index": "(iii)", "id": "cash_in_hand", "name": "Cash in Hand", "bank_name": "Cash", "account_no": "—", "ifsc": "—", "balance": part_c_ob, "formatted_balance": inr(part_c_ob)},
+                {"index": "(iv)", "id": "cash_in_bank", "name": "Cash in Bank", "bank_name": "Contra Account", "account_no": "—", "ifsc": "—", "balance": part_d_ob, "formatted_balance": inr(part_d_ob)},
             ]
 
-            is_cons = report_type in ["consolidated_bank_book", "bank_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"]))
-            if report_type == "old_day_book":
-                title = "Old Day Book (Cash & Bank Ledger)"
-            elif is_cons:
-                title = "Consolidated Bank Book (All Accounts & Cash)"
-            elif report_type == "day_book":
-                title = f"Day Book - {eff_scope.capitalize()} Accounting" if eff_scope != "consolidated" else "Consolidated Day Book (Cash & Bank Ledger)"
-            else:
-                title = "All Transactions Master Register"
-            rec_msg = "Account is ok. Total O.B matches Total C.B perfectly." if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}"
-
-            stream_breakdown = {
-                "total_inflow": tot_in,
-                "total_outflow": tot_out,
-                "new_inflow": sum(x["in_amount"] for x in entries if not x.get("is_old_accounting")),
-                "new_outflow": sum(x["out_amount"] for x in entries if not x.get("is_old_accounting")),
-                "old_inflow": sum(x["in_amount"] for x in entries if x.get("is_old_accounting")),
-                "old_outflow": sum(x["out_amount"] for x in entries if x.get("is_old_accounting")),
-            }
+            # Closing Balances List (for backward compatibility)
+            closing_balances = [
+                {"index": "(i)", "id": sbi_id, "name": sbi_name, "bank_name": "State Bank of India", "account_no": sbi_acc, "ifsc": sbi_ifsc, "balance": part_a_cb, "formatted_balance": inr(part_a_cb)},
+                {"index": "(ii)", "id": axis_id, "name": axis_name, "bank_name": "AXIS BANK", "account_no": axis_acc, "ifsc": axis_ifsc, "balance": part_b_cb, "formatted_balance": inr(part_b_cb)},
+                {"index": "(iii)", "id": "exp_online", "name": "Total Expenses Online", "bank_name": "Online / Bank", "account_no": "—", "ifsc": "—", "balance": round(part_a_expenses + part_b_expenses, 2), "formatted_balance": inr(part_a_expenses + part_b_expenses)},
+                {"index": "(iv)", "id": "exp_cash", "name": "Total Expenses by Cash", "bank_name": "Cash", "account_no": "—", "ifsc": "—", "balance": round(part_c_expenses, 2), "formatted_balance": inr(part_c_expenses)},
+                {"index": "(v)", "id": "cash_in_hand", "name": "Cash in Hand", "bank_name": "Cash", "account_no": "—", "ifsc": "—", "balance": part_c_cb, "formatted_balance": inr(part_c_cb)},
+                {"index": "(vi)", "id": "cash_in_bank", "name": "Cash in Bank", "bank_name": "Contra Account", "account_no": "—", "ifsc": "—", "balance": part_d_cb, "formatted_balance": inr(part_d_cb)},
+            ]
 
             columns = [
                 {"key": "sl_no", "label": "Sl. No."},
@@ -1324,38 +1309,48 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 {"key": "actions", "label": "Actions"},
             ]
 
+            is_cons = report_type in ["consolidated_bank_book", "bank_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"]))
+            if report_type == "old_day_book":
+                title = "Old Day Book (Cash & Bank Ledger)"
+            elif is_cons:
+                title = "Consolidated Accounts Book (All Sections)"
+            elif report_type == "day_book":
+                title = f"Day Book - {eff_scope.capitalize()} Accounting" if eff_scope != "consolidated" else "Consolidated Day Book (Cash & Bank Ledger)"
+            else:
+                title = "All Transactions Master Register"
+
+            rec_msg = "Account is ok. Total O.B matches Total C.B perfectly." if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}"
+
             return {
                 "report_type": report_type,
                 "report_title": title,
                 "category": cat_name,
                 "accounting_scope": eff_scope,
-                "stream_breakdown": stream_breakdown,
                 "account_start_date": start_date,
                 "as_on_date": to_date if from_date == to_date else f"{from_date or start_date} to {to_date or ''}".strip(),
                 "selected_bank_id": "all",
-                "available_banks": available_banks,
-                "initial_balances": initial_balances_display,
                 "kpis": [
-                    {"label": "Total Cash/Bank Inflow", "value": inr(tot_in), "numeric": tot_in, "color": "#059669"},
-                    {"label": "Total Cash/Bank Outflow", "value": inr(tot_out), "numeric": tot_out, "color": "#DC2626"},
-                    {"label": "Net Closing Movement", "value": inr(tot_in - tot_out), "numeric": tot_in - tot_out, "color": "#2563EB"},
+                    {"label": "Total Cash/Bank Inflow", "value": inr(total_receipts_F), "numeric": total_receipts_F, "color": "#059669"},
+                    {"label": "Total Cash/Bank Outflow", "value": inr(total_expenses_H), "numeric": total_expenses_H, "color": "#DC2626"},
+                    {"label": "Net Closing Movement", "value": inr(total_receipts_F - total_expenses_H), "numeric": total_receipts_F - total_expenses_H, "color": "#2563EB"},
                     {"label": "Total Transaction Count", "value": str(len(entries)), "numeric": len(entries), "color": "#7C3AED"},
                 ],
                 "columns": columns,
                 "column_totals": column_totals,
-                "part_summaries": part_summaries,
-                "rows": rows,
+                "sections": sections,
+                "rows": flat_rows,
+                "reconciliation_statement": reconciliation_statement,
                 "opening_balances": opening_balances,
                 "closing_balances": closing_balances,
-                "total_previous_ob": total_previous_ob,
-                "total_opening_balance": total_previous_ob,
-                "total_closing_balance": total_cb,
-                "total_cb": total_cb,
-                "total_ob_with_receipts": receipt_side_total,
-                "receipt_side_total": receipt_side_total,
-                "payment_side_total": payment_side_total,
-                "expenses_online": online_exp_period,
-                "expenses_cash": cash_exp_period,
+                "total_previous_ob": total_ob_E,
+                "total_opening_balance": total_ob_E,
+                "total_closing_balance": round(total_expenses_H + closing_balance_I, 2),
+                "total_cb": round(total_expenses_H + closing_balance_I, 2),
+                "total_ob_with_receipts": total_receipt_side_G,
+                "receipt_side_total": total_receipt_side_G,
+                "payment_side_total": total_payment_side_K,
+                "expenses_online": round(part_a_expenses + part_b_expenses, 2),
+                "expenses_cash": round(part_c_expenses, 2),
                 "is_balanced": is_balanced,
                 "reconciliation_status": "ok" if is_balanced else "mismatch",
                 "reconciliation_message": rec_msg,
