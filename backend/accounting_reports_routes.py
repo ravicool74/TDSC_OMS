@@ -162,6 +162,18 @@ REPORT_CATALOG = [
         "reports": [
             {"id": "passed_on_money_report", "name": "Passed On Money Report & Ledger", "icon": "swap-vertical", "description": "Comprehensive client pass-on money ledger: EMD, Cost of BOQ, Tender Fee inflows vs Expense outflows with balance."},
         ]
+    },
+    {
+        "id": "old_accounting",
+        "title": "Old Accounting Ledgers & Reports",
+        "icon": "time",
+        "color": "#7C3AED",
+        "reports": [
+            {"id": "old_sales_ledger", "name": "Old Sales Invoices Ledger", "icon": "receipt", "description": "Independent ledger of all historical/old sales invoices with customer details, amounts, tax & status."},
+            {"id": "old_payment_in_ledger", "name": "Old Payment-In Ledger", "icon": "arrow-down-circle", "description": "Independent ledger of old payment receipts, linking old sale bills and payment modes."},
+            {"id": "old_expenses_ledger", "name": "Old Expenses Ledger", "icon": "wallet", "description": "Separate register of old business expenses, approvals, vendors and payouts."},
+            {"id": "old_day_book", "name": "Old Day Book", "icon": "book", "description": "Daily cash and bank transactions book exclusively for old accounting entries."},
+        ]
     }
 ]
 
@@ -226,6 +238,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
         category: Optional[str] = Query(None),
         search: Optional[str] = Query(None),
         bank_id: Optional[str] = Query(None),
+        accounting_scope: Optional[str] = Query("consolidated"),
         current: Any = Depends(get_current_user)
     ):
         await _ensure_seed_records()
@@ -262,9 +275,208 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             return True
 
         # =========================================================================
+        # 0. OLD ACCOUNTING DEDICATED INDEPENDENT LEDGERS
+        # =========================================================================
+        if report_type == "old_sales_ledger":
+            filtered = [s for s in sales if s.get("is_old_accounting") and in_date_range(s.get("date") or s.get("invoice_date"))]
+            if party_id: filtered = [s for s in filtered if s.get("party_id") == party_id]
+            if search:
+                s_lower = search.lower()
+                filtered = [s for s in filtered if s_lower in (s.get("invoice_no") or s.get("invoice_number") or "").lower() or s_lower in (s.get("party_name") or "").lower()]
+
+            tot_amount = sum(float(x.get("total_amount") or 0) for x in filtered)
+            tot_tax = sum(float(x.get("total_tax") or 0) for x in filtered)
+            tot_received = sum(float(x.get("paid_amount") or 0) for x in filtered)
+            tot_balance = sum(float(x.get("balance") or 0) for x in filtered)
+
+            rows = []
+            for s in filtered:
+                s_id = s.get("id") or str(s.get("_id", ""))
+                v_no = s.get("invoice_no") or s.get("invoice_number") or "OLD-SI"
+                rows.append({
+                    "id": s_id,
+                    "date": s.get("date") or s.get("invoice_date"),
+                    "invoice_no": v_no,
+                    "party_name": s.get("party_name") or "Unknown",
+                    "party_mobile": s.get("party_mobile") or "—",
+                    "payment_mode": (s.get("payment_mode") or "cash").upper(),
+                    "taxable_value": inr(s.get("subtotal") or 0),
+                    "tax_amount": inr(s.get("total_tax") or 0),
+                    "total_amount": inr(s.get("total_amount") or 0),
+                    "paid_amount": inr(s.get("paid_amount") or 0),
+                    "balance": inr(s.get("balance") or 0),
+                    "status": (s.get("status") or "unpaid").capitalize(),
+                    "voucher_id": s_id,
+                    "voucher_type": "sale_invoice",
+                    "can_view": True,
+                    "can_edit": True,
+                    "can_delete": True,
+                    "can_print": True,
+                })
+
+            return {
+                "report_type": report_type,
+                "report_title": "Old Sales Invoices Ledger",
+                "category": cat_name,
+                "from_date": from_date,
+                "to_date": to_date,
+                "kpis": [
+                    {"label": "Total Old Sales (Gross)", "value": inr(tot_amount), "numeric": tot_amount, "color": "#7C3AED"},
+                    {"label": "Old Output GST", "value": inr(tot_tax), "numeric": tot_tax, "color": "#2563EB"},
+                    {"label": "Old Receipts Collected", "value": inr(tot_received), "numeric": tot_received, "color": "#059669"},
+                    {"label": "Old Outstanding Balance", "value": inr(tot_balance), "numeric": tot_balance, "color": "#DC2626"},
+                ],
+                "columns": [
+                    {"key": "date", "label": "Date"},
+                    {"key": "invoice_no", "label": "Old Invoice #"},
+                    {"key": "party_name", "label": "Customer / Contractor"},
+                    {"key": "party_mobile", "label": "Mobile"},
+                    {"key": "payment_mode", "label": "Mode"},
+                    {"key": "taxable_value", "label": "Taxable"},
+                    {"key": "tax_amount", "label": "GST"},
+                    {"key": "total_amount", "label": "Bill Amount"},
+                    {"key": "paid_amount", "label": "Paid"},
+                    {"key": "balance", "label": "Balance Due"},
+                    {"key": "status", "label": "Status"},
+                    {"key": "actions", "label": "Actions"},
+                ],
+                "rows": rows
+            }
+
+        elif report_type == "old_payment_in_ledger":
+            filtered = [inc for inc in incomes if inc.get("is_old_accounting") and in_date_range(inc.get("date"))]
+            if party_id: filtered = [inc for inc in filtered if inc.get("client_id") == party_id]
+            if search:
+                s_lower = search.lower()
+                filtered = [inc for inc in filtered if s_lower in (inc.get("voucher_no") or inc.get("income_no") or "").lower() or s_lower in (inc.get("client_name") or "").lower()]
+
+            tot_amount = sum(float(x.get("amount") or 0) for x in filtered)
+            bank_tot = sum(float(x.get("amount") or 0) for x in filtered if (x.get("payment_mode") or "").lower() != "cash")
+            cash_tot = sum(float(x.get("amount") or 0) for x in filtered if (x.get("payment_mode") or "").lower() == "cash")
+
+            rows = []
+            for inc in filtered:
+                inc_id = inc.get("id") or str(inc.get("_id", ""))
+                v_no = inc.get("voucher_no") or inc.get("income_no") or "OLD-PAYIN"
+                linked_str = ", ".join([str(lv.get("voucher_no")) for lv in inc.get("linked_vouchers", []) if lv.get("voucher_no")]) or "—"
+                b_name = inc.get("bank_name") or "—"
+                if inc.get("account_no"):
+                    b_name += f" ({inc.get('account_no')})"
+                rows.append({
+                    "id": inc_id,
+                    "date": inc.get("date"),
+                    "voucher_no": v_no,
+                    "party_name": inc.get("client_name") or "Customer",
+                    "party_mobile": inc.get("client_mobile") or "—",
+                    "payment_mode": (inc.get("payment_mode") or "online").upper(),
+                    "bank_name": b_name,
+                    "amount": inr(inc.get("amount") or 0),
+                    "linked_bills": linked_str,
+                    "remarks": inc.get("remarks") or "—",
+                    "voucher_id": inc_id,
+                    "voucher_type": "payment_in",
+                    "can_view": True,
+                    "can_edit": True,
+                    "can_delete": True,
+                    "can_print": True,
+                })
+
+            return {
+                "report_type": report_type,
+                "report_title": "Old Payment-In Ledger",
+                "category": cat_name,
+                "from_date": from_date,
+                "to_date": to_date,
+                "kpis": [
+                    {"label": "Total Old Receipts", "value": inr(tot_amount), "numeric": tot_amount, "color": "#059669"},
+                    {"label": "Bank / Online Inflow", "value": inr(bank_tot), "numeric": bank_tot, "color": "#2563EB"},
+                    {"label": "Cash Receipts", "value": inr(cash_tot), "numeric": cash_tot, "color": "#10B981"},
+                    {"label": "Receipts Count", "value": str(len(filtered)), "numeric": len(filtered), "color": "#7C3AED"},
+                ],
+                "columns": [
+                    {"key": "date", "label": "Date"},
+                    {"key": "voucher_no", "label": "Old Voucher #"},
+                    {"key": "party_name", "label": "Customer / Contractor"},
+                    {"key": "party_mobile", "label": "Mobile"},
+                    {"key": "payment_mode", "label": "Mode"},
+                    {"key": "bank_name", "label": "Bank Account"},
+                    {"key": "amount", "label": "Amount Received"},
+                    {"key": "linked_bills", "label": "Linked Sale Bills"},
+                    {"key": "remarks", "label": "Remarks"},
+                    {"key": "actions", "label": "Actions"},
+                ],
+                "rows": rows
+            }
+
+        elif report_type == "old_expenses_ledger":
+            filtered = [e for e in expenses if e.get("is_old_accounting") and in_date_range(e.get("date"))]
+            if category and category != "all":
+                filtered = [e for e in filtered if e.get("category") == category]
+            if search:
+                s_lower = search.lower()
+                filtered = [e for e in filtered if s_lower in (e.get("expense_no") or "").lower() or s_lower in (e.get("vendor") or "").lower() or s_lower in (e.get("customer_name") or "").lower()]
+
+            tot_amount = sum(float(x.get("amount") or 0) for x in filtered)
+            bank_tot = sum(float(x.get("amount") or 0) for x in filtered if (x.get("payment_mode") or "").lower() != "cash")
+            cash_tot = sum(float(x.get("amount") or 0) for x in filtered if (x.get("payment_mode") or "").lower() == "cash")
+
+            rows = []
+            for e in filtered:
+                e_id = e.get("id") or str(e.get("_id", ""))
+                v_no = e.get("expense_no") or e.get("voucher_no") or "OLD-EXP"
+                b_name = e.get("bank_name") or "—"
+                if e.get("account_no"):
+                    b_name += f" ({e.get('account_no')})"
+                rows.append({
+                    "id": e_id,
+                    "date": e.get("date"),
+                    "expense_no": v_no,
+                    "category": e.get("category") or "General",
+                    "vendor": e.get("vendor") or "Various",
+                    "customer_name": e.get("customer_name") or "—",
+                    "payment_mode": (e.get("payment_mode") or "cash").upper(),
+                    "bank_name": b_name,
+                    "amount": inr(e.get("amount") or 0),
+                    "status": (e.get("status") or "approved").capitalize(),
+                    "voucher_id": e_id,
+                    "voucher_type": "expense",
+                    "can_view": True,
+                    "can_edit": True,
+                    "can_delete": True,
+                    "can_print": True,
+                })
+
+            return {
+                "report_type": report_type,
+                "report_title": "Old Expenses Ledger",
+                "category": cat_name,
+                "from_date": from_date,
+                "to_date": to_date,
+                "kpis": [
+                    {"label": "Total Old Expenses", "value": inr(tot_amount), "numeric": tot_amount, "color": "#DC2626"},
+                    {"label": "Bank Disbursements", "value": inr(bank_tot), "numeric": bank_tot, "color": "#2563EB"},
+                    {"label": "Cash Disbursements", "value": inr(cash_tot), "numeric": cash_tot, "color": "#EA580C"},
+                    {"label": "Expense Vouchers Count", "value": str(len(filtered)), "numeric": len(filtered), "color": "#7C3AED"},
+                ],
+                "columns": [
+                    {"key": "date", "label": "Date"},
+                    {"key": "expense_no", "label": "Old Expense #"},
+                    {"key": "category", "label": "Expense Head"},
+                    {"key": "vendor", "label": "Payee / Vendor"},
+                    {"key": "customer_name", "label": "Customer / Bill"},
+                    {"key": "payment_mode", "label": "Mode"},
+                    {"key": "bank_name", "label": "Bank Account"},
+                    {"key": "amount", "label": "Amount"},
+                    {"key": "status", "label": "Status"},
+                    {"key": "actions", "label": "Actions"},
+                ],
+                "rows": rows
+            }
+
+        # =========================================================================
         # 1. CORE FINANCIAL REPORTS
         # =========================================================================
-        if report_type == "sale_report":
+        elif report_type == "sale_report":
             filtered = [s for s in sales if in_date_range(s.get("date") or s.get("invoice_date"))]
             if party_id: filtered = [s for s in filtered if s.get("party_id") == party_id]
             if search:
@@ -372,12 +584,23 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "rows": rows
             }
 
-        elif report_type in ["day_book", "all_transactions", "consolidated_bank_book", "bank_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"])):
+        elif report_type in ["day_book", "all_transactions", "consolidated_bank_book", "bank_book", "old_day_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"])):
+            if report_type == "old_day_book":
+                eff_scope = "old"
+            else:
+                eff_scope = (accounting_scope or "consolidated").lower()
+
             # Combine sales receipts, payment-in receipts, purchases, expenses into daily chronological order
             entries = []
             for s in sales:
                 d = s.get("date") or s.get("invoice_date")
                 if in_date_range(d):
+                    is_old = bool(s.get("is_old_accounting"))
+                    if eff_scope == "old" and not is_old:
+                        continue
+                    if eff_scope == "new" and is_old:
+                        continue
+
                     s_id = s.get("id") or str(s.get("_id", ""))
                     v_no = s.get("invoice_no") or s.get("invoice_number") or "SI"
                     splits = s.get("payment_splits") or []
@@ -387,7 +610,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     entries.append({
                         "date": d,
                         "ref_no": v_no,
-                        "type": "Sale Invoice",
+                        "type": "[Old] Sale Invoice" if is_old else "Sale Invoice",
+                        "stream": "Old" if is_old else "New",
+                        "is_old_accounting": is_old,
                         "party": s.get("party_name") or "Direct Client",
                         "mode": p_m,
                         "in_amount": float(s.get("paid_amount") or s.get("total_amount") or 0),
@@ -401,12 +626,20 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             for inc in incomes:
                 d = inc.get("date")
                 if in_date_range(d):
+                    is_old = bool(inc.get("is_old_accounting"))
+                    if eff_scope == "old" and not is_old:
+                        continue
+                    if eff_scope == "new" and is_old:
+                        continue
+
                     inc_id = inc.get("id") or str(inc.get("_id", ""))
                     v_no = inc.get("income_no") or inc.get("voucher_no") or "PAYIN"
                     entries.append({
                         "date": d,
                         "ref_no": v_no,
-                        "type": "Payment-In Receipt",
+                        "type": "[Old] Payment-In Receipt" if is_old else "Payment-In Receipt",
+                        "stream": "Old" if is_old else "New",
+                        "is_old_accounting": is_old,
                         "party": inc.get("client_name") or "Customer",
                         "mode": (inc.get("payment_mode") or "online").upper(),
                         "in_amount": float(inc.get("amount") or 0),
@@ -420,11 +653,14 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             for p in purchases:
                 d = p.get("date") or p.get("invoice_date")
                 if in_date_range(d):
+                    # Purchase is common across new and old
                     p_id = p.get("id") or str(p.get("_id", ""))
                     entries.append({
                         "date": d,
                         "ref_no": p.get("invoice_number") or p.get("bill_no") or "—",
                         "type": "Purchase Bill",
+                        "stream": "Common",
+                        "is_old_accounting": False,
                         "party": p.get("party_name") or "Vendor",
                         "mode": (p.get("payment_mode") or "bank").upper(),
                         "in_amount": 0.0,
@@ -438,11 +674,19 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             for e in expenses:
                 d = e.get("date")
                 if in_date_range(d):
+                    is_old = bool(e.get("is_old_accounting"))
+                    if eff_scope == "old" and not is_old:
+                        continue
+                    if eff_scope == "new" and is_old:
+                        continue
+
                     e_id = e.get("id") or str(e.get("_id", ""))
                     entries.append({
                         "date": d,
                         "ref_no": e.get("expense_no") or e.get("voucher_no") or "EXP",
-                        "type": f"Expense ({e.get('category') or 'General'})",
+                        "type": f"[Old] Expense ({e.get('category') or 'General'})" if is_old else f"Expense ({e.get('category') or 'General'})",
+                        "stream": "Old" if is_old else "New",
+                        "is_old_accounting": is_old,
                         "party": e.get("vendor") or "Various",
                         "mode": (e.get("payment_mode") or "cash").upper(),
                         "in_amount": 0.0,
@@ -466,6 +710,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     "date": item["date"],
                     "ref_no": item["ref_no"],
                     "type": item["type"],
+                    "stream": item.get("stream", "New"),
+                    "is_old_accounting": bool(item.get("is_old_accounting")),
                     "party": item["party"],
                     "mode": item["mode"],
                     "debit": inr(item["in_amount"]) if item["in_amount"] > 0 else "—",
@@ -868,13 +1114,31 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             ]
 
             is_cons = report_type in ["consolidated_bank_book", "bank_book"] or (report_type == "bank_ledger" and (not bank_id or bank_id in ["all", "consolidated"]))
-            title = "Consolidated Bank Book (All Accounts)" if is_cons else ("Day Book (Cash & Bank Ledger)" if report_type == "day_book" else "All Transactions Master Register")
+            if report_type == "old_day_book":
+                title = "Old Day Book (Cash & Bank Ledger)"
+            elif is_cons:
+                title = "Consolidated Bank Book (All Accounts)"
+            elif report_type == "day_book":
+                title = f"Day Book - {eff_scope.capitalize()} Accounting" if eff_scope != "consolidated" else "Consolidated Day Book (Cash & Bank Ledger)"
+            else:
+                title = "All Transactions Master Register"
             rec_msg = "Account is ok. Total O.B matches Total C.B perfectly." if is_balanced else f"Account Mismatch: Difference of ₹{diff:,.2f}"
+
+            stream_breakdown = {
+                "total_inflow": tot_in,
+                "total_outflow": tot_out,
+                "new_inflow": sum(x["in_amount"] for x in entries if not x.get("is_old_accounting")),
+                "new_outflow": sum(x["out_amount"] for x in entries if not x.get("is_old_accounting")),
+                "old_inflow": sum(x["in_amount"] for x in entries if x.get("is_old_accounting")),
+                "old_outflow": sum(x["out_amount"] for x in entries if x.get("is_old_accounting")),
+            }
 
             return {
                 "report_type": report_type,
                 "report_title": title,
                 "category": cat_name,
+                "accounting_scope": eff_scope,
+                "stream_breakdown": stream_breakdown,
                 "account_start_date": start_date,
                 "as_on_date": to_date if from_date == to_date else f"{from_date or start_date} to {to_date or ''}".strip(),
                 "selected_bank_id": "all",

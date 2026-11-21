@@ -56,6 +56,7 @@ class ExpenseApprovalInput(BaseModel):
     expenses: List[ExpenseLineItem]
     notes: Optional[str] = ""
     status: Optional[str] = "submitted"
+    is_old_accounting: Optional[bool] = False
 
 
 class ApproverActionInput(BaseModel):
@@ -162,12 +163,19 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
     @router.get("/sale-vouchers")
     async def list_customer_sale_vouchers(
         customer_id: str = Query(..., description="Contractor ID"),
+        is_old_accounting: Optional[bool] = Query(None),
         current: Any = Depends(get_current_user)
     ):
         """List eligible sales vouchers/invoices for a customer with received amount and available expense limit."""
+        inv_q: dict = {"party_id": customer_id}
+        if is_old_accounting is True:
+            inv_q["is_old_accounting"] = True
+        elif is_old_accounting is False:
+            inv_q["is_old_accounting"] = {"$ne": True}
+
         # 1. Fetch invoices
         invoices = await db.invoices.find(
-            {"party_id": customer_id},
+            inv_q,
             {"_id": 0}
         ).sort("created_at", -1).to_list(100)
 
@@ -236,9 +244,14 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         status: Optional[str] = Query(None),
         customer_id: Optional[str] = Query(None),
         q: Optional[str] = Query(None),
+        is_old_accounting: Optional[bool] = Query(None),
         current: Any = Depends(get_current_user)
     ):
         query = {}
+        if is_old_accounting is True:
+            query["is_old_accounting"] = True
+        elif is_old_accounting is False:
+            query["is_old_accounting"] = {"$ne": True}
         if status and status != "all":
             query["status"] = status
         if customer_id and customer_id != "all":
@@ -302,6 +315,9 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         effective_vdate = (getattr(payload, "voucher_date", None) or "").strip() or datetime.now().strftime("%d-%m-%Y")
         if custom_no and not "preview" in str(custom_no).lower() and str(custom_no).strip():
             voucher_no = str(custom_no).strip()
+        elif getattr(payload, "is_old_accounting", False):
+            from server import _next_voucher_no
+            voucher_no = await _next_voucher_no("old_expense_approval", effective_vdate)
         else:
             voucher_no = await _generate_voucher_no(effective_vdate)
         vid = f"eapp_{uuid.uuid4().hex[:12]}"
@@ -331,6 +347,7 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
             "total_expense_amount": tot_expense,
             "notes": (payload.notes or "").strip(),
             "status": payload.status or "submitted",
+            "is_old_accounting": bool(getattr(payload, "is_old_accounting", False)),
             "created_by": {
                 "user_id": get_user_id(current),
                 "name": current.name,
@@ -635,10 +652,12 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
                 updates["linked_expense_id"] = linked_eid
             else:
                 # Auto-seed a new approved expense into db.expenses
-                exp_id = f"exp_{uuid.uuid4().hex[:12]}"
+                is_old = bool(voucher.get("is_old_accounting"))
+                exp_prefix = "OLD-EXP" if is_old else "EXP"
+                exp_id = f"exp_old_{uuid.uuid4().hex[:10]}" if is_old else f"exp_{uuid.uuid4().hex[:12]}"
                 expense_record = {
                     "id": exp_id,
-                    "expense_no": f"EXP-{voucher['voucher_no']}",
+                    "expense_no": f"{exp_prefix}-{voucher['voucher_no']}",
                     "date": voucher.get("voucher_date") or datetime.now().strftime("%Y-%m-%d"),
                     "category": primary_head,
                     "amount": final_approved_amt,
@@ -653,6 +672,7 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
                     "approved_at": now_str,
                     "created_by": uid,
                     "created_at": now_str,
+                    "is_old_accounting": is_old,
                     "notes": f"Generated from approved Expense Approval Voucher {voucher['voucher_no']} ({len(approved_items_list)} items approved). {remarks}".strip(),
                 }
                 await db.expenses.insert_one(expense_record)

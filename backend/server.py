@@ -782,6 +782,7 @@ class Income(BaseModel):
     created_by_name: Optional[str] = None
     linked_voucher_no: Optional[str] = None
     linked_approval_id: Optional[str] = None
+    is_old_accounting: Optional[bool] = False
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -808,6 +809,7 @@ class IncomeInput(BaseModel):
     items: List[dict] = Field(default_factory=list)
     linked_vouchers: List[dict] = Field(default_factory=list)
     payment_splits: Optional[List[dict]] = None
+    is_old_accounting: Optional[bool] = False
 
 
 class IncomeUpdateInput(BaseModel):
@@ -832,6 +834,7 @@ class IncomeUpdateInput(BaseModel):
     items: Optional[List[dict]] = None
     linked_vouchers: Optional[List[dict]] = None
     payment_splits: Optional[List[dict]] = None
+    is_old_accounting: Optional[bool] = None
 
 
 
@@ -870,6 +873,7 @@ class Expense(BaseModel):
     created_by_name: Optional[str] = None
     linked_voucher_no: Optional[str] = None
     linked_approval_id: Optional[str] = None
+    is_old_accounting: Optional[bool] = False
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -899,6 +903,7 @@ class ExpenseInput(BaseModel):
     pass_on_item_type: Optional[str] = None
     pass_on_received_amount: Optional[float] = 0.0
     status: Optional[str] = "pending"
+    is_old_accounting: Optional[bool] = False
 
 
 class ExpenseUpdateInput(BaseModel):
@@ -923,6 +928,7 @@ class ExpenseUpdateInput(BaseModel):
     sale_invoice_no: Optional[str] = None
     sale_invoice_date: Optional[str] = None
     sale_item_name: Optional[str] = None
+    is_old_accounting: Optional[bool] = None
 
 
 class ExpenseDecision(BaseModel):
@@ -1044,6 +1050,7 @@ class Invoice(BaseModel):
     created_by_name: Optional[str] = None
     linked_voucher_no: Optional[str] = None
     linked_approval_id: Optional[str] = None
+    is_old_accounting: Optional[bool] = False
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -1073,6 +1080,7 @@ class InvoiceInput(BaseModel):
     bank_id: Optional[str] = None
     bank_name: Optional[str] = None
     account_no: Optional[str] = None
+    is_old_accounting: Optional[bool] = False
 
 
 class AccountInput(BaseModel):
@@ -2804,6 +2812,38 @@ VOUCHERS_CONFIG_REGISTRY = {
         "digits": 4,
         "fy_scoped": True,
     },
+    "old_sale_invoice": {
+        "title": "Old Sale Invoice",
+        "default_prefix": "OLD-SI",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "old_sale_invoice_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
+    "old_payment_in": {
+        "title": "Old Payment-In",
+        "default_prefix": "OLD-PAYIN",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "old_payment_in_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
+    "old_expense": {
+        "title": "Old Expense",
+        "default_prefix": "OLD-EXP",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "old_expense_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
+    "old_expense_approval": {
+        "title": "Old Expense Approval",
+        "default_prefix": "OLD-EXPAPP",
+        "format": "{prefix}-{seq:04d}",
+        "counter": "old_expense_app_no",
+        "digits": 4,
+        "fy_scoped": False,
+    },
 }
 
 
@@ -3588,11 +3628,26 @@ async def get_generic_voucher_next_no(
 async def get_next_invoice_no(
     invoice_type: str = Query("sale"),
     date: Optional[str] = Query(None),
+    is_old_accounting: Optional[bool] = Query(None),
     current: User = Depends(get_current_user)
 ):
     today_kolkata = kolkata_date_str()
     effective_date = date or today_kolkata
-    if invoice_type == "sale":
+    if is_old_accounting and invoice_type == "sale":
+        s = await _get_voucher_settings("old_sale_invoice")
+        next_no = await _peek_next_voucher_no("old_sale_invoice", effective_date)
+        return {
+            "next_no": next_no,
+            "invoice_type": "sale",
+            "voucher_mode": s.get("voucher_mode", "auto"),
+            "start_seq": s.get("start_seq", 1),
+            "date_start_from": s.get("date_start_from"),
+            "server_date": today_kolkata,
+            "default_date": today_kolkata,
+            "prefix": s.get("prefix", "OLD-SI"),
+            "is_old_accounting": True,
+        }
+    elif invoice_type == "sale":
         s = await _get_voucher_settings("sale_invoice")
         next_no = await _peek_next_voucher_no("sale_invoice", effective_date)
         fy = get_indian_financial_year(effective_date)
@@ -3783,17 +3838,21 @@ async def add_expense_category_api(payload: dict = Body(...), current: User = De
 
 @api_router.post("/income", response_model=Income)
 async def create_income(payload: IncomeInput, current: User = Depends(get_current_user)):
-    settings = await _get_voucher_settings("payment_in")
+    settings = await _get_voucher_settings("old_payment_in" if payload.is_old_accounting else "payment_in")
     no = (payload.voucher_no or "").strip()
-    if not no or "preview" in no.lower() or no == "PAYIN-0000":
-        no = await _next_voucher_no("payment_in", payload.date)
+    if not no or "preview" in no.lower() or no == "PAYIN-0000" or no == "AUTO":
+        if payload.is_old_accounting:
+            no = await _next_voucher_no("old_payment_in", payload.date)
+        else:
+            no = await _next_voucher_no("payment_in", payload.date)
     else:
-        prefix = settings.get("prefix") or "PAYIN"
+        prefix = settings.get("prefix") or ("OLD-PAYIN" if payload.is_old_accounting else "PAYIN")
         if no.startswith(f"{prefix}-"):
             try:
                 val = int(no.split("-")[1])
+                counter_key = "old_payment_in_no" if payload.is_old_accounting else "payment_in_no"
                 await db.counters.update_one(
-                    {"_id": "payment_in_no"},
+                    {"_id": counter_key},
                     {"$max": {"seq": val}},
                     upsert=True
                 )
@@ -3863,12 +3922,18 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
         if cid: match_or.append({"party_id": cid})
         if cname: match_or.append({"party_name": cname})
         
+        match_query = {
+            "invoice_type": {"$in": ["sale", None]},
+            "$or": match_or,
+            "balance": {"$gt": 0}
+        }
+        if payload.is_old_accounting:
+            match_query["is_old_accounting"] = True
+        else:
+            match_query["is_old_accounting"] = {"$ne": True}
+
         open_invoices = await db.invoices.find(
-            {
-                "invoice_type": {"$in": ["sale", None]},
-                "$or": match_or,
-                "balance": {"$gt": 0}
-            },
+            match_query,
             {"_id": 0}
         ).sort([("date", 1), ("created_at", 1)]).to_list(50)
         
@@ -3995,10 +4060,15 @@ async def list_income(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     search: Optional[str] = None,
+    is_old_accounting: Optional[bool] = None,
     current: User = Depends(get_current_user)
 ):
     q: dict = {}
     if client_id: q["client_id"] = client_id
+    if is_old_accounting is True:
+        q["is_old_accounting"] = True
+    elif is_old_accounting is False:
+        q["is_old_accounting"] = {"$ne": True}
     if from_date or to_date:
         q["date"] = {}
         if from_date: q["date"]["$gte"] = from_date
@@ -4344,9 +4414,13 @@ async def get_invoice_passed_on_items(iid: str, current: User = Depends(get_curr
 # ============ Accounting: Expense ============
 @api_router.post("/expenses", response_model=Expense)
 async def create_expense(payload: ExpenseInput, current: User = Depends(get_current_user)):
-    no = await _next_no("expense_no", "EXP")
+    if payload.is_old_accounting:
+        no = await _next_no("old_expense_no", "OLD-EXP")
+    else:
+        no = await _next_no("expense_no", "EXP")
     exp_dict = payload.dict()
     exp_dict["expense_no"] = no
+    exp_dict["is_old_accounting"] = bool(payload.is_old_accounting)
     exp_dict["created_by"] = current.user_id
     exp_dict["created_by_name"] = current.name
     selected_items_breakdown = []
@@ -4694,9 +4768,14 @@ async def list_expenses(
     customer_id: Optional[str] = None,
     category: Optional[str] = None,
     payment_mode: Optional[str] = None,
+    is_old_accounting: Optional[bool] = None,
     current: User = Depends(get_current_user)
 ):
     q: dict = {}
+    if is_old_accounting is True:
+        q["is_old_accounting"] = True
+    elif is_old_accounting is False:
+        q["is_old_accounting"] = {"$ne": True}
     if status and status != "all":
         q["status"] = status
     if customer_id and customer_id != "all":
@@ -5157,6 +5236,8 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
             m = re.match(r"^TDSC/" + re.escape(fy) + r"/(\d+)$", no)
             if m:
                 await db.counters.update_one({"_id": f"sale_invoice_{fy}"}, {"$max": {"seq": int(m.group(1))}}, upsert=True)
+        elif payload.is_old_accounting:
+            no = await _next_voucher_no("old_sale_invoice", payload.date)
         else:
             no = await _next_sale_invoice_no(payload.date)
     elif payload.invoice_type == "sale_return":
@@ -5275,6 +5356,7 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
         bank_id=primary_bank_id,
         bank_name=primary_bank_name,
         account_no=primary_account_no,
+        is_old_accounting=bool(payload.is_old_accounting),
         created_by=current.user_id, created_by_name=current.name,
     )
     await db.invoices.insert_one(inv.dict())
@@ -5295,9 +5377,9 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
     except Exception as e:
         logger.exception("Failed to update ledgers for sale invoice %s: %s", no, e)
 
-    # Auto-create tasks (best-effort — do not fail invoice on error)
+    # Auto-create tasks (best-effort — do not fail invoice on error; skip for old historical accounting)
     try:
-        if payload.invoice_type == "sale":
+        if payload.invoice_type == "sale" and not payload.is_old_accounting:
             await _auto_create_tasks_for_invoice(inv, current)
     except Exception as e:
         logger.exception("Auto-task creation failed: %s", e)
@@ -5311,11 +5393,16 @@ async def list_invoices(
     search: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    is_old_accounting: Optional[bool] = None,
     current: User = Depends(get_current_user)
 ):
     q: dict = {}
     if invoice_type: q["invoice_type"] = invoice_type
     if party_id: q["party_id"] = party_id
+    if is_old_accounting is True:
+        q["is_old_accounting"] = True
+    elif is_old_accounting is False:
+        q["is_old_accounting"] = {"$ne": True}
     if from_date or to_date:
         q["date"] = {}
         if from_date: q["date"]["$gte"] = from_date
@@ -5810,6 +5897,7 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
         "signatory_name": payload.signatory_name or "अंजू कुमारी",
         "signature_url": payload.signature_url,
         "include_signature": True if payload.include_signature is None else payload.include_signature,
+        "is_old_accounting": bool(payload.is_old_accounting) if payload.is_old_accounting is not None else bool(existing.get("is_old_accounting", False)),
     }
     await db.invoices.update_one({"id": iid}, {"$set": updates})
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})

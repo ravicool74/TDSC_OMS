@@ -63,15 +63,16 @@ const PAY_MODES = [
 export default function NewPaymentIn() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ customer_id?: string }>();
+  const params = useLocalSearchParams<{ customer_id?: string; accounting?: string; is_old_accounting?: string }>();
+  const isOldAccounting = params?.accounting === 'old' || params?.is_old_accounting === 'true';
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   // Voucher details
-  const [voucherNo, setVoucherNo] = useState<string>('PAYIN-0001 (preview)');
+  const [voucherNo, setVoucherNo] = useState<string>(isOldAccounting ? 'OLD-PAYIN-0001' : 'PAYIN-0001 (preview)');
   const [date, setDate] = useState<string>(today());
-  const [isManualVoucher, setIsManualVoucher] = useState(false);
+  const [isManualVoucher, setIsManualVoucher] = useState(isOldAccounting);
 
   // Customer State & Modals
   const [showPartyPick, setShowPartyPick] = useState(false);
@@ -170,7 +171,7 @@ export default function NewPaymentIn() {
   const loadCustomerVouchers = async (partyId: string) => {
     setLoadingVouchers(true);
     try {
-      const invs = await api.get<any[]>(`/invoices?invoice_type=sale&party_id=${partyId}`);
+      const invs = await api.get<any[]>(`/invoices?invoice_type=sale&party_id=${partyId}${isOldAccounting ? '&is_old_accounting=true' : ''}`);
       setSaleVouchers(invs || []);
     } catch {
       setSaleVouchers([]);
@@ -603,6 +604,7 @@ export default function NewPaymentIn() {
         remarks: remarks || null,
         items: items.filter(it => it.item.trim() || it.amount > 0),
         linked_vouchers: linkedVouchers,
+        is_old_accounting: isOldAccounting,
       };
 
       const created: any = await api.post('/income', payload);
@@ -635,7 +637,10 @@ export default function NewPaymentIn() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-payment-in">
-      <ScreenHeader title="Payment-In (Add Income)" />
+      <ScreenHeader
+        title={isOldAccounting ? "Old Payment-In entry" : "Payment-In (Add Income)"}
+        subtitle={isOldAccounting ? "📜 Old Accounting Stream" : undefined}
+      />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: 60 + insets.bottom }}>
 

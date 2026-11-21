@@ -49,27 +49,45 @@ export const tokenStore = {
 };
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = await tokenStore.get();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(opts.headers as Record<string, string> | undefined),
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${getBaseUrl()}/api${path}`, { ...opts, headers });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) {
-    let msg: string;
-    if (data && data.detail !== undefined) {
-      msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
-    } else if (data && data.message) {
-      msg = String(data.message);
-    } else {
-      msg = `Request failed (${res.status})`;
+  const isGet = !opts.method || opts.method.toUpperCase() === 'GET';
+  let attempts = isGet ? 3 : 1;
+  let lastErr: any = null;
+
+  while (attempts > 0) {
+    try {
+      const token = await tokenStore.get();
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(opts.headers as Record<string, string> | undefined),
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${getBaseUrl()}/api${path}`, { ...opts, headers });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
+      if (!res.ok) {
+        let msg: string;
+        if (data && data.detail !== undefined) {
+          msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        } else if (data && data.message) {
+          msg = String(data.message);
+        } else {
+          msg = `Request failed (${res.status})`;
+        }
+        throw new Error(msg);
+      }
+      return data as T;
+    } catch (err: any) {
+      lastErr = err;
+      attempts--;
+      // Retry on network errors / Failed to fetch for GET requests (handles Render cold start)
+      if (isGet && attempts > 0 && (err?.message?.includes('fetch') || err?.name === 'TypeError')) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        continue;
+      }
+      throw err;
     }
-    throw new Error(msg);
   }
-  return data as T;
+  throw lastErr;
 }
 
 export const api = {
@@ -119,11 +137,12 @@ export const api = {
     const token = await tokenStore.get();
     return `${getBaseUrl()}/api/expense-approvals/${vid}/pdf?token=${encodeURIComponent(token || '')}`;
   },
-  getExpenseApprovals: (params?: { status?: string; customer_id?: string; q?: string }) => {
+  getExpenseApprovals: (params?: { status?: string; customer_id?: string; q?: string; is_old_accounting?: boolean | string }) => {
     const qry = new URLSearchParams();
     if (params?.status) qry.set('status', params.status);
     if (params?.customer_id) qry.set('customer_id', params.customer_id);
     if (params?.q) qry.set('q', params.q);
+    if (params?.is_old_accounting !== undefined) qry.set('is_old_accounting', String(params.is_old_accounting));
     const qs = qry.toString();
     return request<any[]>(`/expense-approvals${qs ? `?${qs}` : ''}`);
   },
@@ -135,8 +154,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  getCustomerSaleVouchers: (customerId: string) =>
-    request<any[]>(`/expense-approvals/sale-vouchers?customer_id=${encodeURIComponent(customerId)}`),
+  getCustomerSaleVouchers: (customerId: string, is_old_accounting?: boolean) => {
+    const qs = is_old_accounting !== undefined ? `&is_old_accounting=${is_old_accounting}` : '';
+    return request<any[]>(`/expense-approvals/sale-vouchers?customer_id=${encodeURIComponent(customerId)}${qs}`);
+  },
   createExpenseApproval: (payload: any) =>
     request<any>('/expense-approvals', {
       method: 'POST',
@@ -726,7 +747,7 @@ export const api = {
   getAccountingReportsSummary: async () => {
     return request<any>('/accounting/reports/summary');
   },
-  getAccountingReportData: async (reportType: string, params?: { from_date?: string; to_date?: string; party_id?: string; category?: string; search?: string; bank_id?: string }) => {
+  getAccountingReportData: async (reportType: string, params?: { from_date?: string; to_date?: string; party_id?: string; category?: string; search?: string; bank_id?: string; accounting_scope?: string }) => {
     const sp = new URLSearchParams({ report_type: reportType });
     if (params?.from_date) sp.append('from_date', params.from_date);
     if (params?.to_date) sp.append('to_date', params.to_date);
@@ -734,6 +755,7 @@ export const api = {
     if (params?.category) sp.append('category', params.category);
     if (params?.search) sp.append('search', params.search);
     if (params?.bank_id) sp.append('bank_id', params.bank_id);
+    if (params?.accounting_scope) sp.append('accounting_scope', params.accounting_scope);
     return request<any>(`/accounting/reports/data?${sp.toString()}`);
   },
   deleteInvoice: (id: string) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),

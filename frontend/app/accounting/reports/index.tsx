@@ -126,10 +126,17 @@ export default function AccountingReportsHub() {
   });
   const [tableSearch, setTableSearch] = useState('');
   const [selectedBankId, setSelectedBankId] = useState<string>(rawBankParam || '');
+  const [accountingScope, setAccountingScope] = useState<'consolidated' | 'new' | 'old'>(
+    rawReportParam?.startsWith('old_') ? 'old' : 'consolidated'
+  );
   const [editingContraModal, setEditingContraModal] = useState<any | null>(null);
   const [contraForm, setContraForm] = useState({ amount: '', particulars: '', date: '' });
   const [savingContra, setSavingContra] = useState(false);
   const [viewingContra, setViewingContra] = useState<any | null>(null);
+
+  const totalReportCount = useMemo(() => {
+    return categories.reduce((acc, c) => acc + (c.reports?.length || 0), 0) || 41;
+  }, [categories]);
 
   // Load Catalog & Summary
   const loadCatalog = useCallback(async () => {
@@ -222,7 +229,8 @@ export default function AccountingReportsHub() {
     customDateFilter?: 'today' | 'yesterday' | 'month' | 'quarter' | 'fy' | 'all' | 'custom',
     fromDateOverride?: string,
     toDateOverride?: string,
-    selectedBankIdOverride?: string
+    selectedBankIdOverride?: string,
+    accountingScopeOverride?: string
   ) => {
     const cleanRepId = Array.isArray(repId) ? repId[0] : repId;
     setActiveReportId(cleanRepId);
@@ -230,6 +238,7 @@ export default function AccountingReportsHub() {
     setReportError(null);
     setTableSearch('');
     const dFilter = customDateFilter || dateFilter;
+    const effScope = accountingScopeOverride !== undefined ? accountingScopeOverride : (cleanRepId === 'old_day_book' ? 'old' : accountingScope);
 
     let fromDate: string | undefined = undefined;
     let toDate: string | undefined = undefined;
@@ -268,6 +277,7 @@ export default function AccountingReportsHub() {
         from_date: fromDate,
         to_date: toDate,
         bank_id: bId || undefined,
+        accounting_scope: effScope,
       });
       setReportData(res);
       setReportError(null);
@@ -977,7 +987,7 @@ export default function AccountingReportsHub() {
               {activeReportId && reportData ? reportData.report_title : 'Reports & Financial Statements'}
             </Text>
             <Text style={styles.headerSub} numberOfLines={1}>
-              {activeReportId && reportData ? reportData.category : 'TDSC • Accounting & Billing Suite (37 Reports)'}
+              {activeReportId && reportData ? reportData.category : `TDSC • Accounting & Billing Suite (${totalReportCount} Reports)`}
             </Text>
           </View>
 
@@ -1120,6 +1130,40 @@ export default function AccountingReportsHub() {
                       );
                     })}
                   </ScrollView>
+                </View>
+              )}
+
+              {/* Stream / Accounting Scope Switcher (For Day Book, Old Day Book, and All Transactions) */}
+              {(activeReportId === 'day_book' || activeReportId === 'old_day_book' || activeReportId === 'all_transactions') && (
+                <View style={styles.bankSelectBarCard}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                    <Ionicons name="filter" size={16} color="#00104A" />
+                    <Text style={styles.bankSelectBarLbl}>Accounting Scope / Stream:</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                    {[
+                      { key: 'consolidated', label: 'Consolidated (New & Old Vouchers)', icon: 'globe-outline' },
+                      { key: 'new', label: 'New Accounting Only', icon: 'flash' },
+                      { key: 'old', label: 'Old Accounting Only', icon: 'time' },
+                    ].map(opt => {
+                      const isSel = (accountingScope || 'consolidated') === opt.key;
+                      return (
+                        <Pressable
+                          key={opt.key}
+                          onPress={() => {
+                            setAccountingScope(opt.key as any);
+                            openReport(activeReportId, dateFilter, customFromDate, customToDate, selectedBankId, opt.key);
+                          }}
+                          style={[styles.bankTabChip, isSel && (opt.key === 'old' ? { backgroundColor: '#7C3AED' } : styles.bankTabChipActive)]}
+                        >
+                          <Ionicons name={opt.icon as any} size={14} color={isSel ? '#FFF' : '#00104A'} />
+                          <Text style={[styles.bankTabChipTxt, isSel && styles.bankTabChipTxtActive]}>
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </View>
               )}
 
@@ -1300,19 +1344,27 @@ export default function AccountingReportsHub() {
                               const val = formatCellValue(col.key, row[col.key]);
                               const isAmount = String(val).startsWith('₹') || String(val).startsWith('-₹');
                               const isAlert = String(val).includes('LOW') || String(val).includes('OVERDUE') || String(val).includes('Unpaid');
+                              const isOld = row.stream === 'Old' || row.is_old_accounting === true;
                               return (
                                 <View key={col.key} style={[styles.tDataCell, { width: colW }]}>
-                                  <Text
-                                    numberOfLines={2}
-                                    style={[
-                                      styles.tDataTxt,
-                                      isBold && { fontWeight: '800', color: '#0F172A' },
-                                      isAmount && { fontWeight: '700', color: '#0F172A', textAlign: 'right' },
-                                      isAlert && { color: '#DC2626', fontWeight: '800' }
-                                    ]}
-                                  >
-                                    {val}
-                                  </Text>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap', justifyContent: isAmount ? 'flex-end' : 'flex-start' }}>
+                                    <Text
+                                      numberOfLines={2}
+                                      style={[
+                                        styles.tDataTxt,
+                                        isBold && { fontWeight: '800', color: '#0F172A' },
+                                        isAmount && { fontWeight: '700', color: '#0F172A', textAlign: 'right' },
+                                        isAlert && { color: '#DC2626', fontWeight: '800' }
+                                      ]}
+                                    >
+                                      {val}
+                                    </Text>
+                                    {col.key === 'voucher_no' && isOld && (
+                                      <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, borderWidth: 0.5, borderColor: '#D8B4FE' }}>
+                                        <Text style={{ fontSize: 9, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
+                                      </View>
+                                    )}
+                                  </View>
                                 </View>
                               );
                             })}
@@ -1406,7 +1458,9 @@ export default function AccountingReportsHub() {
               <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
               <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 12 }}>Unable to load report</Text>
               <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 360 }}>
-                {reportError || 'Could not fetch statement data from server. Please check connection and retry.'}
+                {reportError?.includes('fetch')
+                  ? 'Connecting to live database... Tap Retry / Reload below or wait a moment while the server wakes up.'
+                  : (reportError || 'Could not fetch statement data from server. Please check connection and retry.')}
               </Text>
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
                 <Pressable
@@ -1431,14 +1485,14 @@ export default function AccountingReportsHub() {
           )}
         </View>
       ) : (
-        /* VIEW: MASTER REPORTS HUB (Catalog of 9 Categories & 37 Reports) */
+        /* VIEW: MASTER REPORTS HUB (Catalog of Categories & Reports) */
         <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl }}>
           {/* Quick Search Bar */}
           <View style={styles.searchBarWrapper}>
             <View style={styles.searchBar}>
               <Ionicons name="search" size={18} color="#64748B" />
               <TextInput
-                placeholder="Search across all 37 financial reports..."
+                placeholder={`Search across all ${totalReportCount} financial reports...`}
                 placeholderTextColor="#94A3B8"
                 value={searchQuery}
                 onChangeText={setSearchQuery}

@@ -63,9 +63,10 @@ type LineItem = {
 export default function NewInvoice() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ type?: string; edit_id?: string }>();
+  const params = useLocalSearchParams<{ type?: string; edit_id?: string; accounting?: string; is_old_accounting?: string }>();
   const initialType = params?.type || 'sale';
   const editId = params?.edit_id || null;
+  const isOldAccounting = params?.accounting === 'old' || params?.is_old_accounting === 'true';
 
   const [actualInvoiceType, setActualInvoiceType] = useState<string>(initialType);
   const isPurchase = actualInvoiceType === 'purchase';
@@ -202,13 +203,13 @@ export default function NewInvoice() {
         return;
       }
       try {
-        const next = await api.get<any>(`/invoices/next-no?invoice_type=${actualInvoiceType}&date=${date}`);
+        const next = await api.get<any>(`/invoices/next-no?invoice_type=${actualInvoiceType}&date=${date}${isOldAccounting ? '&is_old_accounting=true' : ''}`);
         if (next) {
           if (next.next_no) {
-            setInvoiceNo(next.voucher_mode === 'manual' ? next.next_no : `${next.next_no} (preview)`);
+            setInvoiceNo(next.voucher_mode === 'manual' || isOldAccounting ? next.next_no : `${next.next_no} (preview)`);
           }
-          if (next.voucher_mode) {
-            setIsManualVoucherNo(next.voucher_mode === 'manual');
+          if (next.voucher_mode || isOldAccounting) {
+            setIsManualVoucherNo(isOldAccounting || next.voucher_mode === 'manual');
           }
           if (next.server_date && !dateInitializedRef.current) {
             setDate(next.server_date);
@@ -216,11 +217,13 @@ export default function NewInvoice() {
           }
         } else {
           setInvoiceNo(
+            isOldAccounting ? 'OLD-SI-0001' :
             actualInvoiceType === 'purchase' ? 'PB-0001 (preview)' :
             actualInvoiceType === 'sale_return' ? 'CN-0001 (preview)' :
             actualInvoiceType === 'purchase_return' ? 'DN-0001 (preview)' :
             'TDSC/2026-27/000001 (preview)'
           );
+          if (isOldAccounting) setIsManualVoucherNo(true);
         }
       } catch {
         setInvoiceNo(
@@ -495,6 +498,7 @@ export default function NewInvoice() {
         signatory_name: signatoryName || 'अंजू कुमारी',
         include_signature: includeSignature,
         signature_url: signatureUrl,
+        is_old_accounting: isOldAccounting,
       };
       const inv: any = editId ? await api.patch(`/invoices/${editId}`, body) : await api.post('/invoices', body);
       // Upload queued attachments (best-effort)
@@ -530,6 +534,7 @@ export default function NewInvoice() {
   };
 
   const headerTitle =
+    isOldAccounting ? 'Old Sales Invoices entry' :
     actualInvoiceType === 'purchase' ? 'Purchase Bill' :
     actualInvoiceType === 'sale_return' ? 'Sale Return / Credit Note' :
     actualInvoiceType === 'purchase_return' ? 'Purchase Return / Debit Note' :
@@ -543,7 +548,14 @@ export default function NewInvoice() {
             <Ionicons name="arrow-back" size={20} color="#0F172A" />
           </Pressable>
           <View style={{ flex: 1, marginLeft: 6 }}>
-            <Text style={styles.headerTitle}>{headerTitle}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.headerTitle}>{headerTitle}</Text>
+              {isOldAccounting && (
+                <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#D8B4FE' }}>
+                  <Text style={{ fontSize: 10, fontWeight: '700', color: '#7C3AED' }}>📜 Old Accounting</Text>
+                </View>
+              )}
+            </View>
             <Text style={styles.headerSub}>{invoiceNo}</Text>
           </View>
           <View style={styles.segWrap}>

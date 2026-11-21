@@ -13,7 +13,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
 } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
@@ -79,6 +79,10 @@ export default function ExpensesList() {
   const isManager = user?.role === 'manager';
   const canDelete = isAdmin || isManager || user?.role === 'accountant' || canAction(user, 'expenses', 'delete') || canAction(user, 'accounting', 'delete');
   const canCreate = isAdmin || isManager || user?.role === 'accountant' || canWrite(user, 'expenses') || canWrite(user, 'accounting');
+
+  const params = useLocalSearchParams<{ accounting?: string; is_old_accounting?: string }>();
+  const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
+  const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
 
   const [list, setList] = useState<any[] | null>(null);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -229,8 +233,11 @@ export default function ExpensesList() {
     } catch {}
     try {
       setLoading(true);
+      let expUrl = '/expenses';
+      if (accountingFilter === 'old') expUrl += '?is_old_accounting=true';
+      else if (accountingFilter === 'new') expUrl += '?is_old_accounting=false';
       const [expData, custList, bList] = await Promise.all([
-        api.get<any[]>('/expenses'),
+        api.get<any[]>(expUrl),
         api.get<any[]>('/customers').catch(() => []),
         api.get<any[]>('/bank-accounts').catch(() => []),
       ]);
@@ -243,7 +250,7 @@ export default function ExpensesList() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accountingFilter]);
 
   useEffect(() => {
     load();
@@ -587,12 +594,17 @@ export default function ExpensesList() {
     }
   };
 
+  const screenTitle = useMemo(() => {
+    if (accountingFilter === 'old' || isOldParam) return 'All Old Expences';
+    return 'All Expenses';
+  }, [accountingFilter, isOldParam]);
+
   const selectedCustomerObj = customers.find((c) => c.id === selectedCustomerId);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#F4F6FB' }} testID="expenses-list">
       <ScreenHeader
-        title="All Expenses"
+        title={screenTitle}
         right={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Pressable
@@ -612,7 +624,7 @@ export default function ExpensesList() {
               <Text style={[styles.ledgerHeaderBtnTxt, { color: '#059669' }]}>Cash Ledger</Text>
             </Pressable>
             <Pressable
-              onPress={() => router.push('/accounting/expenses/new' as any)}
+              onPress={() => router.push(accountingFilter === 'old' ? { pathname: '/accounting/expenses/new', params: { accounting: 'old' } } as any : '/accounting/expenses/new' as any)}
               style={styles.addBtn}
               testID="new-expense-btn"
             >
@@ -621,6 +633,30 @@ export default function ExpensesList() {
           </View>
         }
       />
+
+      {/* Old / New Accounting Scope Switcher */}
+      <View style={{ flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: 16, paddingVertical: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' }}>
+        {[
+          { key: 'all', label: 'All Expenses (Consolidated)', icon: 'globe-outline' },
+          { key: 'new', label: 'New Accounting', icon: 'flash' },
+          { key: 'old', label: 'Old Accounting', icon: 'time' },
+        ].map(opt => (
+          <Pressable
+            key={opt.key}
+            onPress={() => setAccountingFilter(opt.key as any)}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 5,
+              paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+              backgroundColor: accountingFilter === opt.key ? (opt.key === 'old' ? '#7C3AED' : '#2563EB') : '#F1F5F9',
+            }}
+          >
+            <Ionicons name={opt.icon as any} size={13} color={accountingFilter === opt.key ? '#FFF' : '#64748B'} />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: accountingFilter === opt.key ? '#FFF' : '#475569' }}>
+              {opt.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
 
       {/* Stats Summary Banner */}
       <View style={styles.statsBanner}>
@@ -948,6 +984,11 @@ export default function ExpensesList() {
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <Text style={styles.expNo}>{item.expense_no || 'EXP'}</Text>
+                      {item.is_old_accounting ? (
+                        <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#D8B4FE' }}>
+                          <Text style={{ fontSize: 10, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
+                        </View>
+                      ) : null}
                       <Text style={styles.dateTxt}>• {item.date}</Text>
                       {item.linked_voucher_no ? (
                         <Pressable

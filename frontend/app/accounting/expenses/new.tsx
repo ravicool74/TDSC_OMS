@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform,
   Pressable, ActivityIndicator, Alert, TextInput, Modal
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
@@ -31,6 +31,8 @@ type InvoicePassOnItem = {
 
 export default function NewExpense() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ accounting?: string; is_old_accounting?: string }>();
+  const isOldAccounting = params?.accounting === 'old' || params?.is_old_accounting === 'true';
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -185,7 +187,8 @@ export default function NewExpense() {
     setItemSpentAmounts({});
     setLoadingInvoices(true);
     try {
-      const invs = await api.get<any[]>(`/invoices?invoice_type=sale&party_id=${party.id}`);
+      const invUrl = `/invoices?invoice_type=sale&party_id=${party.id}${isOldAccounting ? '&is_old_accounting=true' : ''}`;
+      const invs = await api.get<any[]>(invUrl);
       setSaleInvoices(invs || []);
       // If there's an invoice, auto-select first one
       if (invs && invs.length > 0) {
@@ -366,6 +369,9 @@ export default function NewExpense() {
         vendor: f.vendor || null,
         description: f.description || null,
       };
+      if (isOldAccounting) {
+        payload.is_old_accounting = true;
+      }
 
       if (expenseMode === 'pass_on' && selectedInvoice && selectedPassOnItems.length > 0) {
         payload.customer_id = selectedParty?.id;
@@ -415,9 +421,9 @@ export default function NewExpense() {
       }
       const targetApprovalId = created.linked_approval_id || created.linked_voucher_no;
       if (targetApprovalId) {
-        router.replace(`/accounting/expenses/approval/${targetApprovalId}` as any);
+        router.replace({ pathname: `/accounting/expenses/approval/${targetApprovalId}`, params: isOldAccounting ? { accounting: 'old' } : {} } as any);
       } else {
-        router.replace('/accounting/expenses/approval' as any);
+        router.replace(isOldAccounting ? { pathname: '/accounting/expenses/approval', params: { accounting: 'old' } } as any : '/accounting/expenses/approval' as any);
       }
     } catch (e: any) {
       setErr(e?.message || 'Failed to book expense');
@@ -428,7 +434,10 @@ export default function NewExpense() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }} testID="new-expense">
-      <ScreenHeader title="Add Expense" />
+      <ScreenHeader
+        title={isOldAccounting ? 'Add Old Expences entry' : 'Add Expense'}
+        subtitle={isOldAccounting ? 'Old Accounting Stream' : undefined}
+      />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 60 + insets.bottom }}>
 

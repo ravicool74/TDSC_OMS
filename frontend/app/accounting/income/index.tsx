@@ -13,7 +13,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
 } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
 import { api } from '@/src/api';
@@ -39,12 +39,20 @@ const SERVICE_CATEGORIES = [
 export default function IncomeList() {
   const router = useRouter();
   const { user } = useAuth();
+  const params = useLocalSearchParams<{ accounting?: string; is_old_accounting?: string }>();
+  const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
+  const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
 
   const [list, setList] = useState<any[] | null>(null);
   const [banks, setBanks] = useState<any[]>([]);
   const [selectedBankFilter, setSelectedBankFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [printingId, setPrintingId] = useState<string | null>(null);
+
+  const screenTitle = useMemo(() => {
+    if (accountingFilter === 'old' || isOldParam) return 'All Old Payment-In Invoices';
+    return 'All Payment-In';
+  }, [accountingFilter, isOldParam]);
 
   // New Bank Modal State
   const [showAddBankModal, setShowAddBankModal] = useState(false);
@@ -91,8 +99,11 @@ export default function IncomeList() {
 
   const load = useCallback(async () => {
     try {
+      let url = '/income';
+      if (accountingFilter === 'old') url += '?is_old_accounting=true';
+      else if (accountingFilter === 'new') url += '?is_old_accounting=false';
       const [incRes, bankRes] = await Promise.all([
-        api.get<any[]>('/income').catch(() => []),
+        api.get<any[]>(url).catch(() => []),
         api.get<any[]>('/bank-accounts').catch(() => []),
       ]);
       setList(incRes);
@@ -100,7 +111,7 @@ export default function IncomeList() {
     } catch {
       setList([]);
     }
-  }, []);
+  }, [accountingFilter]);
 
   useFocusEffect(
     useCallback(() => {
@@ -383,7 +394,7 @@ export default function IncomeList() {
   return (
     <View style={{ flex: 1, backgroundColor: '#F4F6FB' }} testID="income-list">
       <ScreenHeader
-        title="All Payment-In"
+        title={screenTitle}
         right={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Pressable
@@ -411,7 +422,7 @@ export default function IncomeList() {
               <Text style={[styles.ledgerHeaderBtnTxt, { color: '#059669' }]}>Cash</Text>
             </Pressable>
             <Pressable
-              onPress={() => router.push('/accounting/income/new' as any)}
+              onPress={() => router.push(accountingFilter === 'old' ? { pathname: '/accounting/income/new', params: { accounting: 'old' } } as any : '/accounting/income/new' as any)}
               style={styles.addBtn}
               testID="new-income-btn"
             >
@@ -420,6 +431,30 @@ export default function IncomeList() {
           </View>
         }
       />
+
+      {/* Old / New Accounting Scope Switcher */}
+      <View style={{ flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: 16, paddingVertical: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' }}>
+        {[
+          { key: 'all', label: 'All Payments-In (Consolidated)', icon: 'globe-outline' },
+          { key: 'new', label: 'New Accounting', icon: 'flash' },
+          { key: 'old', label: 'Old Accounting', icon: 'time' },
+        ].map(opt => (
+          <Pressable
+            key={opt.key}
+            onPress={() => setAccountingFilter(opt.key as any)}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 5,
+              paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+              backgroundColor: accountingFilter === opt.key ? (opt.key === 'old' ? '#7C3AED' : '#2563EB') : '#F1F5F9',
+            }}
+          >
+            <Ionicons name={opt.icon as any} size={13} color={accountingFilter === opt.key ? '#FFF' : '#64748B'} />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: accountingFilter === opt.key ? '#FFF' : '#475569' }}>
+              {opt.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
 
       {/* Search Payment In Section */}
       <View style={styles.searchSection}>
@@ -557,6 +592,11 @@ export default function IncomeList() {
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <Text style={styles.vNo}>{vNo}</Text>
+                      {item.is_old_accounting ? (
+                        <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#D8B4FE' }}>
+                          <Text style={{ fontSize: 10, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
+                        </View>
+                      ) : null}
                       <Text style={styles.dateTxt}>• {item.date}</Text>
                       {(item.attachments?.length || 0) > 0 ? (
                         <View style={styles.attachChip}>

@@ -14,8 +14,10 @@ export default function InvoicesList() {
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
-  const params = useLocalSearchParams<{ type?: string }>();
+  const params = useLocalSearchParams<{ type?: string; accounting?: string; is_old_accounting?: string }>();
   const kind = params?.type || 'sale';
+  const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
+  const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
   const [list, setList] = useState<any[] | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -23,12 +25,16 @@ export default function InvoicesList() {
     if (kind === 'purchase') return 'Purchase Bills';
     if (kind === 'sale_return') return 'All Sale Return / Credit Notes';
     if (kind === 'purchase_return') return 'Purchase Returns / Debit Notes';
-    return 'Sale Invoices';
-  }, [kind]);
+    if (accountingFilter === 'old' || isOldParam) return 'All Old Sale Invoices';
+    return 'All Sale Invoices';
+  }, [kind, accountingFilter, isOldParam]);
 
   const load = useCallback(async () => {
-    try { setList(await api.get<any[]>(`/invoices?invoice_type=${kind}`)); } catch { setList([]); }
-  }, [kind]);
+    let url = `/invoices?invoice_type=${kind}`;
+    if (accountingFilter === 'old') url += '&is_old_accounting=true';
+    else if (accountingFilter === 'new') url += '&is_old_accounting=false';
+    try { setList(await api.get<any[]>(url)); } catch { setList([]); }
+  }, [kind, accountingFilter]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const printPdf = async (inv: any) => {
@@ -39,7 +45,10 @@ export default function InvoicesList() {
     } catch (e: any) { notify('Failed', e?.message || 'Unable to open PDF'); }
   };
   const edit = (inv: any) => {
-    router.push({ pathname: '/accounting/invoices/new', params: { edit_id: inv.id, type: inv.invoice_type || kind } } as any);
+    router.push({
+      pathname: '/accounting/invoices/new',
+      params: { edit_id: inv.id, type: inv.invoice_type || kind, ...(inv.is_old_accounting ? { accounting: 'old' } : {}) }
+    } as any);
   };
   const remove = async (inv: any) => {
     const ok = await confirm('Delete Voucher?', `Delete ${inv.invoice_no}? This cannot be undone.`, { confirmText: 'Delete', destructive: true });
@@ -85,7 +94,7 @@ export default function InvoicesList() {
         title={screenTitle}
         right={(
           <Pressable
-            onPress={() => router.push({ pathname: '/accounting/invoices/new', params: { type: kind } } as any)}
+            onPress={() => router.push({ pathname: '/accounting/invoices/new', params: { type: kind, ...(accountingFilter === 'old' ? { accounting: 'old' } : {}) } } as any)}
             testID="new-invoice-btn"
             style={styles.newBtn}
           >
@@ -93,6 +102,32 @@ export default function InvoicesList() {
           </Pressable>
         )}
       />
+
+      {/* Old / New Accounting Scope Switcher for Sale Invoices */}
+      {kind === 'sale' && (
+        <View style={{ flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: 16, paddingVertical: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' }}>
+          {[
+            { key: 'all', label: 'All Sales (Consolidated)', icon: 'globe-outline' },
+            { key: 'new', label: 'New Accounting', icon: 'flash' },
+            { key: 'old', label: 'Old Accounting', icon: 'time' },
+          ].map(opt => (
+            <Pressable
+              key={opt.key}
+              onPress={() => setAccountingFilter(opt.key as any)}
+              style={{
+                flexDirection: 'row', alignItems: 'center', gap: 5,
+                paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+                backgroundColor: accountingFilter === opt.key ? (opt.key === 'old' ? '#7C3AED' : '#2563EB') : '#F1F5F9',
+              }}
+            >
+              <Ionicons name={opt.icon as any} size={13} color={accountingFilter === opt.key ? '#FFF' : '#64748B'} />
+              <Text style={{ fontSize: 12, fontWeight: '700', color: accountingFilter === opt.key ? '#FFF' : '#475569' }}>
+                {opt.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
 
       {/* Search Voucher Section */}
       <View style={styles.searchSection}>
@@ -174,6 +209,11 @@ export default function InvoicesList() {
                 <View style={{ flex: 1 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Text style={styles.no}>{item.invoice_no}</Text>
+                    {item.is_old_accounting ? (
+                      <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#D8B4FE' }}>
+                        <Text style={{ fontSize: 10, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
+                      </View>
+                    ) : null}
                     <View style={[styles.badge, item.status === 'paid' ? { backgroundColor: '#DCFCE7' } : item.status === 'partial' ? { backgroundColor: '#FEF3C7' } : { backgroundColor: '#FEE2E2' }]}>
                       <Text style={[styles.badgeTxt, { color: item.status === 'paid' ? '#059669' : item.status === 'partial' ? '#B45309' : '#DC2626' }]}>{String(item.status).toUpperCase()}</Text>
                     </View>

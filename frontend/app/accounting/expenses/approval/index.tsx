@@ -14,7 +14,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { api } from '@/src/api';
@@ -44,6 +44,9 @@ export default function ExpenseApprovalListScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const params = useLocalSearchParams<{ accounting?: string; is_old_accounting?: string }>();
+  const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
+  const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
 
   const [vouchers, setVouchers] = useState<any[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,12 +67,15 @@ export default function ExpenseApprovalListScreen() {
 
   const load = useCallback(async () => {
     try {
-      const data = await api.getExpenseApprovals();
+      const qry: any = {};
+      if (accountingFilter === 'old') qry.is_old_accounting = true;
+      else if (accountingFilter === 'new') qry.is_old_accounting = false;
+      const data = await api.getExpenseApprovals(qry);
       setVouchers(Array.isArray(data) ? data : []);
     } catch {
       setVouchers([]);
     }
-  }, []);
+  }, [accountingFilter]);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -266,7 +272,12 @@ export default function ExpenseApprovalListScreen() {
             <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
               <Ionicons name="arrow-back" size={20} color="#0F172A" />
             </Pressable>
-            <Text style={styles.h1}>Expense Approval</Text>
+            <Text style={styles.h1}>{accountingFilter === 'old' || isOldParam ? 'Old Expences approval' : 'Expense Approval'}</Text>
+            {accountingFilter === 'old' && (
+              <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#D8B4FE' }}>
+                <Text style={{ fontSize: 10, fontWeight: '700', color: '#7C3AED' }}>📜 Old Stream</Text>
+              </View>
+            )}
           </View>
           <Text style={styles.subTitle}>TDSC • Vyapar-Style Financial Suite Multi-Stage Approval</Text>
         </View>
@@ -298,6 +309,30 @@ export default function ExpenseApprovalListScreen() {
             <Ionicons name="add" size={22} color="#FFF" />
           </Pressable>
         </View>
+      </View>
+
+      {/* Scope Switcher Pills */}
+      <View style={{ flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: 16, paddingVertical: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' }}>
+        {[
+          { key: 'all', label: 'All Approvals (Consolidated)', icon: 'globe-outline' },
+          { key: 'new', label: 'New Approvals', icon: 'flash' },
+          { key: 'old', label: 'Old Approvals', icon: 'time' },
+        ].map(opt => (
+          <Pressable
+            key={opt.key}
+            onPress={() => setAccountingFilter(opt.key as any)}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 5,
+              paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+              backgroundColor: accountingFilter === opt.key ? (opt.key === 'old' ? '#7C3AED' : '#2563EB') : '#F1F5F9',
+            }}
+          >
+            <Ionicons name={opt.icon as any} size={13} color={accountingFilter === opt.key ? '#FFF' : '#64748B'} />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: accountingFilter === opt.key ? '#FFF' : '#475569' }}>
+              {opt.label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
       {/* Stats Summary Bar */}
@@ -397,7 +432,14 @@ export default function ExpenseApprovalListScreen() {
                   {/* Top Bar: Voucher No & Status Badge */}
                   <View style={styles.cardHeader}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.cardVoucherNo}>{item.voucher_no}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.cardVoucherNo}>{item.voucher_no}</Text>
+                        {item.is_old_accounting ? (
+                          <View style={{ backgroundColor: '#F3E8FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#D8B4FE' }}>
+                            <Text style={{ fontSize: 10, fontWeight: '700', color: '#7C3AED' }}>📜 Old</Text>
+                          </View>
+                        ) : null}
+                      </View>
                       <Text style={styles.cardDate}>Claim Date: {item.voucher_date || item.created_at}</Text>
                     </View>
                     <View style={[styles.statusBadge, { backgroundColor: sc.bg, borderColor: sc.border }]}>

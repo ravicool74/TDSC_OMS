@@ -65,6 +65,19 @@ const BUSINESS: Section[] = [
       { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Loan Accounts', route: '/accounting/cash-bank', params: { tab: 'loans' } },
     ],
   },
+  {
+    title: 'OLD ACCOUNTING AND BILLING SECTION',
+    defaultOpen: true,
+    rows: [
+      { icon: 'receipt', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Old Sales Invoices entry', route: '/accounting/invoices/new', params: { type: 'sale', accounting: 'old' } },
+      { icon: 'list', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'All Old Sale Invoices', route: '/accounting/invoices', params: { type: 'sale', accounting: 'old' } },
+      { icon: 'arrow-down-circle', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Old Payment-In entry', route: '/accounting/income/new', params: { accounting: 'old' } },
+      { icon: 'list', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'All Old Payment-In Invoices', route: '/accounting/income', params: { accounting: 'old' } },
+      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Add Old Expences entry', route: '/accounting/expenses/new', params: { accounting: 'old' } },
+      { icon: 'checkmark-done-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Old Expences approval', route: '/accounting/expenses/approval', params: { accounting: 'old' } },
+      { icon: 'list', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'All Old Expences', route: '/accounting/expenses', params: { accounting: 'old' } },
+    ],
+  },
 ];
 
 // Reports with star support via async-storage (favourites) - All 9 Categories & 37 Sub-Reports
@@ -161,6 +174,16 @@ const REPORT_SECTIONS: Section[] = [
     title: '9. LONE STATEMENT',
     rows: [
       { icon: 'wallet-outline', iconColor: '#0284C7', iconBg: '#E0F2FE', label: 'Loan Statement', route: '/accounting/reports', params: { report: 'loan_statement' } },
+    ],
+  },
+  {
+    title: '10. OLD ACCOUNTING LEDGERS & REPORTS',
+    defaultOpen: true,
+    rows: [
+      { icon: 'receipt', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Old Sales Invoices Ledger', route: '/accounting/reports', params: { report: 'old_sales_ledger' } },
+      { icon: 'arrow-down-circle', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Old Payment-In Ledger', route: '/accounting/reports', params: { report: 'old_payment_in_ledger' } },
+      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Old Expenses Ledger', route: '/accounting/reports', params: { report: 'old_expenses_ledger' } },
+      { icon: 'book', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Old Day Book (Cash / Bank)', route: '/accounting/reports', params: { report: 'old_day_book' } },
     ],
   },
 ];
