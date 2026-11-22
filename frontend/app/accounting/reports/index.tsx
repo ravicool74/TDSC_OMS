@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Share, Platform, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Share, Platform, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -154,6 +154,17 @@ export default function AccountingReportsHub() {
   const [contraForm, setContraForm] = useState({ amount: '', particulars: '', date: '' });
   const [savingContra, setSavingContra] = useState(false);
   const [viewingContra, setViewingContra] = useState<any | null>(null);
+
+  // Fixed Initial Balances State & Modal (Admin Configured on 17-11-2026)
+  const [showInitModal, setShowInitModal] = useState(false);
+  const [initStartDate, setInitStartDate] = useState('2026-11-17');
+  const [initCashInHand, setInitCashInHand] = useState('10701.00');
+  const [initBankList, setInitBankList] = useState<Array<{ id: string; name: string; bank_name?: string; account_no?: string; is_custom?: boolean }>>([]);
+  const [initBankAmounts, setInitBankAmounts] = useState<Record<string, string>>({});
+  const [newAccountName, setNewAccountName] = useState('');
+  const [newAccountAmount, setNewAccountAmount] = useState('');
+  const [initBusy, setInitBusy] = useState(false);
+  const [initErr, setInitErr] = useState<string | null>(null);
 
   const totalReportCount = useMemo(() => {
     return categories.reduce((acc, c) => acc + (c.reports?.length || 0), 0) || 41;
@@ -402,6 +413,124 @@ export default function AccountingReportsHub() {
       if (Platform.OS === 'web') alert(e?.message || 'Update failed');
     } finally {
       setSavingContra(false);
+    }
+  };
+
+  const openInitModal = async () => {
+    setInitBusy(true);
+    setInitErr(null);
+    try {
+      const data = await api.getDayBookInitialBalances();
+      if (data) {
+        setInitStartDate(data.start_date || '2026-11-17');
+        setInitCashInHand(String(data.cash_in_hand ?? '10701.00'));
+        const accounts = data.accounts || [];
+        setInitBankList(accounts.map((a: any) => ({
+          id: a.id,
+          name: a.name,
+          bank_name: a.bank_name,
+          account_no: a.account_no,
+          is_custom: a.bank_name === 'Custom Account / Item' || (!a.account_no || a.account_no === '—'),
+        })));
+        const amtMap: Record<string, string> = {};
+        for (const a of accounts) {
+          amtMap[a.id] = String(a.opening_balance ?? '0.00');
+        }
+        setInitBankAmounts(amtMap);
+      }
+      setShowInitModal(true);
+    } catch (e: any) {
+      if (reportData?.initial_balances) {
+        setInitStartDate(reportData.account_start_date || '2026-11-17');
+        const bList: any[] = [];
+        const amtMap: Record<string, string> = {};
+        for (const b of reportData.initial_balances) {
+          if (b.id === 'cash_in_hand') {
+            setInitCashInHand(String(b.initial_balance ?? b.balance ?? '10701.00'));
+          } else {
+            bList.push({
+              id: b.id,
+              name: b.name,
+              bank_name: b.bank_name,
+              account_no: b.account_no,
+              is_custom: b.id !== 'bnk_sbi_01' && b.id !== 'bnk_hdfc_02' && b.id !== 'cash_in_bank',
+            });
+            amtMap[b.id] = String(b.initial_balance ?? b.balance ?? '0.00');
+          }
+        }
+        setInitBankList(bList);
+        setInitBankAmounts(amtMap);
+        setShowInitModal(true);
+      } else {
+        Alert.alert('Error', e?.message || 'Could not load initial balances');
+      }
+    } finally {
+      setInitBusy(false);
+    }
+  };
+
+  const handleAddAccountItem = () => {
+    const trimmed = (newAccountName || '').trim();
+    if (!trimmed) {
+      Alert.alert('Required', 'Please enter account or item name.');
+      return;
+    }
+    const cleanId = 'custom_' + trimmed.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    if (initBankList.some(b => b.id === cleanId || b.name.toLowerCase() === trimmed.toLowerCase())) {
+      Alert.alert('Duplicate', 'An account or item with this name already exists.');
+      return;
+    }
+    const amt = parseFloat(newAccountAmount || '0') || 0;
+    setInitBankList(prev => [
+      ...prev,
+      {
+        id: cleanId,
+        name: trimmed,
+        bank_name: 'Custom Account / Item',
+        account_no: '—',
+        is_custom: true,
+      }
+    ]);
+    setInitBankAmounts(prev => ({
+      ...prev,
+      [cleanId]: String(amt),
+    }));
+    setNewAccountName('');
+    setNewAccountAmount('');
+  };
+
+  const handleRemoveAccountItem = (idToRemove: string) => {
+    setInitBankList(prev => prev.filter(b => b.id !== idToRemove));
+    setInitBankAmounts(prev => {
+      const next = { ...prev };
+      delete next[idToRemove];
+      return next;
+    });
+  };
+
+  const handleSaveInitialBalances = async () => {
+    setInitBusy(true);
+    setInitErr(null);
+    try {
+      const accountsPayload: Record<string, number> = {};
+      for (const b of initBankList) {
+        accountsPayload[b.id] = parseFloat(initBankAmounts[b.id] || '0') || 0.0;
+      }
+      const cashVal = parseFloat(initCashInHand || '0') || 0.0;
+      await api.saveDayBookInitialBalances({
+        start_date: (initStartDate || '2026-11-17').trim(),
+        cash_in_hand: cashVal,
+        accounts: accountsPayload,
+      });
+      setShowInitModal(false);
+      Alert.alert('Success', 'Fixed Initial Balances and Account Start Date have been updated successfully.');
+      if (activeReportId) {
+        openReport(activeReportId);
+      }
+    } catch (e: any) {
+      setInitErr(e?.message || 'Failed to save initial balances.');
+    } finally {
+      setInitBusy(false);
     }
   };
 
@@ -1350,6 +1479,76 @@ export default function AccountingReportsHub() {
                 </View>
               )}
 
+              {/* Account Start Date & Fixed Initial Balances Banner (Admin Fixed & Editable - TOP OF REPORT) */}
+              {(activeReportId === 'consolidated_bank_book' || activeReportId === 'bank_book' || activeReportId === 'bank_ledger' || activeReportId === 'day_book' || activeReportId === 'old_day_book' || (reportData?.initial_balances && reportData.initial_balances.length > 0)) && (
+                <View style={[styles.obCbCard, { borderLeftColor: '#00104A', borderLeftWidth: 4, backgroundColor: '#F8FAFC' }]}>
+                  <View style={[styles.obCbHeader, { borderBottomColor: '#E2E8F0', paddingBottom: 8 }]}>
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <Ionicons name="calendar-outline" size={18} color="#00104A" />
+                      <Text style={[styles.obCbTitle, { color: '#00104A', fontSize: 13, fontWeight: '800' }]}>
+                        Fixed Opening Balance by Admin on {reportData?.account_start_date || '17-11-2026'}
+                      </Text>
+                      <View style={{ backgroundColor: '#DBEAFE', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                        <Text style={{ fontSize: 9.5, fontWeight: '800', color: '#1E40AF' }}>Rule: Today CB = Tomorrow OB</Text>
+                      </View>
+                    </View>
+                    <Pressable
+                      onPress={openInitModal}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                        backgroundColor: '#00104A',
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderRadius: 6,
+                      }}
+                      hitSlop={6}
+                      testID="edit-init-bal-btn"
+                    >
+                      <Ionicons name="create-outline" size={14} color="#FFF" />
+                      <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>Edit Balances & Add Items (Admin)</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={{ gap: 6, marginTop: 10 }}>
+                    {(reportData?.initial_balances && reportData.initial_balances.length > 0
+                      ? reportData.initial_balances
+                      : [
+                          { index: 'Part A', name: 'TRIVENI DSC AND ETENDER SERVICE PRIVATE LIMITED', bank_name: 'State Bank of India', account_no: '42137607814', initial_balance: 131553.72 },
+                          { index: 'Part B', name: 'ANJU KUMARI (AXIS BANK)', bank_name: 'AXIS BANK', account_no: '915020011528516', initial_balance: 270338.13 },
+                          { index: 'Part C', name: 'Cash in Hand', bank_name: 'Cash Register', account_no: '—', initial_balance: 10701.00 },
+                          { index: 'Part D', name: 'Cash in Bank', bank_name: 'Contra Account', account_no: '—', initial_balance: 0.00 },
+                        ]
+                    ).map((b: any, idx: number) => (
+                      <View key={idx} style={styles.obCbRow}>
+                        <Text style={[styles.obCbIdx, { color: '#00104A', fontWeight: '800' }]}>{b.index}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.obCbName, { color: '#0F172A', fontWeight: '700' }]}>
+                            {b.account_no && b.account_no !== '—'
+                              ? `${b.name} (${b.bank_name || 'Bank'} • A/c ${b.account_no})`
+                              : `${b.name}${b.bank_name && b.bank_name !== 'Cash' ? ` (${b.bank_name})` : ''}`}
+                          </Text>
+                        </View>
+                        <View style={styles.dottedLeader} />
+                        <Text style={styles.obCbVal}>
+                          Opening Balance is on {reportData?.account_start_date || '17-11-2026'}:{' '}
+                          <Text style={{ fontWeight: '800', color: '#00104A' }}>{inr(b.initial_balance ?? b.balance)}</Text>
+                        </Text>
+                      </View>
+                    ))}
+                    <View style={[styles.obCbTotalRow, { borderTopColor: '#00104A', borderTopWidth: 1.5, marginTop: 4, paddingTop: 6 }]}>
+                      <Text style={[styles.obCbTotalLabel, { color: '#00104A', fontWeight: '900' }]}>
+                        (E) Total Fixed Initial O.B. = sum of all Parts =
+                      </Text>
+                      <Text style={[styles.obCbTotalValue, { color: '#059669', fontWeight: '900', fontSize: 13 }]}>
+                        {inr(reportData?.total_initial_ob ?? 412592.85)}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              )}
+
               {/* KPI Summary Grid */}
               {reportData.kpis && reportData.kpis.length > 0 && (
                 <View style={styles.kpiGrid}>
@@ -1386,38 +1585,6 @@ export default function AccountingReportsHub() {
                   </Pressable>
                 ) : null}
               </View>
-
-              {/* Account Start Date & Fixed Initial Balances Banner */}
-              {reportData.initial_balances && reportData.initial_balances.length > 0 && (
-                <View style={[styles.obCbCard, { borderLeftColor: '#00104A', borderLeftWidth: 4 }]}>
-                  <View style={styles.obCbHeader}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <Ionicons name="calendar-outline" size={16} color="#00104A" />
-                      <Text style={[styles.obCbTitle, { color: '#00104A' }]}>
-                        Account Started on date: <Text style={{ fontWeight: '900' }}>{reportData.account_start_date || '17-11-2026'}</Text>
-                        {'  '}|{'  '}as on date: <Text style={{ color: BLUE, fontWeight: '800' }}>{reportData.as_on_date || reportData.from_date || ''}</Text>
-                      </Text>
-                    </View>
-                    <Text style={styles.obCbBadge}>Rule: Today CB = Tomorrow OB</Text>
-                  </View>
-                  <View style={{ gap: 6, marginTop: 8 }}>
-                    {reportData.initial_balances.map((b: any, idx: number) => (
-                      <View key={idx} style={styles.obCbRow}>
-                        <Text style={[styles.obCbIdx, { color: '#00104A' }]}>{b.index}</Text>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.obCbName}>
-                            {b.account_no && b.account_no !== '—' ? `Account No : ${b.account_no} (${b.bank_name || b.name})` : b.name}
-                          </Text>
-                        </View>
-                        <View style={styles.dottedLeader} />
-                        <Text style={styles.obCbVal}>
-                          Opening Balance is on {reportData.account_start_date || '17-11-2026'}: <Text style={{ fontWeight: '800', color: '#00104A' }}>{inr(b.initial_balance ?? b.balance)}</Text>
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              )}
 
               {/* Opening Balance (For Day Book & Ledger Statements) */}
               {reportData.opening_balances && reportData.opening_balances.length > 0 && (
@@ -2241,6 +2408,157 @@ export default function AccountingReportsHub() {
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
                   <Text style={styles.modalSaveBtnTxt}>Save Changes</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* EDIT FIXED INITIAL BALANCES & ADD ITEMS MODAL (ADMIN) */}
+      <Modal visible={showInitModal} transparent animationType="fade" onRequestClose={() => setShowInitModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { maxWidth: 540, maxHeight: '90%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="options-outline" size={20} color="#00104A" />
+                <View>
+                  <Text style={[styles.modalTitle, { color: '#00104A' }]}>Edit Fixed Opening Balances & Add Items</Text>
+                  <Text style={{ fontSize: 11, color: '#64748B' }}>Fixed by Admin on Start Date • Dual-Ledger Master</Text>
+                </View>
+              </View>
+              <Pressable onPress={() => setShowInitModal(false)} style={styles.modalCloseBtn} hitSlop={8}>
+                <Ionicons name="close" size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            {initErr ? (
+              <View style={{ backgroundColor: '#FEF2F2', padding: 8, borderRadius: 6, marginHorizontal: 16, marginTop: 8, borderWidth: 1, borderColor: '#FECACA' }}>
+                <Text style={{ color: '#DC2626', fontSize: 12, fontWeight: '700' }}>{initErr}</Text>
+              </View>
+            ) : null}
+
+            <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
+              {/* Account Start Date */}
+              <View style={styles.modalField}>
+                <Text style={styles.modalLabel}>Account Start Date (Fixed Opening Balance Date):</Text>
+                {Platform.OS === 'web' ? (
+                  <input
+                    type="date"
+                    value={initStartDate}
+                    onChange={(e: any) => setInitStartDate(e.target.value)}
+                    style={webDateInputStyle}
+                  />
+                ) : (
+                  <TextInput
+                    style={styles.modalInput}
+                    value={initStartDate}
+                    onChangeText={setInitStartDate}
+                    placeholder="YYYY-MM-DD"
+                  />
+                )}
+                <Text style={{ fontSize: 10.5, color: '#64748B' }}>
+                  Default is 2026-11-17. On this date OB is fixed by admin. After this date, CB rolls forward to OB daily.
+                </Text>
+              </View>
+
+              {/* Cash in Hand */}
+              <View style={[styles.modalField, { backgroundColor: '#F0FDF4', padding: 10, borderRadius: 6, borderWidth: 1, borderColor: '#BBF7D0' }]}>
+                <Text style={[styles.modalLabel, { color: '#065F46' }]}>Part C – Cash in Hand (₹):</Text>
+                <TextInput
+                  style={[styles.modalInput, { backgroundColor: '#FFF', fontWeight: '800', color: '#065F46' }]}
+                  value={initCashInHand}
+                  onChangeText={setInitCashInHand}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                />
+              </View>
+
+              {/* Bank Accounts & Balances */}
+              <View style={{ gap: 8 }}>
+                <Text style={styles.modalLabel}>Bank Accounts & Dynamic Items (₹):</Text>
+                {initBankList.map((b, idx) => (
+                  <View key={b.id || idx} style={{ backgroundColor: '#F8FAFC', padding: 10, borderRadius: 6, borderWidth: 1, borderColor: '#CBD5E1', gap: 6 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '800', color: '#0F172A' }}>{b.name}</Text>
+                        {b.account_no && b.account_no !== '—' && (
+                          <Text style={{ fontSize: 10, color: '#64748B' }}>{b.bank_name} • A/c {b.account_no}</Text>
+                        )}
+                        {b.is_custom && (
+                          <View style={{ backgroundColor: '#EDE9FE', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, alignSelf: 'flex-start', marginTop: 2 }}>
+                            <Text style={{ fontSize: 9, fontWeight: '700', color: '#6D28D9' }}>Custom Item</Text>
+                          </View>
+                        )}
+                      </View>
+                      {b.is_custom && (
+                        <Pressable onPress={() => handleRemoveAccountItem(b.id)} hitSlop={6} style={{ padding: 4 }}>
+                          <Ionicons name="trash-outline" size={16} color="#DC2626" />
+                        </Pressable>
+                      )}
+                    </View>
+                    <TextInput
+                      style={[styles.modalInput, { backgroundColor: '#FFF', fontWeight: '700' }]}
+                      value={initBankAmounts[b.id] ?? ''}
+                      onChangeText={(val) => setInitBankAmounts(prev => ({ ...prev, [b.id]: val }))}
+                      placeholder="0.00"
+                      keyboardType="numeric"
+                    />
+                  </View>
+                ))}
+              </View>
+
+              {/* + Add New Account / Item Section */}
+              <View style={{ backgroundColor: '#F1F5F9', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E1', gap: 8 }}>
+                <Text style={{ fontSize: 12, fontWeight: '800', color: '#00104A' }}>
+                  + Add New Opening Balance Item / Account
+                </Text>
+                <TextInput
+                  style={[styles.modalInput, { backgroundColor: '#FFF' }]}
+                  value={newAccountName}
+                  onChangeText={setNewAccountName}
+                  placeholder="Item / Account Name (e.g. Petty Cash Patna, PNB Bank)"
+                />
+                <TextInput
+                  style={[styles.modalInput, { backgroundColor: '#FFF' }]}
+                  value={newAccountAmount}
+                  onChangeText={setNewAccountAmount}
+                  placeholder="Opening Balance Amount (₹)"
+                  keyboardType="numeric"
+                />
+                <Pressable
+                  onPress={handleAddAccountItem}
+                  style={{
+                    backgroundColor: '#2563EB',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    paddingVertical: 8,
+                    borderRadius: 6,
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={16} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '800' }}>+ Add Item to Balances</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Pressable
+                onPress={() => setShowInitModal(false)}
+                style={styles.modalCancelBtn}
+                disabled={initBusy}
+              >
+                <Text style={styles.modalCancelBtnTxt}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSaveInitialBalances}
+                style={[styles.modalSaveBtn, { backgroundColor: '#00104A' }]}
+                disabled={initBusy}
+              >
+                {initBusy ? <ActivityIndicator size="small" color="#FFF" /> : (
+                  <Text style={styles.modalSaveBtnTxt}>Save & Fix Balances (Admin)</Text>
                 )}
               </Pressable>
             </View>

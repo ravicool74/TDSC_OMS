@@ -304,9 +304,13 @@ def make_system_operations_router(db, get_current_user, require_admin):
         all_banks.sort(key=bank_sort_key)
 
         accounts_list = []
+        seen_keys = set()
         for b in all_banks:
             b_id = b.get("id")
             acc_no = str(b.get("account_no") or "")
+            seen_keys.add(b_id)
+            if acc_no:
+                seen_keys.add(acc_no)
             configured_val = acc_map.get(b_id)
             if configured_val is None:
                 configured_val = acc_map.get(acc_no)
@@ -321,6 +325,30 @@ def make_system_operations_router(db, get_current_user, require_admin):
                 "ifsc": b.get("ifsc") or "—",
                 "opening_balance": round(float(configured_val), 2),
             })
+
+        # Include Cash in Bank (Contra Account)
+        cib_val = float(acc_map.get("cash_in_bank", 0.0))
+        accounts_list.append({
+            "id": "cash_in_bank",
+            "name": "Cash in Bank (Contra Account)",
+            "bank_name": "Contra Account",
+            "account_no": "—",
+            "ifsc": "—",
+            "opening_balance": round(cib_val, 2),
+        })
+        seen_keys.add("cash_in_bank")
+
+        # Include any custom / additional accounts in acc_map
+        for k, v in acc_map.items():
+            if k not in seen_keys and k not in ["cash_in_hand"]:
+                accounts_list.append({
+                    "id": k,
+                    "name": k,
+                    "bank_name": "Custom Account / Item",
+                    "account_no": "—",
+                    "ifsc": "—",
+                    "opening_balance": round(float(v or 0.0), 2),
+                })
 
         return {
             "start_date": start_date,

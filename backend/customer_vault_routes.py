@@ -4,6 +4,7 @@ from datetime import datetime, timezone, date
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Header, Response
 from pydantic import BaseModel, Field
+from bson.binary import Binary
 from security_vault import encrypt_credential, decrypt_credential, mask_credential, log_audit_entry, now_utc
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -248,6 +249,25 @@ def make_customer_vault_router(db, get_current_user, require_admin_or_manager):
         with open(file_path, "wb") as f:
             f.write(content)
 
+        # Persist permanently to MongoDB app_storage (survives Render restarts)
+        try:
+            await db.app_storage.update_one(
+                {"path": file_path},
+                {"$set": {
+                    "path": file_path,
+                    "doc_id": doc_id,
+                    "cid": cust["id"],
+                    "data": Binary(content),
+                    "content_type": file.content_type or "application/octet-stream",
+                    "size": len(content),
+                    "filename": file.filename,
+                    "updated_at": now_utc().isoformat(),
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            pass
+
         effective_issue = issue_date or document_date
         doc_entry = {
             "id": doc_id,
@@ -333,6 +353,25 @@ def make_customer_vault_router(db, get_current_user, require_admin_or_manager):
             with open(file_path, "wb") as f:
                 f.write(content)
 
+            # Persist permanently to MongoDB app_storage
+            try:
+                await db.app_storage.update_one(
+                    {"path": file_path},
+                    {"$set": {
+                        "path": file_path,
+                        "doc_id": doc_id,
+                        "cid": cust["id"],
+                        "data": Binary(content),
+                        "content_type": file.content_type or "application/octet-stream",
+                        "size": len(content),
+                        "filename": file.filename,
+                        "updated_at": now_utc().isoformat(),
+                    }},
+                    upsert=True
+                )
+            except Exception:
+                pass
+
             updates["name"] = file.filename
             updates["size"] = len(content)
             updates["size_mb"] = round(len(content) / (1024 * 1024), 2)
@@ -390,20 +429,41 @@ def make_customer_vault_router(db, get_current_user, require_admin_or_manager):
                 resolved = p
                 break
 
-        if not resolved:
-            raise HTTPException(status_code=404, detail="File content not found on server disk")
-
         filename = target.get("name", "document")
         ct = target.get("content_type") or "application/octet-stream"
-        with open(resolved, "rb") as f:
-            data = f.read()
+
+        if resolved:
+            with open(resolved, "rb") as f:
+                data = f.read()
+        else:
+            # Fallback to MongoDB app_storage
+            rec = await db.app_storage.find_one({
+                "$or": [
+                    {"path": file_path},
+                    {"doc_id": doc_id},
+                    {"filename": filename}
+                ]
+            })
+            if rec and rec.get("data"):
+                data = bytes(rec["data"])
+                ct = rec.get("content_type") or ct
+                # Restore to disk
+                try:
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, "wb") as f:
+                        f.write(data)
+                except Exception:
+                    pass
+            else:
+                raise HTTPException(status_code=404, detail="File content not found on server disk or database")
 
         return Response(
             content=data,
             media_type=ct,
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f'inline; filename="{filename}"',
                 "Content-Length": str(len(data)),
+                "Access-Control-Allow-Origin": "*",
             }
         )
 

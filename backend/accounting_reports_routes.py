@@ -1292,6 +1292,34 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 {"index": "(vi)", "id": "cash_in_bank", "name": "Cash in Bank", "bank_name": "Contra Account", "account_no": "—", "ifsc": "—", "balance": part_d_cb, "formatted_balance": inr(part_d_cb)},
             ]
 
+            # Fixed Initial Balances as configured by admin on start_date (17-11-2026)
+            initial_balances_display = [
+                {"index": "Part A", "id": sbi_id, "name": sbi_name, "bank_name": "State Bank of India", "account_no": sbi_acc, "ifsc": sbi_ifsc, "initial_balance": fixed_sbi_ob, "balance": fixed_sbi_ob, "formatted_balance": inr(fixed_sbi_ob)},
+                {"index": "Part B", "id": axis_id, "name": axis_name, "bank_name": "AXIS BANK", "account_no": axis_acc, "ifsc": axis_ifsc, "initial_balance": fixed_axis_ob, "balance": fixed_axis_ob, "formatted_balance": inr(fixed_axis_ob)},
+                {"index": "Part C", "id": "cash_in_hand", "name": "Cash in Hand", "bank_name": "Cash", "account_no": "—", "ifsc": "—", "initial_balance": fixed_cash_ob, "balance": fixed_cash_ob, "formatted_balance": inr(fixed_cash_ob)},
+                {"index": "Part D", "id": "cash_in_bank", "name": "Cash in Bank", "bank_name": "Contra Account", "account_no": "—", "ifsc": "—", "initial_balance": fixed_bank_d_ob, "balance": fixed_bank_d_ob, "formatted_balance": inr(fixed_bank_d_ob)},
+            ]
+            seen_init_keys = {sbi_id, axis_id, "cash_in_hand", "cash_in_bank", sbi_acc, axis_acc}
+            for k, v in init_acc_map.items():
+                if k not in seen_init_keys:
+                    matched_b = next((b for b in all_banks if b.get("id") == k or str(b.get("account_no")) == k), None)
+                    b_name = matched_b.get("name") if matched_b else k
+                    b_bank = matched_b.get("bank_name", "Other Account") if matched_b else "Account"
+                    b_acc = matched_b.get("account_no") if matched_b else "—"
+                    b_ifsc = matched_b.get("ifsc", "—") if matched_b else "—"
+                    part_char = chr(65 + len(initial_balances_display)) if len(initial_balances_display) < 26 else str(len(initial_balances_display) + 1)
+                    initial_balances_display.append({
+                        "index": f"Part {part_char}",
+                        "id": k,
+                        "name": b_name,
+                        "bank_name": b_bank,
+                        "account_no": b_acc,
+                        "ifsc": b_ifsc,
+                        "initial_balance": float(v or 0.0),
+                        "balance": float(v or 0.0),
+                        "formatted_balance": inr(float(v or 0.0)),
+                    })
+
             columns = [
                 {"key": "sl_no", "label": "Sl. No."},
                 {"key": "date", "label": "Date"},
@@ -1340,6 +1368,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 "sections": sections,
                 "rows": flat_rows,
                 "reconciliation_statement": reconciliation_statement,
+                "initial_balances": initial_balances_display,
+                "total_initial_ob": round(sum(float(b.get("initial_balance") or 0.0) for b in initial_balances_display), 2),
                 "opening_balances": opening_balances,
                 "closing_balances": closing_balances,
                 "total_previous_ob": total_ob_E,

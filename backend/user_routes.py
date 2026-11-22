@@ -6,8 +6,9 @@ import logging
 logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Dict
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Header, Response
 from pydantic import BaseModel, EmailStr, Field
+from bson.binary import Binary
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -617,6 +618,25 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
         with open(file_path, "wb") as f:
             f.write(content)
 
+        # Persist permanently in MongoDB app_storage
+        try:
+            await db.app_storage.update_one(
+                {"path": file_path},
+                {"$set": {
+                    "path": file_path,
+                    "doc_id": doc_id,
+                    "uid": uid,
+                    "data": Binary(content),
+                    "content_type": file.content_type or "application/octet-stream",
+                    "size": len(content),
+                    "filename": file.filename,
+                    "updated_at": now_utc().isoformat(),
+                }},
+                upsert=True
+            )
+        except Exception:
+            pass
+
         doc_entry = {
             "id": doc_id,
             "name": file.filename,
@@ -655,5 +675,66 @@ def make_user_router(db, get_current_user, require_admin, hash_password, put_obj
         updated = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
         await log_audit(db, current, "users", "delete_document", uid, target, None)
         return ManagedUser(**updated)
+
+    @router.get("/{uid}/documents/{doc_id}/download")
+    async def download_user_document(
+        uid: str,
+        doc_id: str,
+        token: Optional[str] = None,
+        authorization: Optional[str] = Header(None)
+    ):
+        if not authorization and token:
+            authorization = f"Bearer {token}"
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing authorization")
+        tok = authorization.split(" ", 1)[1].strip()
+        session = await db.user_sessions.find_one({"session_token": tok}, {"_id": 0})
+        if not session:
+            raise HTTPException(status_code=401, detail="Invalid session")
+
+        user = await db.users.find_one({"user_id": uid})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        docs = user.get("documents", [])
+        target = next((d for d in docs if d.get("id") == doc_id), None)
+        if not target:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        file_path = target.get("file_path", "")
+        filename = target.get("name", "document")
+        ct = target.get("content_type") or "application/octet-stream"
+
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            with open(file_path, "rb") as f:
+                data = f.read()
+        else:
+            rec = await db.app_storage.find_one({
+                "$or": [
+                    {"path": file_path},
+                    {"doc_id": doc_id},
+                    {"filename": filename}
+                ]
+            })
+            if rec and rec.get("data"):
+                data = bytes(rec["data"])
+                try:
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, "wb") as f:
+                        f.write(data)
+                except Exception:
+                    pass
+            else:
+                raise HTTPException(status_code=404, detail="File content not found on server disk or database")
+
+        return Response(
+            content=data,
+            media_type=ct,
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Length": str(len(data)),
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
 
     return router

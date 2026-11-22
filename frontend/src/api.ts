@@ -50,7 +50,7 @@ export const tokenStore = {
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const isGet = !opts.method || opts.method.toUpperCase() === 'GET';
-  let attempts = isGet ? 10 : 1;
+  let attempts = isGet ? 20 : 1;
   let lastErr: any = null;
 
   while (attempts > 0) {
@@ -63,15 +63,23 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
       if (token) headers['Authorization'] = `Bearer ${token}`;
       const res = await fetch(`${getBaseUrl()}/api${path}`, { ...opts, headers });
       const text = await res.text();
-      const data = text ? JSON.parse(text) : null;
+      let data: any = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
       if (!res.ok) {
         let msg: string;
-        if (data && data.detail !== undefined) {
+        if (data && typeof data === 'object' && data.detail !== undefined) {
           msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
-        } else if (data && data.message) {
+        } else if (data && typeof data === 'object' && data.message) {
           msg = String(data.message);
         } else {
           msg = `Request failed (${res.status})`;
+        }
+        if (isGet && (res.status === 502 || res.status === 503 || res.status === 504)) {
+          throw new Error(`Server warming up (${res.status})`);
         }
         throw new Error(msg);
       }
@@ -87,6 +95,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
         errStr.includes('failed') ||
         errStr.includes('timeout') ||
         errStr.includes('load failed') ||
+        errStr.includes('warming up') ||
         errStr.includes('502') ||
         errStr.includes('503') ||
         errStr.includes('504') ||

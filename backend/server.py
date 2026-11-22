@@ -20,7 +20,8 @@ from customer_pdf import build_customer_pdf, generate_contractors_directory_pdf
 from payment_in_pdf import build_payment_in_pdf
 from expense_pdf import build_expense_pdf
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ReturnDocument
+from pymongo import ReturnDocument, MongoClient
+from bson.binary import Binary
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from starlette.middleware.cors import CORSMiddleware
 from security_vault import log_audit_entry, encrypt_credential, decrypt_credential, mask_credential
@@ -92,6 +93,16 @@ def init_storage():
 LOCAL_STORAGE_DIR = ROOT_DIR / "uploads"
 LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
+sync_mongo_client = None
+sync_db = None
+
+def get_sync_db():
+    global sync_mongo_client, sync_db
+    if sync_db is None:
+        sync_mongo_client = MongoClient(mongo_url, **client_kwargs)
+        sync_db = sync_mongo_client[db_name]
+    return sync_db
+
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
     if not STORAGE_URL:
@@ -101,6 +112,24 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with open(target_path, "wb") as f:
             f.write(data)
+        # Also persist permanently into MongoDB app_storage so files survive Render redeploys
+        try:
+            sdb = get_sync_db()
+            fname = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            sdb.app_storage.update_one(
+                {"path": path},
+                {"$set": {
+                    "path": path,
+                    "data": Binary(data),
+                    "content_type": content_type,
+                    "size": len(data),
+                    "filename": fname,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            logger.warning("Failed to backup file %s to app_storage: %s", path, e)
         return {"path": path, "size": len(data), "content_type": content_type}
     key = init_storage()
     resp = requests.put(
@@ -119,21 +148,58 @@ def get_object(path: str):
         if clean_path.startswith("uploads/"):
             clean_path = clean_path[len("uploads/"):]
         target_path = (LOCAL_STORAGE_DIR / clean_path).resolve()
-        if not target_path.exists():
-            # Check with path as is
-            target_path = (LOCAL_STORAGE_DIR / path).resolve()
-        if not target_path.exists():
-            # Check relative to ROOT_DIR
-            alt = (ROOT_DIR / path).resolve()
-            if alt.exists():
-                target_path = alt
-            else:
-                raise HTTPException(status_code=404, detail="File not found")
-        with open(target_path, "rb") as f:
-            content = f.read()
-        import mimetypes
-        guess_ct = mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"
-        return content, guess_ct
+        if target_path.exists() and target_path.is_file():
+            with open(target_path, "rb") as f:
+                content = f.read()
+            import mimetypes
+            guess_ct = mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"
+            return content, guess_ct
+
+        target_path_raw = (LOCAL_STORAGE_DIR / path).resolve()
+        if target_path_raw.exists() and target_path_raw.is_file():
+            with open(target_path_raw, "rb") as f:
+                content = f.read()
+            import mimetypes
+            guess_ct = mimetypes.guess_type(target_path_raw.name)[0] or "application/octet-stream"
+            return content, guess_ct
+
+        alt = (ROOT_DIR / path).resolve()
+        if alt.exists() and alt.is_file():
+            with open(alt, "rb") as f:
+                content = f.read()
+            import mimetypes
+            guess_ct = mimetypes.guess_type(alt.name)[0] or "application/octet-stream"
+            return content, guess_ct
+
+        # Fallback to MongoDB app_storage (survives Render restarts & redeploys)
+        try:
+            sdb = get_sync_db()
+            fname = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            doc = sdb.app_storage.find_one({
+                "$or": [
+                    {"path": path},
+                    {"path": clean_path},
+                    {"path": f"triveni-business-manager/{path}"},
+                    {"path": f"triveni-business-manager/{clean_path}"},
+                    {"filename": fname},
+                    {"path": {"$regex": re.escape(fname) + "$"}}
+                ]
+            })
+            if doc and doc.get("data"):
+                raw_bytes = bytes(doc["data"])
+                ct = doc.get("content_type") or "application/octet-stream"
+                # Restore to disk cache
+                try:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target_path, "wb") as f:
+                        f.write(raw_bytes)
+                except Exception:
+                    pass
+                return raw_bytes, ct
+        except Exception as e:
+            logger.warning("Error fetching %s from app_storage: %s", path, e)
+
+        raise HTTPException(status_code=404, detail="File not found")
     global _storage_key
     key = init_storage()
     resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
@@ -6447,7 +6513,15 @@ async def download_file(full_path: str, token: Optional[str] = None, authorizati
         raise HTTPException(status_code=401, detail="Invalid session")
     # ownership: verify path belongs to a tender the user can access (any authenticated user for now)
     data, ct = await run_in_threadpool(get_object, full_path)
-    return Response(content=data, media_type=ct)
+    fname = full_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return Response(
+        content=data,
+        media_type=ct,
+        headers={
+            "Content-Disposition": f'inline; filename="{fname}"',
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
 
 
 # ============ Office Settings ============

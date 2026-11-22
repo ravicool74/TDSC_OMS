@@ -362,7 +362,7 @@ export default function CustomerDetail() {
 
   const openFile = async (filePath: string) => {
     const token = await tokenStore.get();
-    const cleanPath = filePath.replace('\\', '/');
+    const cleanPath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     const url = `${api.base}/api/files/${cleanPath}?token=${encodeURIComponent(token || '')}`;
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       window.open(url, '_blank');

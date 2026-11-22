@@ -76,9 +76,32 @@ export const AttachmentsSection: React.FC<Props> = ({ attachments, onChange, vou
     }
     if (!a.path) return;
     const token = await tokenStore.get();
-    const url = `${api.base}/api/files/${a.path}?token=${encodeURIComponent(token || '')}`;
-    if (Platform.OS === 'web' && typeof window !== 'undefined') window.open(url, '_blank');
-    else { const Linking = await import('expo-linking'); await Linking.openURL(url); }
+    const cleanPath = a.path.replace(/\\/g, '/').replace(/^\/+/, '');
+    const url = `${api.base}/api/files/${cleanPath}?token=${encodeURIComponent(token || '')}`;
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.open(url, '_blank');
+    } else {
+      const Linking = await import('expo-linking');
+      await Linking.openURL(url);
+    }
+  };
+
+  const download = async (a: Attachment) => {
+    if (!a.path) return;
+    const token = await tokenStore.get();
+    const cleanPath = a.path.replace(/\\/g, '/').replace(/^\/+/, '');
+    const url = `${api.base}/api/files/${cleanPath}?token=${encodeURIComponent(token || '')}`;
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = a.name || 'document';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      const Linking = await import('expo-linking');
+      await Linking.openURL(url);
+    }
   };
 
   const iconFor = (a: Attachment) => {
@@ -131,6 +154,16 @@ export const AttachmentsSection: React.FC<Props> = ({ attachments, onChange, vou
                   {a.size ? humanFileSize(a.size) : ''}{a.pending ? ' • Will upload on save' : ''}
                 </Text>
               </Pressable>
+              {a.path && !a.pending ? (
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                  <Pressable onPress={() => open(a)} hitSlop={6} style={{ padding: 4 }} testID={`attach-view-${i}`}>
+                    <Ionicons name="eye-outline" size={18} color={colors.brandPrimary} />
+                  </Pressable>
+                  <Pressable onPress={() => download(a)} hitSlop={6} style={{ padding: 4 }} testID={`attach-dl-${i}`}>
+                    <Ionicons name="download-outline" size={18} color="#059669" />
+                  </Pressable>
+                </View>
+              ) : null}
               <Pressable onPress={() => remove(i)} hitSlop={8} testID={`attach-del-${i}`}>
                 <Ionicons name="close-circle" size={22} color={colors.error} />
               </Pressable>
