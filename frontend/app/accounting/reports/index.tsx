@@ -201,12 +201,15 @@ export default function AccountingReportsHub() {
     }
   }, [params?.report, params?.bank]);
 
-  // Auto-retry once on cold start fetch failure so users aren't stranded on "Unable to load report"
+  // Auto-retry on cold start fetch failure so users aren't stranded on "Unable to load report"
   useEffect(() => {
-    if (reportError && (reportError.includes('fetch') || reportError.includes('network') || reportError.includes('connection')) && activeReportId) {
+    if (!reportError || !activeReportId) return;
+    const errLower = reportError.toLowerCase();
+    const isRetryable = errLower.includes('fetch') || errLower.includes('network') || errLower.includes('connection') || errLower.includes('warm') || errLower.includes('502') || errLower.includes('504');
+    if (isRetryable) {
       const timer = setTimeout(() => {
         openReport(activeReportId);
-      }, 3500);
+      }, 3000);
       return () => clearTimeout(timer);
     }
   }, [reportError, activeReportId]);
@@ -2138,8 +2141,10 @@ export default function AccountingReportsHub() {
                 return (
                   <>
                     <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
-                    <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 12 }}>Unable to load report</Text>
-                    <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 360 }}>
+                    <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 12 }}>
+                      Unable to load report
+                    </Text>
+                    <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 380 }}>
                       {reportError || 'Could not fetch statement data from server. Please check connection and retry.'}
                     </Text>
                     <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>

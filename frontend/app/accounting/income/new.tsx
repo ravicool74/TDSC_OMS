@@ -55,6 +55,7 @@ export type PaymentSplit = {
 const PAY_MODES = [
   { key: 'cash', label: 'Cash', icon: 'cash-outline' },
   { key: 'bank_transfer', label: 'Bank Transfer / Online', icon: 'card-outline' },
+  { key: 'paytm', label: 'Paytm / Gateway', icon: 'wallet-outline' },
   { key: 'cheque', label: 'Cheque', icon: 'document-text-outline' },
   { key: 'upi', label: 'UPI / QR', icon: 'qr-code-outline' },
   { key: 'other', label: 'Other', icon: 'ellipsis-horizontal-circle-outline' },

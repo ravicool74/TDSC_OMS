@@ -61,6 +61,7 @@ const BUSINESS: Section[] = [
     rows: [
       { icon: 'business', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Bank Accounts', route: '/accounting/cash-bank', params: { tab: 'banks' } },
       { icon: 'cash', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Cash in Hand', route: '/accounting/cash-bank', params: { tab: 'cash' } },
+      { icon: 'card', iconColor: '#0284C7', iconBg: '#E0F2FE', label: 'Payment Gateway Settlement (Paytm)', route: '/accounting/cash-bank', params: { tab: 'settlements' } },
       { icon: 'newspaper', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Cheques', route: '/accounting/cash-bank', params: { tab: 'cheques' } },
       { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Loan Accounts', route: '/accounting/cash-bank', params: { tab: 'loans' } },
     ],
@@ -233,6 +234,7 @@ const OLD_ACCOUNTING_SECTIONS: Section[] = [
     rows: [
       { icon: 'journal', iconColor: '#00104A', iconBg: '#E0E7FF', label: 'Consolidated Bank Book', route: '/accounting/reports', params: { report: 'consolidated_bank_book' } },
       { icon: 'business', iconColor: '#1E40AF', iconBg: '#DBEAFE', label: 'Bank Accounts (SBI & Axis Bank)', route: '/accounting/cash-bank', params: { tab: 'banks' } },
+      { icon: 'card', iconColor: '#0284C7', iconBg: '#E0F2FE', label: 'Paytm Payment Gateway Settlement', route: '/accounting/cash-bank', params: { tab: 'settlements' } },
       { icon: 'cash', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Cash in Hand (Cash Register)', route: '/accounting/cash-bank', params: { tab: 'cash' } },
       { icon: 'swap-vertical', iconColor: '#059669', iconBg: '#D1FAE5', label: 'Contra Deposit & Transfers', route: '/accounting/cash-bank' },
     ],
@@ -470,9 +472,10 @@ const BankPanel: React.FC = () => {
         api.get<any>('/accounting/dashboard').catch(() => null),
         api.get<any>('/cash-bank/cash-in-hand').catch(() => null),
       ]);
-      setBanks(b || []);
+      const realBanks = (b || []).filter((x: any) => !x.is_clearing && x.id !== 'acc_paytm_clearing');
+      setBanks(realBanks);
       const map: Record<string, number> = {};
-      for (const x of b || []) map[x.id] = Number(x.opening_balance || 0);
+      for (const x of realBanks) map[x.id] = Number(x.opening_balance || 0);
       if (dash?.bank_balances) {
         if (Array.isArray(dash.bank_balances)) {
           for (const item of dash.bank_balances) {
@@ -511,6 +514,10 @@ const BankPanel: React.FC = () => {
           <Pressable testID="open-consolidated-book" onPress={() => router.push('/accounting/reports?report=consolidated_bank_book' as any)} style={[styles.bankAdd, { backgroundColor: '#00104A' }]}>
             <Ionicons name="journal-outline" size={14} color="#FFF" />
             <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Consolidated Book</Text>
+          </Pressable>
+          <Pressable testID="open-pg-settlement" onPress={() => router.push('/accounting/cash-bank?tab=settlements' as any)} style={[styles.bankAdd, { backgroundColor: '#0284C7' }]}>
+            <Ionicons name="card-outline" size={14} color="#FFF" />
+            <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Paytm Settlement</Text>
           </Pressable>
           <Pressable testID="open-cash-bank-hub" onPress={() => router.push('/accounting/cash-bank' as any)} style={[styles.bankAdd, { backgroundColor: NAVY }]}>
             <Ionicons name="swap-vertical" size={14} color="#FFF" />

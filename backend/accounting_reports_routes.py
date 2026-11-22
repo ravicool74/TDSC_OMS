@@ -49,6 +49,9 @@ REPORT_CATALOG = [
             {"id": "purchase_aging", "name": "Purchase Aging Report", "icon": "hourglass", "description": "Accounts payable aging analysis and due date schedule."},
             {"id": "cashflow", "name": "Cashflow", "icon": "water", "description": "Cash inflow vs outflow trends and liquidity position."},
             {"id": "balance_sheet", "name": "Balance Sheet", "icon": "grid", "description": "Assets, liabilities, working capital and owner's net equity."},
+            {"id": "trial_balance", "name": "Trial Balance", "icon": "scale", "description": "Double-entry trial balance verifying debit equals credit across Assets, Liabilities, Income and Expenses."},
+            {"id": "general_ledger", "name": "General Ledger", "icon": "library", "description": "Master nominal ledger by account: Bank Accounts, Cash in Hand, Paytm Clearing, Debtors, Creditors, Sales, Purchases and Bank Charges."},
+            {"id": "settlement_reconciliation", "name": "PG Settlement Reconciliation", "icon": "card", "description": "Payment Gateway (Paytm) collection audit, settlement deduction charges, net bank credits and clearing account reconciliation."},
         ]
     },
     {
@@ -629,6 +632,10 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
             # 2. Account resolver function
             def resolve_acc(item):
                 mode = str(item.get("payment_mode") or item.get("mode") or "").lower()
+                # 0. Check for Payment Gateway deduction at source
+                if item.get("deducted_at_source") or any(k in mode for k in ["pg_deduction", "gateway_deduction", "settlement_deduction"]):
+                    return None, "Paytm Clearing (Deducted at Source)", "PG", "pg_deduction"
+
                 b_id = item.get("bank_id") or item.get("bank_account_id")
                 b_name = item.get("bank_name") or ""
                 acc_no = str(item.get("account_no") or "")
@@ -726,7 +733,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"_id": 0}
                 ).to_list(5000)
                 for exp in prior_expenses:
-                    acc_id, _, _, _ = resolve_acc(exp)
+                    acc_id, _, _, acc_grp = resolve_acc(exp)
+                    if not acc_id or acc_grp == "pg_deduction":
+                        continue
                     amt = float(exp.get("amount") or 0.0)
                     if amt > 0:
                         running_balances[acc_id] = running_balances.get(acc_id, 0.0) - amt
@@ -741,7 +750,14 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     w_from = c.get("withdraw_from")
                     d_to = c.get("deposit_to")
                     ttype = c.get("transfer_type")
-                    if w_from == "Cash in Hand" or ttype == "cash_to_bank":
+                    if ttype == "pg_settlement":
+                        tgt = d_to if d_to in running_balances else sbi_id
+                        if tgt in running_balances:
+                            running_balances[tgt] += amt
+                        continue
+                    elif ttype == "pg_settlement_clearing":
+                        continue
+                    elif w_from == "Cash in Hand" or ttype == "cash_to_bank":
                         running_balances["cash_in_hand"] -= amt
                         tgt = d_to if d_to in running_balances else sbi_id
                         if tgt in running_balances:
@@ -886,6 +902,9 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
 
                     amt = float(e.get("amount") or 0.0)
                     acc_id, acc_name, acc_tag, acc_grp = resolve_acc(e)
+                    if not acc_id or acc_grp == "pg_deduction":
+                        # Deducted at source by gateway, not drawn from cash/bank accounts
+                        continue
                     e_id = e.get("id") or str(e.get("_id", ""))
 
                     entries.append({
@@ -933,7 +952,41 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                 ttype = ct.get("transfer_type") or "contra"
                 v_no = ct.get("reference_no") or ct.get("voucher_no") or f"CONTRA-{c_id[:6]}"
 
-                if w_from == "Cash in Hand" or ttype == "cash_to_bank":
+                if ttype == "pg_settlement":
+                    target_b = next((b for b in all_banks if b.get("id") == d_to), None)
+                    t_name = target_b.get("name") if target_b else ("State Bank of India" if d_to == sbi_id else "Axis Bank")
+                    t_tag = "SBI" if (d_to == sbi_id or "sbi" in t_name.lower()) else "Axis"
+                    t_grp = "sbi" if t_tag == "SBI" else "axis"
+                    entries.append({
+                        "date": d,
+                        "ref_no": ct.get("reference") or ct.get("settlement_id") or v_no,
+                        "type": "PG Settlement Credit",
+                        "stream": "New",
+                        "is_old_accounting": False,
+                        "party": f"Paytm Settlement ({ct.get('reference') or 'Net Credit'})",
+                        "mode": "PAYTM",
+                        "in_amount": amt,
+                        "out_amount": 0.0,
+                        "receipt_by_cash": 0.0,
+                        "receipt_in_ac": amt,
+                        "payment_by_ac": 0.0,
+                        "pay_out_by_cash": 0.0,
+                        "account_id": d_to,
+                        "account_name": t_name,
+                        "account_tag": t_tag,
+                        "account_group": t_grp,
+                        "voucher_id": c_id,
+                        "voucher_type": "pg_settlement",
+                        "withdraw_from": w_from,
+                        "deposit_to": d_to,
+                        "can_view": True,
+                        "can_edit": False,
+                        "can_delete": True,
+                    })
+                    continue
+                elif ttype == "pg_settlement_clearing":
+                    continue
+                elif w_from == "Cash in Hand" or ttype == "cash_to_bank":
                     desc = f"Cash Deposit to Bank ({d_to})"
                     p_mode = "CONTRA (CASH->BANK)"
                     rec_cash = 0.0
@@ -1526,6 +1579,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     amt = float(inc.get("amount") or 0.0)
                     if amt <= 0: continue
                     mode = (inc.get("payment_mode") or "cash").lower()
+                    if any(kw in mode for kw in ["paytm", "gateway"]):
+                        continue
                     splits = inc.get("payment_splits") or []
                     if splits:
                         for ps in splits:
@@ -1554,6 +1609,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"_id": 0}
                 ).to_list(5000)
                 for exp in prior_expenses:
+                    if exp.get("deducted_at_source") or any(k in str(exp.get("payment_mode") or "").lower() for k in ["pg_deduction", "gateway_deduction"]):
+                        continue
                     amt = float(exp.get("amount") or 0.0)
                     if amt <= 0: continue
                     mode = str(exp.get("payment_mode") or "cash").lower()
@@ -1577,7 +1634,14 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     w_from = c.get("withdraw_from")
                     d_to = c.get("deposit_to")
                     ttype = c.get("transfer_type")
-                    if w_from == "Cash in Hand" or ttype == "cash_to_bank":
+                    if ttype == "pg_settlement":
+                        tgt = d_to if d_to in running_balances else sbi_id
+                        if tgt in running_balances:
+                            running_balances[tgt] += amt
+                        continue
+                    elif ttype == "pg_settlement_clearing":
+                        continue
+                    elif w_from == "Cash in Hand" or ttype == "cash_to_bank":
                         running_balances["cash_in_hand"] -= amt
                         tgt = d_to if d_to in running_balances else sbi_id
                         if tgt in running_balances:
@@ -1787,6 +1851,28 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     w_from = ct.get("withdraw_from")
                     d_to = ct.get("deposit_to")
                     ttype = ct.get("transfer_type")
+
+                    if ttype == "pg_settlement":
+                        if d_to == sel_bank_id:
+                            entries.append({
+                                "date": d,
+                                "voucher_no": ct.get("reference") or ct_id,
+                                "voucher_id": ct_id,
+                                "voucher_type": "pg_settlement",
+                                "trans_type": "Payment Gateway Settlement (Paytm)",
+                                "party": "Paytm Clearing Account",
+                                "particulars": ct.get("description") or f"Paytm Net Bank Settlement (Ref: {ct.get('reference')})",
+                                "mode": "PAYTM",
+                                "ref_no": ct.get("reference") or ct.get("utr_no") or "",
+                                "receipt": amt,
+                                "payment": 0.0,
+                                "can_view": True,
+                                "can_edit": False,
+                                "can_delete": True,
+                            })
+                        continue
+                    elif ttype == "pg_settlement_clearing":
+                        continue
 
                     # Inflow to selected bank (e.g. Cash in Hand deposited to Bank, or other bank transfer)
                     if d_to == sel_bank_id or (sel_bank_id == sbi_id and ttype == "cash_to_bank" and not d_to):
@@ -2025,6 +2111,8 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
 
                 # 3. Cash Expenses in range
                 for exp in expenses:
+                    if exp.get("deducted_at_source") or any(k in str(exp.get("payment_mode") or "").lower() for k in ["pg_deduction", "gateway_deduction"]):
+                        continue
                     d = exp.get("date")
                     if not in_date_range(d): continue
                     amt = float(exp.get("amount") or 0.0)
@@ -3230,6 +3318,394 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
                     {"key": "status", "label": "Status"},
                 ],
                 "rows": rows
+            }
+
+        elif report_type == "settlement_reconciliation":
+            # 1. Total collections via Paytm
+            collections = await db.bank_transactions.find(
+                {"transfer_type": "pg_collection"},
+                {"_id": 0}
+            ).to_list(5000)
+            tot_coll_gross = sum(float(c.get("amount") or 0.0) for c in collections)
+
+            income_pg = await db.income.find(
+                {"payment_mode": {"$regex": "paytm|gateway", "$options": "i"}},
+                {"_id": 0}
+            ).to_list(5000)
+            tot_coll_gross = max(tot_coll_gross, sum(float(r.get("amount") or 0.0) for r in income_pg))
+
+            # Settlements
+            settlements = await db.pg_settlements.find({}, {"_id": 0}).sort([("date", -1), ("created_at", -1)]).to_list(1000)
+            filtered_settlements = [s for s in settlements if in_date_range(s.get("date"))]
+
+            tot_gross_settled = sum(float(s.get("gross_amount") or 0.0) for s in filtered_settlements)
+            tot_charges = sum(float(s.get("total_charges") or 0.0) for s in filtered_settlements)
+            tot_net_credited = sum(float(s.get("net_amount") or 0.0) for s in filtered_settlements)
+
+            cl_acc = await db.bank_accounts.find_one({"id": "acc_paytm_clearing"}, {"_id": 0})
+            clearing_balance = float(cl_acc.get("opening_balance") or 0.0) if cl_acc else round(tot_coll_gross - tot_gross_settled, 2)
+
+            rows = []
+            for s in filtered_settlements:
+                j = s.get("journal_entry", {})
+                dr_b = j.get("dr_bank", {})
+                dr_e = j.get("dr_expense", {})
+                cr_c = j.get("cr_clearing", {})
+                journal_str = f"Dr {dr_b.get('account_name', 'Bank')} ₹{float(dr_b.get('amount') or 0):,.2f} | Dr Charges ₹{float(dr_e.get('amount') or 0):,.2f} | Cr Clearing ₹{float(cr_c.get('amount') or 0):,.2f}"
+
+                rows.append({
+                    "date": s.get("date"),
+                    "settlement_no": s.get("settlement_no") or s.get("id"),
+                    "settlement_ref": s.get("settlement_ref"),
+                    "bank_name": s.get("bank_name"),
+                    "gross_amount": inr(s.get("gross_amount")),
+                    "gross_raw": float(s.get("gross_amount") or 0),
+                    "charges": inr(s.get("settlement_charges")),
+                    "tax": inr(s.get("tax_amount") or 0),
+                    "total_charges": inr(s.get("total_charges")),
+                    "net_amount": inr(s.get("net_amount")),
+                    "net_raw": float(s.get("net_amount") or 0),
+                    "journal_entry": journal_str,
+                    "utr_no": s.get("utr_no") or "—",
+                    "status": "SETTLED",
+                })
+
+            if search:
+                s_lower = search.lower()
+                rows = [r for r in rows if s_lower in r["settlement_no"].lower() or s_lower in r["settlement_ref"].lower() or s_lower in r["bank_name"].lower()]
+
+            return {
+                "report_type": report_type,
+                "report_title": "Payment Gateway Settlement Reconciliation (Paytm)",
+                "category": "Core Financial / Transaction Reports",
+                "kpis": [
+                    {"label": "Total Gross Collections", "value": inr(tot_coll_gross), "numeric": tot_coll_gross, "color": "#059669"},
+                    {"label": "Gross Settled to Bank", "value": inr(tot_gross_settled), "numeric": tot_gross_settled, "color": "#2563EB"},
+                    {"label": "Settlement Charges Deducted", "value": inr(tot_charges), "numeric": tot_charges, "color": "#DC2626"},
+                    {"label": "Net Credited to Bank", "value": inr(tot_net_credited), "numeric": tot_net_credited, "color": "#059669"},
+                    {"label": "Paytm Clearing Balance", "value": inr(clearing_balance), "numeric": clearing_balance, "color": "#7C3AED"},
+                ],
+                "columns": [
+                    {"key": "date", "label": "Settlement Date"},
+                    {"key": "settlement_no", "label": "Settlement #"},
+                    {"key": "settlement_ref", "label": "Batch / Ref #"},
+                    {"key": "bank_name", "label": "Credited Bank"},
+                    {"key": "gross_amount", "label": "Gross Amount"},
+                    {"key": "total_charges", "label": "Charges & Taxes"},
+                    {"key": "net_amount", "label": "Net Bank Credit"},
+                    {"key": "journal_entry", "label": "Journal Entry (Dr / Cr)"},
+                    {"key": "utr_no", "label": "UTR / Bank Ref"},
+                    {"key": "status", "label": "Status"},
+                ],
+                "rows": rows,
+                "clearing_account_balance": clearing_balance,
+                "reconciliation_status": "Reconciled" if abs(clearing_balance) < 0.01 else "In Transit",
+            }
+
+        elif report_type == "trial_balance":
+            all_banks_tb = await db.bank_accounts.find({"is_active": True}, {"_id": 0}).to_list(100)
+            c_setting = await db.settings.find_one({"key": "cash_opening_balance"}, {"_id": 0})
+            cash_ob_val = float(c_setting.get("value", 0.0)) if c_setting else 0.0
+
+            rows = []
+            tot_debit = 0.0
+            tot_credit = 0.0
+
+            # Commercial Banks
+            for b in all_banks_tb:
+                bal = float(b.get("opening_balance") or 0.0)
+                b_name = b.get("name") or b.get("bank_name") or "Bank"
+                if b.get("is_clearing") or b.get("id") == "acc_paytm_clearing":
+                    continue
+                if bal >= 0:
+                    rows.append({"account_code": "1001", "account_name": f"{b_name} (Asset)", "account_type": "Bank / Asset", "debit": inr(bal), "credit": "—", "dr_raw": bal, "cr_raw": 0.0})
+                    tot_debit += bal
+                else:
+                    rows.append({"account_code": "2001", "account_name": f"{b_name} (OD / Liability)", "account_type": "Bank OD", "debit": "—", "credit": inr(abs(bal)), "dr_raw": 0.0, "cr_raw": abs(bal)})
+                    tot_credit += abs(bal)
+
+            # Cash in Hand
+            cash_summary_calc = cash_ob_val
+            for s in sales:
+                if (s.get("payment_mode") or "").lower() == "cash":
+                    cash_summary_calc += float(s.get("paid_amount") or s.get("total_amount") or 0.0)
+            for inc in incomes:
+                if (inc.get("payment_mode") or "").lower() == "cash":
+                    cash_summary_calc += float(inc.get("amount") or 0.0)
+            for exp in expenses:
+                if (exp.get("payment_mode") or "").lower() == "cash" and not exp.get("deducted_at_source"):
+                    cash_summary_calc -= float(exp.get("amount") or 0.0)
+            contra_txs = await db.bank_transactions.find({"$or": [{"withdraw_from": "Cash in Hand"}, {"deposit_to": "Cash in Hand"}]}, {"_id": 0}).to_list(1000)
+            for ct in contra_txs:
+                c_amt = float(ct.get("amount") or 0.0)
+                if ct.get("deposit_to") == "Cash in Hand":
+                    cash_summary_calc += c_amt
+                elif ct.get("withdraw_from") == "Cash in Hand":
+                    cash_summary_calc -= c_amt
+
+            cash_summary_calc = round(cash_summary_calc, 2)
+            if cash_summary_calc >= 0:
+                rows.append({"account_code": "1002", "account_name": "Cash in Hand (Physical Cash Register)", "account_type": "Cash / Asset", "debit": inr(cash_summary_calc), "credit": "—", "dr_raw": cash_summary_calc, "cr_raw": 0.0})
+                tot_debit += cash_summary_calc
+            else:
+                rows.append({"account_code": "1002", "account_name": "Cash in Hand (Negative Cash)", "account_type": "Cash / Asset", "debit": "—", "credit": inr(abs(cash_summary_calc)), "dr_raw": 0.0, "cr_raw": abs(cash_summary_calc)})
+                tot_credit += abs(cash_summary_calc)
+
+            # Paytm Clearing Account (Transit)
+            cl_acc_doc = await db.bank_accounts.find_one({"id": "acc_paytm_clearing"}, {"_id": 0})
+            cl_bal = float(cl_acc_doc.get("opening_balance") or 0.0) if cl_acc_doc else 0.0
+            if abs(cl_bal) > 0.001:
+                if cl_bal > 0:
+                    rows.append({"account_code": "1003", "account_name": "Paytm Clearing Account (Transit Receivable)", "account_type": "Current Asset", "debit": inr(cl_bal), "credit": "—", "dr_raw": cl_bal, "cr_raw": 0.0})
+                    tot_debit += cl_bal
+                else:
+                    rows.append({"account_code": "2003", "account_name": "Paytm Clearing Account (Transit Payable)", "account_type": "Current Liability", "debit": "—", "credit": inr(abs(cl_bal)), "dr_raw": 0.0, "cr_raw": abs(cl_bal)})
+                    tot_credit += abs(cl_bal)
+            else:
+                rows.append({"account_code": "1003", "account_name": "Paytm Clearing Account (Reconciled ₹0.00)", "account_type": "Transit Ledger", "debit": "₹0.00", "credit": "—", "dr_raw": 0.0, "cr_raw": 0.0})
+
+            # Sundry Debtors
+            tot_receivable = sum(max(0.0, float(s.get("balance_amount") or s.get("balance") or 0.0)) for s in sales)
+            if tot_receivable > 0:
+                rows.append({"account_code": "1100", "account_name": "Sundry Debtors (Accounts Receivable)", "account_type": "Current Asset", "debit": inr(tot_receivable), "credit": "—", "dr_raw": tot_receivable, "cr_raw": 0.0})
+                tot_debit += tot_receivable
+
+            # Sales Revenue
+            tot_sales_rev = sum(float(s.get("total_amount") or s.get("total") or 0.0) for s in sales)
+            if tot_sales_rev > 0:
+                rows.append({"account_code": "4000", "account_name": "Sales Revenue (Total Invoiced Revenue)", "account_type": "Operating Revenue", "debit": "—", "credit": inr(tot_sales_rev), "dr_raw": 0.0, "cr_raw": tot_sales_rev})
+                tot_credit += tot_sales_rev
+
+            # Other Income
+            tot_other_inc = sum(float(i.get("amount") or 0.0) for i in incomes if not i.get("sale_invoice_id"))
+            if tot_other_inc > 0:
+                rows.append({"account_code": "4100", "account_name": "Other Direct Income / Receipts", "account_type": "Direct Income", "debit": "—", "credit": inr(tot_other_inc), "dr_raw": 0.0, "cr_raw": tot_other_inc})
+                tot_credit += tot_other_inc
+
+            # Purchases
+            tot_purchases = sum(float(p.get("total_amount") or 0.0) for p in purchases)
+            if tot_purchases > 0:
+                rows.append({"account_code": "5000", "account_name": "Purchases & Procurement (COGS)", "account_type": "Direct Cost", "debit": inr(tot_purchases), "credit": "—", "dr_raw": tot_purchases, "cr_raw": 0.0})
+                tot_debit += tot_purchases
+
+            # Operating Expenses & Bank Charges
+            exp_categories = {}
+            for e in expenses:
+                c_name = e.get("category") or "General Business Expenses"
+                amt = float(e.get("amount") or 0.0)
+                exp_categories[c_name] = exp_categories.get(c_name, 0.0) + amt
+
+            exp_code = 5100
+            for c_name, c_amt in sorted(exp_categories.items()):
+                rows.append({"account_code": str(exp_code), "account_name": f"Expense: {c_name}", "account_type": "Operating Expense", "debit": inr(c_amt), "credit": "—", "dr_raw": c_amt, "cr_raw": 0.0})
+                tot_debit += c_amt
+                exp_code += 10
+
+            # Sundry Creditors
+            tot_payable = sum(max(0.0, float(p.get("balance_amount") or p.get("balance") or 0.0)) for p in purchases)
+            if tot_payable > 0:
+                rows.append({"account_code": "2100", "account_name": "Sundry Creditors (Accounts Payable)", "account_type": "Current Liability", "debit": "—", "credit": inr(tot_payable), "dr_raw": 0.0, "cr_raw": tot_payable})
+                tot_credit += tot_payable
+
+            # Balancing Equity / Capital Account
+            diff = round(tot_debit - tot_credit, 2)
+            if abs(diff) > 0.001:
+                if diff > 0:
+                    rows.append({"account_code": "3000", "account_name": "Proprietor's Capital / Opening Balance Equity", "account_type": "Owner's Equity", "debit": "—", "credit": inr(diff), "dr_raw": 0.0, "cr_raw": diff})
+                    tot_credit += diff
+                else:
+                    rows.append({"account_code": "3000", "account_name": "Retained Earnings / Equity Adjustment", "account_type": "Owner's Equity", "debit": inr(abs(diff)), "credit": "—", "dr_raw": abs(diff), "cr_raw": 0.0})
+                    tot_debit += abs(diff)
+
+            tot_debit = round(tot_debit, 2)
+            tot_credit = round(tot_credit, 2)
+            is_balanced = abs(tot_debit - tot_credit) < 0.01
+
+            if search:
+                s_lower = search.lower()
+                rows = [r for r in rows if s_lower in r["account_name"].lower() or s_lower in r["account_code"].lower()]
+
+            return {
+                "report_type": report_type,
+                "report_title": "Trial Balance Statement",
+                "category": "Core Financial / Transaction Reports",
+                "kpis": [
+                    {"label": "Total Debits (Dr)", "value": inr(tot_debit), "numeric": tot_debit, "color": "#059669"},
+                    {"label": "Total Credits (Cr)", "value": inr(tot_credit), "numeric": tot_credit, "color": "#2563EB"},
+                    {"label": "Difference", "value": inr(abs(tot_debit - tot_credit)), "numeric": abs(tot_debit - tot_credit), "color": "#059669" if is_balanced else "#DC2626"},
+                    {"label": "Verification Status", "value": "Balanced" if is_balanced else "Mismatch", "color": "#059669" if is_balanced else "#DC2626"},
+                ],
+                "columns": [
+                    {"key": "account_code", "label": "Account #"},
+                    {"key": "account_name", "label": "Account Description / Head"},
+                    {"key": "account_type", "label": "Classification"},
+                    {"key": "debit", "label": "Debit (Dr.)"},
+                    {"key": "credit", "label": "Credit (Cr.)"},
+                ],
+                "rows": rows,
+                "column_totals": {
+                    "account_code": "TOTAL",
+                    "account_name": "Trial Balance Total",
+                    "account_type": "All Accounts",
+                    "debit": inr(tot_debit),
+                    "credit": inr(tot_credit),
+                },
+                "is_balanced": is_balanced,
+            }
+
+        elif report_type == "general_ledger":
+            gl_entries = []
+            txs = await db.bank_transactions.find({}, {"_id": 0}).sort("transfer_date", 1).to_list(5000)
+            for t in txs:
+                d = t.get("transfer_date")
+                if not in_date_range(d): continue
+                amt = float(t.get("amount") or 0.0)
+                ttype = t.get("transfer_type")
+                w_from = t.get("withdraw_from") or ""
+
+                if ttype == "pg_collection":
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("reference") or t.get("source_voucher") or t.get("id"),
+                        "account_name": "Paytm Clearing Account",
+                        "particulars": f"Gross Collection from {w_from}",
+                        "debit": amt,
+                        "credit": 0.0,
+                    })
+                elif ttype == "pg_settlement":
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("reference") or t.get("id"),
+                        "account_name": t.get("deposit_to_name") or "Bank Account",
+                        "particulars": f"Paytm Net Settlement Credit (Ref: {t.get('reference')})",
+                        "debit": amt,
+                        "credit": 0.0,
+                    })
+                elif ttype == "pg_settlement_clearing":
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("reference") or t.get("id"),
+                        "account_name": "Paytm Clearing Account",
+                        "particulars": f"Settlement Outflow to {t.get('deposit_to_name')}",
+                        "debit": 0.0,
+                        "credit": amt,
+                    })
+                elif ttype == "cash_to_bank":
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("id"),
+                        "account_name": t.get("deposit_to_name") or "Bank Account",
+                        "particulars": "Cash Deposited to Bank",
+                        "debit": amt,
+                        "credit": 0.0,
+                    })
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("id"),
+                        "account_name": "Cash in Hand",
+                        "particulars": f"Deposit Outflow to {t.get('deposit_to_name')}",
+                        "debit": 0.0,
+                        "credit": amt,
+                    })
+                elif ttype == "bank_to_cash":
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("id"),
+                        "account_name": "Cash in Hand",
+                        "particulars": f"Cash Withdrawn from {t.get('withdraw_from_name')}",
+                        "debit": amt,
+                        "credit": 0.0,
+                    })
+                    gl_entries.append({
+                        "date": d,
+                        "voucher_no": t.get("id"),
+                        "account_name": t.get("withdraw_from_name") or "Bank Account",
+                        "particulars": "Withdrawal Outflow to Cash",
+                        "debit": 0.0,
+                        "credit": amt,
+                    })
+
+            for s in sales:
+                d = s.get("date") or s.get("invoice_date")
+                if not in_date_range(d): continue
+                tot = float(s.get("total_amount") or s.get("total") or 0.0)
+                inv_no = s.get("invoice_no") or s.get("invoice_number") or "SI"
+                p_name = s.get("party_name") or "Customer"
+                gl_entries.append({
+                    "date": d,
+                    "voucher_no": inv_no,
+                    "account_name": "Sales Revenue Account",
+                    "particulars": f"Invoice to {p_name}",
+                    "debit": 0.0,
+                    "credit": tot,
+                })
+
+            for exp in expenses:
+                d = exp.get("date")
+                if not in_date_range(d): continue
+                amt = float(exp.get("amount") or 0.0)
+                cat = exp.get("category") or "Operating Expense"
+                exp_no = exp.get("expense_no") or exp.get("voucher_no") or "EXP"
+                gl_entries.append({
+                    "date": d,
+                    "voucher_no": exp_no,
+                    "account_name": f"Expense — {cat}",
+                    "particulars": exp.get("description") or exp.get("vendor") or "Expense Booked",
+                    "debit": amt,
+                    "credit": 0.0,
+                })
+
+            gl_entries.sort(key=lambda x: (x.get("account_name", ""), str(x.get("date") or "")))
+
+            target_acc = (search or "").strip().lower()
+            rows = []
+            cur_acc = None
+            running = 0.0
+            tot_dr = 0.0
+            tot_cr = 0.0
+
+            for it in gl_entries:
+                acc = it["account_name"]
+                if target_acc and target_acc not in acc.lower():
+                    continue
+                if acc != cur_acc:
+                    cur_acc = acc
+                    running = 0.0
+                dr = it["debit"]
+                cr = it["credit"]
+                running = round(running + dr - cr, 2)
+                tot_dr += dr
+                tot_cr += cr
+
+                rows.append({
+                    "date": it["date"],
+                    "voucher_no": it["voucher_no"],
+                    "account_name": acc,
+                    "particulars": it["particulars"],
+                    "debit": inr(dr) if dr > 0 else "—",
+                    "credit": inr(cr) if cr > 0 else "—",
+                    "balance": inr(running),
+                })
+
+            return {
+                "report_type": report_type,
+                "report_title": "General Ledger (Double-Entry Nominal Ledger)",
+                "category": "Core Financial / Transaction Reports",
+                "kpis": [
+                    {"label": "Total Ledger Debits", "value": inr(tot_dr), "numeric": tot_dr, "color": "#059669"},
+                    {"label": "Total Ledger Credits", "value": inr(tot_cr), "numeric": tot_cr, "color": "#2563EB"},
+                    {"label": "Total Postings", "value": str(len(rows)), "numeric": len(rows), "color": "#7C3AED"},
+                ],
+                "columns": [
+                    {"key": "date", "label": "Date"},
+                    {"key": "account_name", "label": "Account Head"},
+                    {"key": "voucher_no", "label": "Voucher / Ref #"},
+                    {"key": "particulars", "label": "Particulars / Description"},
+                    {"key": "debit", "label": "Debit (Dr.)"},
+                    {"key": "credit", "label": "Credit (Cr.)"},
+                    {"key": "balance", "label": "Running Balance"},
+                ],
+                "rows": rows,
             }
 
         # Fallback generic report structure

@@ -3797,6 +3797,25 @@ async def get_next_payment_in_no(
 
 
 
+async def _ensure_paytm_clearing_account():
+    existing = await db.bank_accounts.find_one({"id": "acc_paytm_clearing"})
+    if not existing:
+        doc = {
+            "id": "acc_paytm_clearing",
+            "name": "Paytm Clearing Account",
+            "bank_name": "Paytm Payment Gateway",
+            "account_no": "PAYTM-CLEARING-01",
+            "ifsc": "PYTM0123456",
+            "opening_balance": 0.0,
+            "account_type": "clearing",
+            "is_clearing": True,
+            "is_active": True,
+            "created_at": now_utc(),
+        }
+        await db.bank_accounts.insert_one(doc)
+    return "acc_paytm_clearing"
+
+
 async def _record_payment_receipt_ledgers(
     voucher_type: str,
     voucher_no: str,
@@ -3821,6 +3840,35 @@ async def _record_payment_receipt_ledgers(
         mode = str(item.get("payment_mode") or item.get("mode") or "cash").lower()
         ref = str(item.get("reference") or item.get("ref") or "").strip()
         b_id = item.get("bank_account_id") or item.get("bank_id") or default_bank_id
+
+        # 0. Paytm / Payment Gateway -> Credit to Paytm Clearing Account (acc_paytm_clearing)
+        if any(kw in mode for kw in ["paytm", "gateway"]):
+            await _ensure_paytm_clearing_account()
+            await db.bank_accounts.update_one(
+                {"id": "acc_paytm_clearing"},
+                {"$inc": {"opening_balance": amt}},
+                upsert=True
+            )
+            tx_record = {
+                "id": f"tx_{new_id()}",
+                "transfer_type": "pg_collection",
+                "direction": "deposit",
+                "transfer_date": date_str,
+                "deposit_to": "acc_paytm_clearing",
+                "deposit_to_name": "Paytm Clearing Account",
+                "withdraw_from": party_name,
+                "amount": amt,
+                "description": f"Customer Collection via PAYTM against {voucher_no} ({party_name})" + (f" Ref: {ref}" if ref else ""),
+                "reference": ref or voucher_no,
+                "source_voucher": voucher_no,
+                "settlement_status": "unsettled",
+                "settled_amount": 0.0,
+                "unsettled_balance": amt,
+                "created_at": now_utc(),
+                "created_by": current_user_id,
+            }
+            await db.bank_transactions.insert_one(tx_record)
+            continue
 
         # 1. Bank Transfer / Online / UPI
         if any(kw in mode for kw in ["bank", "online", "upi", "neft", "rtgs", "imps", "card"]):
@@ -3982,6 +4030,14 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
             inc_dict["bank_account_id"] = target_bank["id"]
             inc_dict["bank_name"] = target_bank.get("bank_name") or target_bank.get("name")
             inc_dict["account_no"] = target_bank.get("account_no")
+
+    # Payment Gateway (Paytm) settlement tracking
+    eff_p_mode = str(inc_dict.get("payment_mode") or "").lower()
+    if any(k in eff_p_mode for k in ["paytm", "gateway"]):
+        inc_dict["settlement_status"] = "unsettled"
+        inc_dict["settled_amount"] = 0.0
+        inc_dict["unsettled_balance"] = float(inc_dict.get("amount") or 0.0)
+        inc_dict["gateway"] = "paytm"
 
     inc = Income(
         **inc_dict,

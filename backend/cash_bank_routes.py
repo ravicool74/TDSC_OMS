@@ -68,6 +68,18 @@ class LoanAccountCreate(BaseModel):
     duration_months: int = Field(default=36, gt=0)
     processing_fee: float = Field(default=0.0, ge=0)
 
+class SettlementPayload(BaseModel):
+    gateway: str = Field(default="paytm")
+    date: str = Field(default_factory=lambda: date.today().isoformat())
+    settlement_ref: str = Field(..., description="Settlement reference or batch number from Paytm")
+    utr_no: Optional[str] = Field(default="", description="Bank transfer UTR number")
+    bank_account_id: str = Field(..., description="Target bank account ID (e.g. SBI, Axis)")
+    gross_amount: float = Field(..., gt=0, description="Gross collection amount settled by gateway")
+    settlement_charges: float = Field(default=0.0, ge=0, description="Settlement charges / fee deducted by Paytm")
+    tax_amount: Optional[float] = Field(default=0.0, ge=0, description="GST / tax on settlement charges")
+    notes: Optional[str] = None
+    linked_receipt_ids: Optional[List[str]] = Field(default_factory=list, description="IDs of customer receipts settled in this batch")
+
 def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_manager, log_audit=None, prefix="/accounting/cash-bank"):
     router = APIRouter(prefix=prefix, tags=["cash-bank"])
 
@@ -878,6 +890,369 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
         res = await db.bank_transactions.delete_one({"id": tx_id})
         if log_audit:
             await log_audit(db, current, "cash_bank_contra", "delete", tx_id, cur, None)
+        return {"deleted": res.deleted_count}
+
+    # =========================================================================
+    # 7. Payment Gateway Settlement Module (Paytm & PG Settlements)
+    # Scenario: Gross Customer Receipt -> Paytm Clearing Account
+    # Settlement: Dr Bank (Net), Dr Settlement Charges Expense, Cr Clearing (Gross)
+    # =========================================================================
+    @router.get("/settlements")
+    async def list_settlements(current: Any = Depends(get_current_user)):
+        docs = await db.pg_settlements.find({}, {"_id": 0}).sort([("date", -1), ("created_at", -1)]).to_list(1000)
+        return clean_doc(docs)
+
+    @router.get("/settlements/next-no")
+    async def get_next_settlement_no(current: Any = Depends(get_current_user)):
+        cnt = await db.pg_settlements.count_documents({})
+        return {"next_no": f"PAYTM-SETTLE-{cnt + 1:04d}"}
+
+    @router.get("/settlements/pending-receipts")
+    async def get_pending_settlement_receipts(current: Any = Depends(get_current_user)):
+        # 1. Unsettled receipts in db.income
+        q_inc = {
+            "payment_mode": {"$regex": "paytm|gateway", "$options": "i"},
+            "settlement_status": {"$ne": "settled"}
+        }
+        income_recs = await db.income.find(q_inc, {"_id": 0}).sort("date", -1).to_list(500)
+
+        # 2. Unsettled pg_collection transactions in db.bank_transactions
+        q_tx = {
+            "transfer_type": "pg_collection",
+            "settlement_status": {"$ne": "settled"}
+        }
+        tx_recs = await db.bank_transactions.find(q_tx, {"_id": 0}).sort("transfer_date", -1).to_list(500)
+
+        # Merge deduplicated list
+        seen_keys = set()
+        merged = []
+        for r in income_recs:
+            v_no = r.get("income_no") or r.get("voucher_no") or r.get("id")
+            seen_keys.add(v_no)
+            merged.append({
+                "id": r.get("id") or str(r.get("_id", "")),
+                "voucher_no": v_no,
+                "date": r.get("date"),
+                "party": r.get("customer_name") or r.get("party_name") or "Customer",
+                "amount": float(r.get("amount") or 0.0),
+                "payment_mode": r.get("payment_mode") or "paytm",
+                "reference": r.get("reference") or "",
+                "settlement_status": r.get("settlement_status") or "unsettled"
+            })
+
+        for tx in tx_recs:
+            ref = tx.get("source_voucher") or tx.get("reference") or tx.get("id")
+            if ref in seen_keys:
+                continue
+            merged.append({
+                "id": tx.get("id"),
+                "voucher_no": ref,
+                "date": tx.get("transfer_date"),
+                "party": tx.get("withdraw_from") or "Customer",
+                "amount": float(tx.get("amount") or 0.0),
+                "payment_mode": "paytm",
+                "reference": tx.get("reference") or "",
+                "settlement_status": tx.get("settlement_status") or "unsettled"
+            })
+
+        return clean_doc(merged)
+
+    @router.get("/settlements/reconciliation")
+    async def get_settlement_reconciliation(current: Any = Depends(get_current_user)):
+        # 1. Total Paytm Collections (Gross In)
+        collections = await db.bank_transactions.find(
+            {"transfer_type": "pg_collection"},
+            {"_id": 0}
+        ).to_list(5000)
+        tot_coll_from_tx = sum(float(c.get("amount") or 0.0) for c in collections)
+
+        income_pg = await db.income.find(
+            {"payment_mode": {"$regex": "paytm|gateway", "$options": "i"}},
+            {"_id": 0}
+        ).to_list(5000)
+        tot_coll_from_inc = sum(float(r.get("amount") or 0.0) for r in income_pg)
+        tot_collected_gross = max(tot_coll_from_tx, tot_coll_from_inc)
+
+        # 2. Settlements
+        settlements = await db.pg_settlements.find({}, {"_id": 0}).sort("date", -1).to_list(1000)
+        tot_settled_gross = sum(float(s.get("gross_amount") or 0.0) for s in settlements)
+        tot_charges_deducted = sum(float(s.get("total_charges") or 0.0) for s in settlements)
+        tot_net_credited = sum(float(s.get("net_amount") or 0.0) for s in settlements)
+
+        # 3. Clearing Account Balance
+        cl_acc = await db.bank_accounts.find_one({"id": "acc_paytm_clearing"}, {"_id": 0})
+        raw_balance = float(cl_acc.get("opening_balance") or 0.0) if cl_acc else round(tot_collected_gross - tot_settled_gross, 2)
+        clearing_balance = round(raw_balance, 2)
+
+        # 4. Pending Unsettled Receipts
+        pending_receipts = [
+            r for r in income_pg if r.get("settlement_status") != "settled"
+        ]
+        pending_unsettled_amount = sum(float(r.get("amount") or 0.0) for r in pending_receipts)
+
+        diff = round(clearing_balance, 2)
+        is_balanced = abs(diff) < 0.01
+
+        return {
+            "total_collected_gross": round(tot_collected_gross, 2),
+            "total_settled_gross": round(tot_settled_gross, 2),
+            "total_charges_deducted": round(tot_charges_deducted, 2),
+            "total_net_bank_credited": round(tot_net_credited, 2),
+            "clearing_account_balance": clearing_balance,
+            "pending_unsettled_count": len(pending_receipts),
+            "pending_unsettled_amount": round(pending_unsettled_amount, 2),
+            "is_balanced": is_balanced,
+            "reconciliation_status": "Reconciled (Zero Transit Balance)" if is_balanced else f"Transit Balance: ₹{clearing_balance:,.2f}",
+            "settlements_count": len(settlements),
+        }
+
+    @router.post("/settlements")
+    async def create_settlement(payload: SettlementPayload, current: Any = Depends(get_current_user)):
+        ref_clean = payload.settlement_ref.strip()
+        if not ref_clean:
+            raise HTTPException(status_code=400, detail="Settlement reference number is required")
+
+        # 1. Target bank check
+        target_bank = await db.bank_accounts.find_one({"id": payload.bank_account_id}, {"_id": 0})
+        if not target_bank:
+            raise HTTPException(status_code=400, detail="Target bank account not found")
+        if target_bank.get("is_clearing"):
+            raise HTTPException(status_code=400, detail="Target bank cannot be a clearing account")
+
+        # 2. Calculation: Net = Gross - Charges - Taxes
+        gross = round(float(payload.gross_amount), 2)
+        charges = round(float(payload.settlement_charges or 0.0), 2)
+        tax = round(float(payload.tax_amount or 0.0), 2)
+        total_charges = round(charges + tax, 2)
+        net_amount = round(gross - total_charges, 2)
+
+        if gross <= 0:
+            raise HTTPException(status_code=400, detail="Gross collection amount must be greater than zero")
+        if net_amount <= 0:
+            raise HTTPException(status_code=400, detail="Net settlement amount must be greater than zero (charges cannot exceed gross)")
+
+        # 3. Check for duplicate reference
+        existing_ref = await db.pg_settlements.find_one({"settlement_ref": ref_clean})
+        if existing_ref:
+            raise HTTPException(status_code=400, detail=f"Settlement reference '{ref_clean}' has already been processed.")
+
+        # 4. Generate IDs
+        settlement_id = f"stl_{uuid.uuid4().hex[:12]}"
+        cnt = await db.pg_settlements.count_documents({})
+        settlement_no = f"PAYTM-SETTLE-{cnt + 1:04d}"
+        now_iso = now_utc().isoformat()
+        user_id = getattr(current, "id", None) or (current.get("id") if isinstance(current, dict) else "system")
+        bank_name = target_bank.get("name") or target_bank.get("bank_name") or "Bank Account"
+
+        # 5. Credit target physical bank account with Net Amount
+        await db.bank_accounts.update_one({"id": payload.bank_account_id}, {"$inc": {"opening_balance": net_amount}})
+        tx_bank = {
+            "id": f"tx_{uuid.uuid4().hex[:10]}",
+            "transfer_type": "pg_settlement",
+            "direction": "deposit",
+            "transfer_date": payload.date,
+            "deposit_to": payload.bank_account_id,
+            "deposit_to_name": bank_name,
+            "withdraw_from": "acc_paytm_clearing",
+            "withdraw_from_name": "Paytm Clearing Account",
+            "amount": net_amount,
+            "gross_amount": gross,
+            "settlement_charges": total_charges,
+            "description": f"Paytm Net Bank Settlement (Gross: ₹{gross:,.2f}, Charges: ₹{total_charges:,.2f}, Net: ₹{net_amount:,.2f}) Ref: {ref_clean}" + (f" UTR: {payload.utr_no.strip()}" if payload.utr_no else ""),
+            "reference": ref_clean,
+            "utr_no": payload.utr_no.strip() if payload.utr_no else "",
+            "settlement_id": settlement_id,
+            "created_at": now_iso,
+            "created_by": user_id,
+        }
+        await db.bank_transactions.insert_one(tx_bank)
+
+        # 6. Post Settlement Charges to Operating Expenses (Bank Charges)
+        # Requirement 7: Deducted at source, do not debit bank account again
+        # Requirement 8: Prevent duplicate expense posting
+        exp_id = None
+        if total_charges > 0:
+            existing_exp = await db.expenses.find_one({"linked_settlement_id": settlement_id})
+            if not existing_exp:
+                exp_id = f"exp_{uuid.uuid4().hex[:12]}"
+                exp_doc = {
+                    "id": exp_id,
+                    "expense_no": f"EXP-PG-{uuid.uuid4().hex[:6].upper()}",
+                    "date": payload.date,
+                    "expense_date": payload.date,
+                    "category": "Bank Charges",
+                    "sub_category": "Payment Gateway Charges",
+                    "vendor": "Paytm Payment Gateway",
+                    "payee": "Paytm Payment Gateway",
+                    "amount": total_charges,
+                    "payment_mode": "pg_deduction",
+                    "deducted_at_source": True,
+                    "bank_account_id": None,
+                    "bank_id": None,
+                    "account_name": "Paytm Clearing Account",
+                    "notes": f"Paytm settlement charges deducted at source for batch {ref_clean} (Gross: ₹{gross:,.2f}, Net Credit: ₹{net_amount:,.2f}, Fee: ₹{charges:,.2f}, Tax: ₹{tax:,.2f})",
+                    "description": f"Paytm Settlement Charges & GST for Ref: {ref_clean}",
+                    "linked_settlement_id": settlement_id,
+                    "settlement_ref": ref_clean,
+                    "accounting_scope": "new",
+                    "status": "approved",
+                    "approval_status": "approved",
+                    "created_at": now_iso,
+                    "created_by": user_id,
+                }
+                await db.expenses.insert_one(exp_doc)
+
+        # 7. Credit Paytm Clearing Account (Deduct gross amount from clearing balance)
+        cl_acc = await db.bank_accounts.find_one({"id": "acc_paytm_clearing"})
+        if not cl_acc:
+            await db.bank_accounts.insert_one({
+                "id": "acc_paytm_clearing",
+                "name": "Paytm Clearing Account",
+                "bank_name": "Paytm Payment Gateway",
+                "account_no": "PAYTM-CLEARING-01",
+                "ifsc": "PYTM0123456",
+                "opening_balance": 0.0,
+                "account_type": "clearing",
+                "is_clearing": True,
+                "is_active": True,
+                "created_at": now_iso,
+            })
+        await db.bank_accounts.update_one({"id": "acc_paytm_clearing"}, {"$inc": {"opening_balance": -gross}})
+
+        tx_clearing = {
+            "id": f"tx_{uuid.uuid4().hex[:10]}",
+            "transfer_type": "pg_settlement_clearing",
+            "direction": "withdrawal",
+            "transfer_date": payload.date,
+            "withdraw_from": "acc_paytm_clearing",
+            "withdraw_from_name": "Paytm Clearing Account",
+            "deposit_to": payload.bank_account_id,
+            "deposit_to_name": bank_name,
+            "amount": gross,
+            "description": f"Paytm Clearing Settlement Outflow to {bank_name} Ref: {ref_clean}",
+            "reference": ref_clean,
+            "settlement_id": settlement_id,
+            "created_at": now_iso,
+            "created_by": user_id,
+        }
+        await db.bank_transactions.insert_one(tx_clearing)
+
+        # 8. Mark linked customer payment-in receipts as settled (support partial / multiple)
+        if payload.linked_receipt_ids:
+            for rec_id in payload.linked_receipt_ids:
+                await db.income.update_one(
+                    {"$or": [{"id": rec_id}, {"income_no": rec_id}]},
+                    {"$set": {
+                        "settlement_status": "settled",
+                        "settlement_id": settlement_id,
+                        "settled_at": now_iso,
+                        "settled_ref": ref_clean
+                    }}
+                )
+                await db.bank_transactions.update_many(
+                    {"$or": [{"id": rec_id}, {"source_voucher": rec_id}], "transfer_type": "pg_collection"},
+                    {"$set": {
+                        "settlement_status": "settled",
+                        "settlement_id": settlement_id
+                    }}
+                )
+
+        # 9. Build Journal Entry record:
+        # Dr. Selected Bank Account ₹net_amount
+        # Dr. Paytm Settlement Charges Expense ₹total_charges
+        # Cr. Paytm Clearing Account ₹gross
+        journal = {
+            "dr_bank": {
+                "account_id": payload.bank_account_id,
+                "account_name": bank_name,
+                "amount": net_amount,
+                "label": f"Dr. {bank_name}"
+            },
+            "dr_expense": {
+                "account_name": "Paytm Settlement Charges Expense (Bank Charges)",
+                "amount": total_charges,
+                "charges": charges,
+                "tax": tax,
+                "label": "Dr. Paytm Settlement Charges Expense"
+            },
+            "cr_clearing": {
+                "account_id": "acc_paytm_clearing",
+                "account_name": "Paytm Clearing Account",
+                "amount": gross,
+                "label": "Cr. Paytm Clearing Account"
+            }
+        }
+
+        doc = {
+            "id": settlement_id,
+            "settlement_no": settlement_no,
+            "gateway": payload.gateway or "paytm",
+            "date": payload.date,
+            "settlement_ref": ref_clean,
+            "utr_no": payload.utr_no.strip() if payload.utr_no else "",
+            "bank_account_id": payload.bank_account_id,
+            "bank_name": bank_name,
+            "gross_amount": gross,
+            "settlement_charges": charges,
+            "tax_amount": tax,
+            "total_charges": total_charges,
+            "net_amount": net_amount,
+            "journal_entry": journal,
+            "notes": payload.notes or "",
+            "linked_receipt_ids": payload.linked_receipt_ids or [],
+            "linked_expense_id": exp_id,
+            "linked_bank_tx_id": tx_bank["id"],
+            "linked_clearing_tx_id": tx_clearing["id"],
+            "created_at": now_iso,
+            "created_by": user_id,
+        }
+        await db.pg_settlements.insert_one(doc)
+
+        if log_audit:
+            await log_audit(db, current, "pg_settlement", "create", settlement_id, None, doc)
+
+        return clean_doc(doc)
+
+    @router.delete("/settlements/{settlement_id}")
+    async def delete_settlement(settlement_id: str, current: Any = Depends(require_admin_or_manager)):
+        settlement = await db.pg_settlements.find_one({"id": settlement_id}, {"_id": 0})
+        if not settlement:
+            raise HTTPException(status_code=404, detail="Settlement record not found")
+
+        net_amt = float(settlement.get("net_amount") or 0.0)
+        gross_amt = float(settlement.get("gross_amount") or 0.0)
+        bank_id = settlement.get("bank_account_id")
+
+        # 1. Reverse bank account balance
+        if bank_id:
+            await db.bank_accounts.update_one({"id": bank_id}, {"$inc": {"opening_balance": -net_amt}})
+
+        # 2. Reverse clearing account balance
+        await db.bank_accounts.update_one({"id": "acc_paytm_clearing"}, {"$inc": {"opening_balance": gross_amt}})
+
+        # 3. Delete linked bank transactions
+        await db.bank_transactions.delete_many({"settlement_id": settlement_id})
+
+        # 4. Delete linked expense
+        await db.expenses.delete_many({"linked_settlement_id": settlement_id})
+
+        # 5. Reset linked customer receipts to unsettled
+        linked_receipts = settlement.get("linked_receipt_ids") or []
+        if linked_receipts:
+            await db.income.update_many(
+                {"$or": [{"id": {"$in": linked_receipts}}, {"income_no": {"$in": linked_receipts}}]},
+                {"$set": {"settlement_status": "unsettled"}, "$unset": {"settlement_id": "", "settled_at": "", "settled_ref": ""}}
+            )
+            await db.bank_transactions.update_many(
+                {"$or": [{"id": {"$in": linked_receipts}}, {"source_voucher": {"$in": linked_receipts}}], "transfer_type": "pg_collection"},
+                {"$set": {"settlement_status": "unsettled"}, "$unset": {"settlement_id": ""}}
+            )
+
+        # 6. Delete settlement doc
+        res = await db.pg_settlements.delete_one({"id": settlement_id})
+        if log_audit:
+            await log_audit(db, current, "pg_settlement", "delete", settlement_id, settlement, None)
+
         return {"deleted": res.deleted_count}
 
     return router

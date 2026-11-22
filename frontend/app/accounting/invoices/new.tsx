@@ -31,6 +31,7 @@ const TERMS = [
 export const PAY_MODES = [
   { key: 'cash', label: 'Cash', icon: 'cash' },
   { key: 'bank_transfer', label: 'Bank Transfer / Online', icon: 'business' },
+  { key: 'paytm', label: 'Paytm / Gateway', icon: 'wallet' },
   { key: 'cheque', label: 'Cheque', icon: 'document-text' },
   { key: 'upi', label: 'UPI / QR', icon: 'phone-portrait' },
   { key: 'other', label: 'Other Mode', icon: 'ellipsis-horizontal' },

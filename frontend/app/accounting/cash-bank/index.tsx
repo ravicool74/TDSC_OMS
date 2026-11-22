@@ -32,7 +32,7 @@ const RED = '#DC2626';
 
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
-type TabKey = 'banks' | 'cash' | 'cheques' | 'loans';
+type TabKey = 'banks' | 'cash' | 'settlements' | 'cheques' | 'loans';
 
 interface BankAccount {
   id: string;
@@ -41,6 +41,7 @@ interface BankAccount {
   account_no: string;
   ifsc?: string;
   opening_balance: number;
+  is_clearing?: boolean;
 }
 
 interface ChequeItem {
@@ -85,7 +86,7 @@ export default function CashBankScreen() {
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
 
   useEffect(() => {
-    if (searchParams.tab && ['banks', 'cash', 'cheques', 'loans'].includes(searchParams.tab as string)) {
+    if (searchParams.tab && ['banks', 'cash', 'settlements', 'cheques', 'loans'].includes(searchParams.tab as string)) {
       setActiveTab(searchParams.tab as TabKey);
     }
   }, [searchParams.tab]);
@@ -108,6 +109,27 @@ export default function CashBankScreen() {
   const [searchCash, setSearchCash] = useState('');
   const [searchCheques, setSearchCheques] = useState('');
   const [searchLoans, setSearchLoans] = useState('');
+  const [searchSettlements, setSearchSettlements] = useState('');
+
+  // PG Settlements State (Paytm & Gateway Settlements)
+  const [settlements, setSettlements] = useState<any[]>([]);
+  const [settlementRecon, setSettlementRecon] = useState<any>(null);
+  const [pendingReceipts, setPendingReceipts] = useState<any[]>([]);
+  const [showNewSettlementModal, setShowNewSettlementModal] = useState(false);
+  const [viewingJournalModal, setViewingJournalModal] = useState<any | null>(null);
+  const [settlementForm, setSettlementForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    settlement_ref: '',
+    utr_no: '',
+    bank_account_id: '',
+    gross_amount: '',
+    settlement_charges: '',
+    tax_amount: '',
+    notes: '',
+    linked_receipt_ids: [] as string[],
+  });
+  const [settlementBusy, setSettlementBusy] = useState(false);
+  const [settlementErr, setSettlementErr] = useState<string | null>(null);
 
   // Editing IDs
   const [editingBankId, setEditingBankId] = useState<string | null>(null);
@@ -211,11 +233,14 @@ export default function CashBankScreen() {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [banksRes, cashRes, chqRes, loansRes] = await Promise.all([
+      const [banksRes, cashRes, chqRes, loansRes, settleRes, reconRes, pendingRes] = await Promise.all([
         api.getCashBankAccounts().catch(() => []),
         api.getCashSummary().catch(() => null),
         api.getCheques('all').catch(() => ({ cheques: [], open_count: 0, closed_count: 0, total_count: 0, open_amount: 0 })),
         api.getLoanAccounts().catch(() => ({ loans: [], total_sanctioned: 0, total_outstanding: 0, active_loans_count: 0 })),
+        api.getSettlements().catch(() => []),
+        api.getSettlementReconciliation().catch(() => null),
+        api.getPendingSettlementReceipts().catch(() => []),
       ]);
 
       setBanks(banksRes || []);
@@ -233,8 +258,11 @@ export default function CashBankScreen() {
         total_outstanding: loansRes?.total_outstanding || 0,
         active_loans_count: loansRes?.active_loans_count || 0,
       });
+      setSettlements(settleRes || []);
+      setSettlementRecon(reconRes);
+      setPendingReceipts(pendingRes || []);
 
-      // Default selector values for transfer
+      // Default selector values for transfer and settlements
       if (banksRes && banksRes.length > 0) {
         setTransferForm(prev => ({
           ...prev,
@@ -242,6 +270,13 @@ export default function CashBankScreen() {
           deposit_to: prev.deposit_to || (banksRes[1] ? banksRes[1].id : banksRes[0].id),
           account_id: prev.account_id || banksRes[0].id,
         }));
+        const commBanks = banksRes.filter((b: any) => !b.is_clearing && b.id !== 'acc_paytm_clearing');
+        if (commBanks.length > 0) {
+          setSettlementForm(prev => ({
+            ...prev,
+            bank_account_id: prev.bank_account_id || commBanks[0].id,
+          }));
+        }
       }
     } catch (err: any) {
       console.error('Failed to load cash bank data', err);
@@ -291,6 +326,79 @@ export default function CashBankScreen() {
       attachment_url: undefined,
       attachment_name: undefined,
     }));
+  };
+
+  // PG Settlement Handlers
+  const handleCreateSettlement = async () => {
+    try {
+      setSettlementErr(null);
+      const gross = parseFloat(settlementForm.gross_amount);
+      const charges = parseFloat(settlementForm.settlement_charges || '0');
+      const tax = parseFloat(settlementForm.tax_amount || '0');
+      if (!settlementForm.settlement_ref.trim()) {
+        setSettlementErr('Settlement Reference / Batch # is required');
+        return;
+      }
+      if (!settlementForm.bank_account_id) {
+        setSettlementErr('Please select the target commercial bank account');
+        return;
+      }
+      if (isNaN(gross) || gross <= 0) {
+        setSettlementErr('Gross collection amount must be greater than 0');
+        return;
+      }
+      if (gross - charges - tax <= 0) {
+        setSettlementErr('Net bank credit must be greater than 0 (charges cannot exceed gross)');
+        return;
+      }
+      setSettlementBusy(true);
+      await api.createSettlement({
+        gateway: 'paytm',
+        date: settlementForm.date,
+        settlement_ref: settlementForm.settlement_ref.trim(),
+        utr_no: settlementForm.utr_no.trim(),
+        bank_account_id: settlementForm.bank_account_id,
+        gross_amount: gross,
+        settlement_charges: charges,
+        tax_amount: tax,
+        notes: settlementForm.notes.trim(),
+        linked_receipt_ids: settlementForm.linked_receipt_ids,
+      });
+      notify('Settlement Recorded', 'Paytm Settlement recorded successfully and journal posted.');
+      setShowNewSettlementModal(false);
+      setSettlementForm({
+        date: new Date().toISOString().split('T')[0],
+        settlement_ref: '',
+        utr_no: '',
+        bank_account_id: '',
+        gross_amount: '',
+        settlement_charges: '',
+        tax_amount: '',
+        notes: '',
+        linked_receipt_ids: [],
+      });
+      loadData();
+    } catch (err: any) {
+      setSettlementErr(err?.message || 'Failed to record settlement');
+    } finally {
+      setSettlementBusy(false);
+    }
+  };
+
+  const handleDeleteSettlement = async (settlementId: string, refNo: string) => {
+    const ok = await confirm(
+      'Rollback Settlement',
+      `Are you sure you want to rollback Paytm Settlement ${refNo}? This will safely reverse the net bank credit, reverse the clearing account deduction, and remove the charges expense.`,
+      { confirmText: 'Rollback Settlement', destructive: true }
+    );
+    if (!ok) return;
+    try {
+      await api.deleteSettlement(settlementId);
+      notify('Settlement Rolled Back', 'Settlement reversed and accounting balances restored.');
+      loadData();
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to rollback settlement');
+    }
   };
 
   // Open Deposit/Withdraw Modal
@@ -785,6 +893,18 @@ export default function CashBankScreen() {
     );
   }, [loans, searchLoans]);
 
+  // Filtered PG Settlements
+  const filteredSettlements = useMemo(() => {
+    const q = searchSettlements.trim().toLowerCase();
+    if (!q) return settlements;
+    return settlements.filter(s =>
+      (s.settlement_no || '').toLowerCase().includes(q) ||
+      (s.settlement_ref || '').toLowerCase().includes(q) ||
+      (s.bank_name || '').toLowerCase().includes(q) ||
+      (s.utr_no || '').toLowerCase().includes(q)
+    );
+  }, [settlements, searchSettlements]);
+
   // Total Bank Balances
   const totalBankBalance = useMemo(() => {
     return banks.reduce((acc, b) => acc + Number(b.opening_balance || 0), 0);
@@ -808,11 +928,12 @@ export default function CashBankScreen() {
         </View>
       </SafeAreaView>
 
-      {/* 4 Sub Menus Tab Row */}
+      {/* 5 Sub Menus Tab Row */}
       <View style={styles.tabBar}>
         {[
           { key: 'banks', label: 'Bank Accounts', icon: 'business' },
           { key: 'cash', label: 'Cash in Hand', icon: 'cash' },
+          { key: 'settlements', label: 'PG Settlements', icon: 'card' },
           { key: 'cheques', label: `Cheques (${chequeCounts.open_count})`, icon: 'newspaper' },
           { key: 'loans', label: 'Loan Accounts', icon: 'wallet' },
         ].map(t => {
@@ -1276,6 +1397,181 @@ export default function CashBankScreen() {
                     {searchCash ? 'No matching cash entries found.' : 'No recent contra cash entries recorded.'}
                   </Text>
                 </View>
+              )}
+            </View>
+          )}
+
+          {/* ========================================================================= */}
+          {/* 2B. PAYMENT GATEWAY SETTLEMENT (PAYTM) SUB MENU */}
+          {/* ========================================================================= */}
+          {activeTab === 'settlements' && (
+            <View testID="tab-settlements-content">
+              {/* Top Overview KPI Banner */}
+              <View style={[styles.overviewCard, { backgroundColor: '#F0F9FF', borderColor: '#BAE6FD' }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.overviewLabel, { color: '#0284C7' }]}>PAYTM CLEARING TRANSIT BALANCE</Text>
+                  <Text style={[styles.overviewVal, { color: (settlementRecon?.clearing_account_balance || 0) === 0 ? GREEN : '#0284C7' }]}>
+                    {inr(settlementRecon?.clearing_account_balance || 0)}
+                  </Text>
+                  <Text style={styles.overviewSub}>
+                    Gross Collections: {inr(settlementRecon?.total_collected_gross || 0)} • Net Credited to Banks: {inr(settlementRecon?.total_net_bank_credited || 0)} • Charges Deducted: {inr(settlementRecon?.total_charges_deducted || 0)}
+                  </Text>
+                </View>
+                <View style={[styles.badgePill, { backgroundColor: (settlementRecon?.clearing_account_balance || 0) === 0 ? '#DCFCE7' : '#FEF3C7' }]}>
+                  <Text style={[styles.badgeText, { color: (settlementRecon?.clearing_account_balance || 0) === 0 ? GREEN : '#D97706' }]}>
+                    {settlementRecon?.reconciliation_status || 'Balanced'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Action & Search Row */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, marginBottom: 12, gap: 8 }}>
+                <View style={[styles.searchBox, { flex: 1, marginBottom: 0 }]}>
+                  <Ionicons name="search" size={16} color={colors.muted} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search settlements (Ref, Bank, UTR)..."
+                    value={searchSettlements}
+                    onChangeText={setSearchSettlements}
+                    placeholderTextColor={colors.muted}
+                  />
+                </View>
+                <Pressable
+                  testID="btn-new-settlement"
+                  onPress={() => {
+                    setSettlementErr(null);
+                    setShowNewSettlementModal(true);
+                  }}
+                  style={[styles.primaryBtn, { backgroundColor: '#0284C7', paddingHorizontal: 14 }]}
+                >
+                  <Ionicons name="add" size={16} color="#FFF" />
+                  <Text style={styles.primaryBtnTxt}>+ New Settlement</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => router.push('/accounting/reports?report=settlement_reconciliation' as any)}
+                  style={[styles.primaryBtn, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 10 }]}
+                >
+                  <Ionicons name="document-text-outline" size={16} color="#0F172A" />
+                  <Text style={[styles.primaryBtnTxt, { color: '#0F172A' }]}>Audit Report</Text>
+                </Pressable>
+              </View>
+
+              {/* Pending Collections Notice */}
+              {pendingReceipts.length > 0 && (
+                <View style={{ backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <Text style={{ fontWeight: '700', color: '#1E40AF', fontSize: 13 }}>
+                      ⚡ {pendingReceipts.length} Unsettled Paytm Collection(s) Totaling {inr(pendingReceipts.reduce((a: number, b: any) => a + (Number(b.amount) || 0), 0))}
+                    </Text>
+                    <Text style={{ color: '#3B82F6', fontSize: 12, marginTop: 2 }}>
+                      Gross customer collections are held in Paytm Clearing Account. Post a settlement to deposit net funds to bank.
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => {
+                      setSettlementErr(null);
+                      setShowNewSettlementModal(true);
+                      setSettlementForm(prev => ({
+                        ...prev,
+                        gross_amount: String(pendingReceipts.reduce((a: number, b: any) => a + (Number(b.amount) || 0), 0)),
+                        linked_receipt_ids: pendingReceipts.map((r: any) => r.id),
+                      }));
+                    }}
+                    style={{ backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 }}
+                  >
+                    <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 12 }}>Settle All</Text>
+                  </Pressable>
+                </View>
+              )}
+
+              {/* Settlements List */}
+              {filteredSettlements.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Ionicons name="card-outline" size={36} color={colors.muted} />
+                  <Text style={{ color: colors.muted, marginTop: 6, fontSize: 13 }}>
+                    {searchSettlements ? 'No matching settlements found.' : 'No Payment Gateway settlements recorded yet.'}
+                  </Text>
+                  <Pressable
+                    onPress={() => {
+                      setSettlementErr(null);
+                      setShowNewSettlementModal(true);
+                    }}
+                    style={[styles.primaryBtn, { backgroundColor: '#0284C7', marginTop: 12, alignSelf: 'center' }]}
+                  >
+                    <Ionicons name="add" size={16} color="#FFF" />
+                    <Text style={styles.primaryBtnTxt}>Record First Settlement</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                filteredSettlements.map((s: any) => {
+                  const j = s.journal_entry || {};
+                  const dr_b = j.dr_bank || {};
+                  const dr_e = j.dr_expense || {};
+                  const cr_c = j.cr_clearing || {};
+
+                  return (
+                    <View key={s.id} style={[styles.bankCard, { borderColor: '#E2E8F0', padding: 14, marginBottom: 12 }]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#E0F2FE', alignItems: 'center', justifyContent: 'center' }}>
+                            <Ionicons name="card" size={18} color="#0284C7" />
+                          </View>
+                          <View>
+                            <Text style={{ fontWeight: '800', color: '#0F172A', fontSize: 14 }}>{s.settlement_no || s.id}</Text>
+                            <Text style={{ color: colors.muted, fontSize: 11 }}>Date: {s.date} • Batch Ref: {s.settlement_ref}</Text>
+                          </View>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: '#DCFCE7' }}>
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: GREEN }}>SETTLED</Text>
+                          </View>
+                          <Pressable onPress={() => handleDeleteSettlement(s.id, s.settlement_ref)} hitSlop={8}>
+                            <Ionicons name="trash-outline" size={18} color={RED} />
+                          </Pressable>
+                        </View>
+                      </View>
+
+                      {/* Amounts Breakdown */}
+                      <View style={{ flexDirection: 'row', backgroundColor: '#F8FAFC', borderRadius: 8, padding: 10, marginBottom: 8, justifyContent: 'space-between' }}>
+                        <View>
+                          <Text style={{ fontSize: 11, color: colors.muted }}>Gross Collection</Text>
+                          <Text style={{ fontSize: 14, fontWeight: '700', color: '#0F172A' }}>{inr(s.gross_amount)}</Text>
+                        </View>
+                        <View>
+                          <Text style={{ fontSize: 11, color: colors.muted }}>Charges Deducted</Text>
+                          <Text style={{ fontSize: 14, fontWeight: '700', color: RED }}>- {inr(s.total_charges)}</Text>
+                        </View>
+                        <View>
+                          <Text style={{ fontSize: 11, color: colors.muted }}>Net Bank Credit</Text>
+                          <Text style={{ fontSize: 15, fontWeight: '800', color: GREEN }}>{inr(s.net_amount)}</Text>
+                        </View>
+                        <View>
+                          <Text style={{ fontSize: 11, color: colors.muted }}>Credited Bank</Text>
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: '#1E40AF' }}>{s.bank_name || 'Bank'}</Text>
+                        </View>
+                      </View>
+
+                      {/* Double-entry posting breakdown */}
+                      <View style={{ backgroundColor: '#F1F5F9', borderRadius: 6, padding: 8, marginBottom: 8 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 3 }}>DOUBLE-ENTRY JOURNAL POSTING:</Text>
+                        <Text style={{ fontSize: 12, color: GREEN, fontWeight: '600' }}>• Dr. {dr_b.account_name || s.bank_name} {inr(dr_b.amount || s.net_amount)}</Text>
+                        <Text style={{ fontSize: 12, color: RED, fontWeight: '600' }}>• Dr. Paytm Settlement Charges Expense {inr(dr_e.amount || s.total_charges)}</Text>
+                        <Text style={{ fontSize: 12, color: '#475569', fontWeight: '600' }}>• Cr. Paytm Clearing Account {inr(cr_c.amount || s.gross_amount)}</Text>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Text style={{ fontSize: 11, color: colors.muted }}>UTR: {s.utr_no || 'N/A'}</Text>
+                        <Pressable
+                          onPress={() => setViewingJournalModal(s)}
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }}
+                        >
+                          <Ionicons name="receipt-outline" size={14} color="#1E40AF" />
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E40AF' }}>View Voucher</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })
               )}
             </View>
           )}
@@ -2432,12 +2728,242 @@ export default function CashBankScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL: RECORD NEW PG SETTLEMENT */}
+      {/* ========================================================================= */}
+      <Modal transparent visible={showNewSettlementModal} animationType="slide" onRequestClose={() => setShowNewSettlementModal(false)}>
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxWidth: 540 }}>
+            <View style={[styles.modalCard, { maxHeight: '90%' }]}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>Record Paytm Settlement</Text>
+                  <Text style={[styles.modalSub, { color: colors.muted }]}>Net Bank Credit = Gross – Charges – Taxes</Text>
+                </View>
+                <Pressable onPress={() => setShowNewSettlementModal(false)} hitSlop={8}>
+                  <Ionicons name="close" size={22} color={colors.muted} />
+                </Pressable>
+              </View>
+
+              <ScrollView style={{ padding: 16 }}>
+                {settlementErr && (
+                  <View style={{ backgroundColor: '#FEE2E2', padding: 10, borderRadius: 8, marginBottom: 12 }}>
+                    <Text style={{ color: RED, fontSize: 12, fontWeight: '600' }}>{settlementErr}</Text>
+                  </View>
+                )}
+
+                <FormInput
+                  label="Settlement Date *"
+                  value={settlementForm.date}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, date: v }))}
+                  placeholder="YYYY-MM-DD"
+                  testID="in-settle-date"
+                />
+
+                <FormInput
+                  label="Paytm Settlement Ref / Batch # *"
+                  value={settlementForm.settlement_ref}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, settlement_ref: v }))}
+                  placeholder="e.g. PAYTM-BATCH-20261122-01"
+                  testID="in-settle-ref"
+                />
+
+                <Text style={{ fontSize: 13, fontWeight: '600', color: '#0F172A', marginBottom: 6 }}>
+                  Target Commercial Bank (Credited Net Amount) *
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  {banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing').map(b => {
+                    const isSel = settlementForm.bank_account_id === b.id;
+                    return (
+                      <Pressable
+                        key={b.id}
+                        onPress={() => setSettlementForm(p => ({ ...p, bank_account_id: b.id }))}
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1.5,
+                          borderColor: isSel ? BLUE : '#CBD5E1',
+                          backgroundColor: isSel ? '#EFF6FF' : '#F8FAFC',
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: isSel ? BLUE : '#334155' }}>
+                          {b.name} ({b.bank_name})
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <FormInput
+                  label="Gross Collections Settled (₹) *"
+                  value={settlementForm.gross_amount}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, gross_amount: v }))}
+                  placeholder="10000.00"
+                  keyboardType="numeric"
+                  testID="in-settle-gross"
+                />
+
+                <FormInput
+                  label="Settlement Charges Deducted by Paytm (₹) *"
+                  value={settlementForm.settlement_charges}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, settlement_charges: v }))}
+                  placeholder="153.87"
+                  keyboardType="numeric"
+                  testID="in-settle-charges"
+                />
+
+                <FormInput
+                  label="Applicable Taxes / GST on Fee (₹)"
+                  value={settlementForm.tax_amount}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, tax_amount: v }))}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                  testID="in-settle-tax"
+                />
+
+                {/* Net calculation & Live Journal preview */}
+                {(() => {
+                  const gross = parseFloat(settlementForm.gross_amount) || 0;
+                  const charges = parseFloat(settlementForm.settlement_charges) || 0;
+                  const tax = parseFloat(settlementForm.tax_amount) || 0;
+                  const net = Math.max(0, gross - charges - tax);
+                  const selBank = banks.find(b => b.id === settlementForm.bank_account_id);
+                  const selBankName = selBank?.name || 'Selected Bank Account';
+
+                  return (
+                    <View style={{ backgroundColor: '#F0FDF4', borderColor: '#BBF7D0', borderWidth: 1.5, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: '#065F46', marginBottom: 4 }}>
+                        CALCULATED NET BANK CREDIT:
+                      </Text>
+                      <Text style={{ fontSize: 20, fontWeight: '800', color: GREEN, marginBottom: 8 }}>
+                        {inr(net)}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#047857', marginBottom: 4 }}>
+                        REQUIRED JOURNAL ENTRY TO BE POSTED:
+                      </Text>
+                      <Text style={{ fontSize: 12, color: GREEN, fontWeight: '700' }}>
+                        • Dr. {selBankName} {inr(net)}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: RED, fontWeight: '700' }}>
+                        • Dr. Paytm Settlement Charges Expense (Bank Charges) {inr(charges + tax)}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: '#047857', fontWeight: '700' }}>
+                        • Cr. Paytm Clearing Account {inr(gross)}
+                      </Text>
+                    </View>
+                  );
+                })()}
+
+                <FormInput
+                  label="Bank Transfer UTR No"
+                  value={settlementForm.utr_no}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, utr_no: v }))}
+                  placeholder="e.g. UTR123456789"
+                  testID="in-settle-utr"
+                />
+
+                <FormInput
+                  label="Internal Notes"
+                  value={settlementForm.notes}
+                  onChangeText={v => setSettlementForm(p => ({ ...p, notes: v }))}
+                  placeholder="Optional settlement notes"
+                  testID="in-settle-notes"
+                />
+
+                <View style={{ marginTop: 8, marginBottom: 16 }}>
+                  <PrimaryButton
+                    label="Post Settlement & Journal"
+                    onPress={handleCreateSettlement}
+                    loading={settlementBusy}
+                    testID="submit-settlement"
+                  />
+                </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL: VIEW JOURNAL VOUCHER */}
+      {/* ========================================================================= */}
+      <Modal transparent visible={!!viewingJournalModal} animationType="fade" onRequestClose={() => setViewingJournalModal(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxWidth: 500, padding: 18 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', paddingBottom: 10, marginBottom: 12 }}>
+              <View>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#0F172A' }}>Journal Voucher</Text>
+                <Text style={{ fontSize: 11, color: colors.muted }}>{viewingJournalModal?.settlement_no} • {viewingJournalModal?.date}</Text>
+              </View>
+              <Pressable onPress={() => setViewingJournalModal(null)} hitSlop={8}>
+                <Ionicons name="close" size={22} color={colors.muted} />
+              </Pressable>
+            </View>
+
+            {viewingJournalModal && (
+              <View>
+                <View style={{ backgroundColor: '#F8FAFC', padding: 10, borderRadius: 6, marginBottom: 12 }}>
+                  <Text style={{ fontSize: 12, color: colors.muted }}>Batch Reference: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{viewingJournalModal.settlement_ref}</Text></Text>
+                  <Text style={{ fontSize: 12, color: colors.muted }}>UTR / Bank Ref: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{viewingJournalModal.utr_no || 'N/A'}</Text></Text>
+                  <Text style={{ fontSize: 12, color: colors.muted }}>Credited Bank: <Text style={{ fontWeight: '700', color: '#1E40AF' }}>{viewingJournalModal.bank_name}</Text></Text>
+                </View>
+
+                {/* Voucher Table */}
+                <View style={{ borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
+                  <View style={{ flexDirection: 'row', backgroundColor: '#F1F5F9', padding: 8, borderBottomWidth: 1, borderBottomColor: '#CBD5E1' }}>
+                    <Text style={{ flex: 2, fontWeight: '800', fontSize: 12, color: '#334155' }}>Particulars / Ledger Head</Text>
+                    <Text style={{ flex: 1, fontWeight: '800', fontSize: 12, color: '#334155', textAlign: 'right' }}>Debit (₹)</Text>
+                    <Text style={{ flex: 1, fontWeight: '800', fontSize: 12, color: '#334155', textAlign: 'right' }}>Credit (₹)</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', padding: 8, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                    <Text style={{ flex: 2, fontSize: 12, fontWeight: '600', color: '#0F172A' }}>Dr. {viewingJournalModal.bank_name}</Text>
+                    <Text style={{ flex: 1, fontSize: 12, fontWeight: '700', color: GREEN, textAlign: 'right' }}>{inr(viewingJournalModal.net_amount)}</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: colors.muted, textAlign: 'right' }}>—</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', padding: 8, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                    <Text style={{ flex: 2, fontSize: 12, fontWeight: '600', color: '#0F172A' }}>Dr. Paytm Settlement Charges Expense</Text>
+                    <Text style={{ flex: 1, fontSize: 12, fontWeight: '700', color: RED, textAlign: 'right' }}>{inr(viewingJournalModal.total_charges)}</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: colors.muted, textAlign: 'right' }}>—</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', padding: 8, borderBottomWidth: 1, borderBottomColor: '#CBD5E1' }}>
+                    <Text style={{ flex: 2, fontSize: 12, fontWeight: '600', color: '#0F172A' }}>Cr. Paytm Clearing Account</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: colors.muted, textAlign: 'right' }}>—</Text>
+                    <Text style={{ flex: 1, fontSize: 12, fontWeight: '700', color: '#334155', textAlign: 'right' }}>{inr(viewingJournalModal.gross_amount)}</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', backgroundColor: '#F8FAFC', padding: 8 }}>
+                    <Text style={{ flex: 2, fontWeight: '800', fontSize: 12, color: '#0F172A' }}>TOTAL (BALANCED)</Text>
+                    <Text style={{ flex: 1, fontWeight: '800', fontSize: 12, color: GREEN, textAlign: 'right' }}>{inr(viewingJournalModal.gross_amount)}</Text>
+                    <Text style={{ flex: 1, fontWeight: '800', fontSize: 12, color: GREEN, textAlign: 'right' }}>{inr(viewingJournalModal.gross_amount)}</Text>
+                  </View>
+                </View>
+
+                <Pressable
+                  onPress={() => setViewingJournalModal(null)}
+                  style={[styles.primaryBtn, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignSelf: 'center', paddingHorizontal: 24 }]}
+                >
+                  <Text style={[styles.primaryBtnTxt, { color: '#0F172A' }]}>Close Voucher</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.surfaceSecondary },
+  badgePill: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  badgeText: { fontSize: 11, fontWeight: '700' },
+  searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 10, height: 38, gap: 8 },
+  searchInput: { flex: 1, fontSize: 13, color: colors.onSurface, padding: 0 },
+  primaryBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, gap: 6 },
+  primaryBtnTxt: { color: '#FFF', fontSize: 12, fontWeight: '700' },
+  bankCard: { backgroundColor: '#FFFFFF', borderRadius: radius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.border, ...shadow.xs },
+  modalSub: { fontSize: 12, color: colors.muted, marginTop: 2 },
   header: {
     height: 54,
     paddingHorizontal: spacing.md,
