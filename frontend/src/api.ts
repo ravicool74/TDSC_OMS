@@ -50,7 +50,7 @@ export const tokenStore = {
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const isGet = !opts.method || opts.method.toUpperCase() === 'GET';
-  let attempts = isGet ? 8 : 1;
+  let attempts = isGet ? 10 : 1;
   let lastErr: any = null;
 
   while (attempts > 0) {
@@ -79,9 +79,22 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     } catch (err: any) {
       lastErr = err;
       attempts--;
-      // Retry on network errors / Failed to fetch for GET requests (handles Render cold start / spin up)
-      if (isGet && attempts > 0 && (err?.message?.includes('fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.message?.includes('Failed to fetch'))) {
-        await new Promise((resolve) => setTimeout(resolve, 3500));
+      // Retry on network errors / Render cold start (Failed to fetch, 502 Bad Gateway, 503, 504 Timeout)
+      const errStr = (err?.message || '').toLowerCase();
+      const isRetryable =
+        errStr.includes('fetch') ||
+        errStr.includes('network') ||
+        errStr.includes('failed') ||
+        errStr.includes('timeout') ||
+        errStr.includes('load failed') ||
+        errStr.includes('502') ||
+        errStr.includes('503') ||
+        errStr.includes('504') ||
+        err?.name === 'TypeError' ||
+        err?.name === 'AbortError';
+
+      if (isGet && attempts > 0 && isRetryable) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         continue;
       }
       throw err;
@@ -760,6 +773,7 @@ export const api = {
   },
   deleteInvoice: (id: string) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),
   deleteIncome: (id: string) => request<any>(`/income/${id}`, { method: 'DELETE' }),
+  reconcileSalesPayments: () => request<any>('/accounting/reconcile-sales-payments', { method: 'POST' }),
   getCashBankAccounts: () => request<any[]>('/accounting/cash-bank/banks'),
   executeCashBankTransfer: (data: any) => request<any>('/accounting/cash-bank/transfer', { method: 'POST', body: JSON.stringify(data) }),
   getCashSummary: () => request<any>('/accounting/cash-bank/cash-summary'),

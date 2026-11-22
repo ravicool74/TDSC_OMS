@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert, FlatList, Share } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import { colors, spacing, radius, font, shadow } from '@/src/theme';
@@ -213,12 +213,66 @@ const SETTINGS_SECTIONS: Section[] = [
   },
 ];
 
+const OLD_ACCOUNTING_SECTIONS: Section[] = [
+  {
+    title: 'OLD ACCOUNTING AND BILLING SECTION',
+    defaultOpen: true,
+    rows: [
+      { icon: 'receipt', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: '1. Old Sales Invoices entry', route: '/accounting/invoices/new', params: { type: 'sale', accounting: 'old' } },
+      { icon: 'list', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: '2. All Old Sale Invoices', route: '/accounting/invoices', params: { type: 'sale', accounting: 'old' } },
+      { icon: 'arrow-down-circle', iconColor: '#2563EB', iconBg: '#DBEAFE', label: '3. Old Payment-In entry', route: '/accounting/income/new', params: { accounting: 'old' } },
+      { icon: 'list', iconColor: '#2563EB', iconBg: '#DBEAFE', label: '4. All Old Payment-In Invoices', route: '/accounting/income', params: { accounting: 'old' } },
+      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: '5. Add Old Expences entry', route: '/accounting/expenses/new', params: { accounting: 'old' } },
+      { icon: 'checkmark-done-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: '6. Old Expences approval', route: '/accounting/expenses/approval', params: { accounting: 'old' } },
+      { icon: 'list', iconColor: '#EA580C', iconBg: '#FFEDD5', label: '7. All Old Expences', route: '/accounting/expenses', params: { accounting: 'old' } },
+    ],
+  },
+  {
+    title: 'CASH & BANK (COMMON TO NEW & OLD ACCOUNTING)',
+    defaultOpen: true,
+    rows: [
+      { icon: 'journal', iconColor: '#00104A', iconBg: '#E0E7FF', label: 'Consolidated Bank Book', route: '/accounting/reports', params: { report: 'consolidated_bank_book' } },
+      { icon: 'business', iconColor: '#1E40AF', iconBg: '#DBEAFE', label: 'Bank Accounts (SBI & Axis Bank)', route: '/accounting/cash-bank', params: { tab: 'banks' } },
+      { icon: 'cash', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Cash in Hand (Cash Register)', route: '/accounting/cash-bank', params: { tab: 'cash' } },
+      { icon: 'swap-vertical', iconColor: '#059669', iconBg: '#D1FAE5', label: 'Contra Deposit & Transfers', route: '/accounting/cash-bank' },
+    ],
+  },
+  {
+    title: 'PURCHASE (COMMON TO NEW & OLD ACCOUNTING)',
+    defaultOpen: false,
+    rows: [
+      { icon: 'file-tray-full', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'Purchase Bills', route: '/accounting/invoices/new', params: { type: 'purchase' } },
+      { icon: 'list', iconColor: '#DC2626', iconBg: '#FEE2E2', label: 'All Purchase Bills', route: '/accounting/invoices', params: { type: 'purchase' } },
+      { icon: 'arrow-up-circle', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'Payment-Out', route: '/accounting/expenses/new' },
+      { icon: 'list', iconColor: '#F59E0B', iconBg: '#FEF3C7', label: 'All Payments-Out', route: '/accounting/expenses' },
+    ],
+  },
+  {
+    title: 'OLD ACCOUNTING DEDICATED LEDGERS & REPORTS',
+    defaultOpen: true,
+    rows: [
+      { icon: 'receipt', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Old Sales Invoices Ledger', route: '/accounting/reports', params: { report: 'old_sales_ledger' } },
+      { icon: 'arrow-down-circle', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Old Payment-In Ledger', route: '/accounting/reports', params: { report: 'old_payment_in_ledger' } },
+      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Old Expenses Ledger', route: '/accounting/reports', params: { report: 'old_expenses_ledger' } },
+      { icon: 'book', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Old Day Book (Independent Ledger)', route: '/accounting/reports', params: { report: 'old_day_book' } },
+      { icon: 'book-outline', iconColor: '#2075FF', iconBg: '#DBEAFE', label: 'Consolidated Day Book (All Entries)', route: '/accounting/reports', params: { report: 'day_book' } },
+    ],
+  },
+];
+
 const FAV_KEY = 'acc.report.favs';
 
 export default function AccountingMenu() {
   const router = useRouter();
-  const [tab, setTab] = useState<'home' | 'reports' | 'bank' | 'settings'>('home');
+  const searchParams = useLocalSearchParams();
+  const initialTab = searchParams?.tab === 'old' ? 'old' : searchParams?.tab === 'reports' ? 'reports' : searchParams?.tab === 'bank' ? 'bank' : searchParams?.tab === 'settings' ? 'settings' : 'home';
+  const [tab, setTab] = useState<'home' | 'old' | 'reports' | 'bank' | 'settings'>(initialTab);
   const [favs, setFavs] = useState<Record<string, boolean>>({});
+  const [reconciling, setReconciling] = useState(false);
+
+  useEffect(() => {
+    if (searchParams?.tab === 'old') setTab('old');
+  }, [searchParams?.tab]);
 
   useFocusEffect(useCallback(() => {
     (async () => { try { const s = await SecureStore.getItemAsync(FAV_KEY); if (s) setFavs(JSON.parse(s)); } catch {} })();
@@ -232,6 +286,18 @@ export default function AccountingMenu() {
 
   const go = (r: Row) => {
     if (r.route) router.push({ pathname: r.route, params: r.params } as any);
+  };
+
+  const handleRunReconcile = async () => {
+    setReconciling(true);
+    try {
+      const res = await api.reconcileSalesPayments();
+      Alert.alert('Reconciliation Complete', res.message || 'All sale vouchers and payments are 100% synchronized.');
+    } catch (e: any) {
+      Alert.alert('Reconciliation Status', e?.message || 'Could not run reconciliation.');
+    } finally {
+      setReconciling(false);
+    }
   };
 
   return (
@@ -252,16 +318,16 @@ export default function AccountingMenu() {
         </View>
       </SafeAreaView>
 
-      {/* Tabs */}
+      {/* Tabs - 5 Primary Sections */}
       <View style={styles.tabRow}>
-        {(['home', 'reports', 'bank', 'settings'] as const).map(t => (
-          <Pressable key={t} testID={`tab-${t}`} onPress={() => setTab(t)} style={[styles.tabItem, tab === t && styles.tabItemActive]}>
+        {(['home', 'old', 'reports', 'bank', 'settings'] as const).map(t => (
+          <Pressable key={t} testID={`tab-${t}`} onPress={() => setTab(t)} style={[styles.tabItem, tab === t && (t === 'old' ? { borderBottomColor: '#7C3AED' } : styles.tabItemActive)]}>
             <Ionicons
-              name={t === 'home' ? 'briefcase' : t === 'reports' ? 'bar-chart' : t === 'bank' ? 'business' : 'settings'}
-              size={18}
-              color={tab === t ? BLUE : colors.muted} />
-            <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
-              {t === 'home' ? 'My Business' : t === 'reports' ? 'Reports' : t === 'bank' ? 'Bank' : 'Settings'}
+              name={t === 'home' ? 'briefcase' : t === 'old' ? 'time' : t === 'reports' ? 'bar-chart' : t === 'bank' ? 'business' : 'settings'}
+              size={17}
+              color={tab === t ? (t === 'old' ? '#7C3AED' : BLUE) : colors.muted} />
+            <Text style={[styles.tabText, tab === t && (t === 'old' ? { color: '#7C3AED', fontWeight: '800' } : styles.tabTextActive)]}>
+              {t === 'home' ? 'My Business' : t === 'old' ? 'Old Accounting' : t === 'reports' ? 'Reports' : t === 'bank' ? 'Bank' : 'Settings'}
             </Text>
           </Pressable>
         ))}
@@ -271,6 +337,19 @@ export default function AccountingMenu() {
         <BankPanel />
       ) : (
         <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl }}>
+          {tab === 'old' && (
+            <View style={{ backgroundColor: '#EDE9FE', borderColor: '#C4B5FD', borderWidth: 1.5, margin: spacing.md, padding: 14, borderRadius: 10, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#7C3AED', alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="time" size={22} color="#FFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: '#4C1D95', fontWeight: '900', fontSize: 14.5 }}>Old Accounting & Billing Section</Text>
+                <Text style={{ color: '#6D28D9', fontSize: 11, marginTop: 2, lineHeight: 15 }}>
+                  Independent historical bookkeeping • 7 Dedicated Sub-menus • Auto-populated in Day Book & Ledgers
+                </Text>
+              </View>
+            </View>
+          )}
           {tab === 'reports' && (
             <Pressable
               onPress={() => router.push('/accounting/reports' as any)}
@@ -287,7 +366,40 @@ export default function AccountingMenu() {
               <Ionicons name="arrow-forward-circle" size={24} color={BLUE} />
             </Pressable>
           )}
-          {(tab === 'home' ? BUSINESS : tab === 'reports' ? REPORT_SECTIONS : SETTINGS_SECTIONS).map(s => (
+          {tab === 'settings' && (
+            <Pressable
+              onPress={handleRunReconcile}
+              disabled={reconciling}
+              style={{
+                backgroundColor: '#FFFFFF',
+                borderWidth: 1.5,
+                borderColor: '#2563EB',
+                borderRadius: 8,
+                marginHorizontal: spacing.md,
+                marginTop: spacing.md,
+                marginBottom: 6,
+                padding: 14,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+              }}
+              testID="reconcile-all-btn"
+            >
+              <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name={reconciling ? "hourglass" : "sync"} size={20} color="#2563EB" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: '800', color: '#1E40AF', fontSize: 13.5 }}>
+                  {reconciling ? 'Auditing & Reconciling...' : 'Reconcile All Sales & Payments'}
+                </Text>
+                <Text style={{ color: '#64748B', fontSize: 11, marginTop: 2 }}>
+                  1-Click audit: sync invoice balances, payment histories, and bank inflows
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#2563EB" />
+            </Pressable>
+          )}
+          {(tab === 'home' ? BUSINESS : tab === 'old' ? OLD_ACCOUNTING_SECTIONS : tab === 'reports' ? REPORT_SECTIONS : SETTINGS_SECTIONS).map(s => (
             <SectionBlock key={s.title} section={s} onPress={go} showStar={tab === 'reports'} favs={favs} onFav={toggleFav} />
           ))}
         </ScrollView>

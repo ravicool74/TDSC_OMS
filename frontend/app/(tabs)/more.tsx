@@ -80,6 +80,7 @@ export default function MoreScreen() {
   const operationalRows = [
     { key: 'customers', id: 'customers', icon: 'people', label: 'Contractors & Customers Database', route: '/customers', color: '#0A5CFF', testID: 'row-contractors' },
     { key: 'accounting', id: 'sales_invoices', icon: 'wallet', label: 'Accounting & Invoices', route: '/accounting/menu', color: colors.success, testID: 'row-accounting' },
+    { key: 'old_accounting', id: 'sales_invoices', icon: 'time', label: 'Old Accounting & Billing Section', route: '/accounting/menu?tab=old', color: '#7C3AED', testID: 'row-old-accounting' },
     { key: 'reports', id: 'accounting_reports', icon: 'bar-chart', label: 'Financial & Accounting Reports', route: '/accounting/reports', color: '#2563EB', testID: 'row-reports' },
     { key: 'customer_requests', id: 'task_followup', icon: 'clipboard', label: 'Service Request by Customer (Queue)', route: '/tasks/service-requests', color: '#059669', testID: 'row-customer-requests' },
     { key: 'services', id: 'services', icon: 'construct', label: 'Service Master', route: '/services', color: colors.brandPrimary, testID: 'row-services' },

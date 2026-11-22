@@ -1923,32 +1923,80 @@ export default function AccountingReportsHub() {
             </ScrollView>
           ) : (
             <View style={[styles.loadingBox, { padding: 32 }]}>
-              <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
-              <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 12 }}>Unable to load report</Text>
-              <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 360 }}>
-                {reportError?.includes('fetch')
-                  ? 'Connecting to live database... Tap Retry / Reload below or wait a moment while the server wakes up.'
-                  : (reportError || 'Could not fetch statement data from server. Please check connection and retry.')}
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-                <Pressable
-                  onPress={() => activeReportId && openReport(activeReportId)}
-                  style={[styles.btnAction, { backgroundColor: BLUE, paddingHorizontal: 16 }]}
-                >
-                  <Ionicons name="refresh" size={16} color="#FFF" />
-                  <Text style={styles.btnActionTxt}>Retry / Reload</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setActiveReportId(null);
-                    setReportError(null);
-                  }}
-                  style={[styles.btnAction, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 16 }]}
-                >
-                  <Ionicons name="arrow-back" size={16} color="#0F172A" />
-                  <Text style={[styles.btnActionTxt, { color: '#0F172A' }]}>All Reports</Text>
-                </Pressable>
-              </View>
+              {(() => {
+                const errLower = (reportError || '').toLowerCase();
+                const isColdStart =
+                  errLower.includes('fetch') ||
+                  errLower.includes('network') ||
+                  errLower.includes('failed') ||
+                  errLower.includes('load') ||
+                  errLower.includes('timeout') ||
+                  errLower.includes('502') ||
+                  errLower.includes('503') ||
+                  errLower.includes('504');
+
+                if (isColdStart) {
+                  return (
+                    <>
+                      <ActivityIndicator size="large" color={BLUE} />
+                      <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 14 }}>
+                        Connecting to Live Server...
+                      </Text>
+                      <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 380, lineHeight: 18 }}>
+                        The live database server is waking up from standby (Render cold-start). Auto-reconnecting in a few moments...
+                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+                        <Pressable
+                          onPress={() => activeReportId && openReport(activeReportId)}
+                          style={[styles.btnAction, { backgroundColor: BLUE, paddingHorizontal: 18 }]}
+                        >
+                          <Ionicons name="refresh" size={16} color="#FFF" />
+                          <Text style={styles.btnActionTxt}>Reconnect Now</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => {
+                            setActiveReportId(null);
+                            setReportError(null);
+                          }}
+                          style={[styles.btnAction, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 16 }]}
+                        >
+                          <Ionicons name="arrow-back" size={16} color="#0F172A" />
+                          <Text style={[styles.btnActionTxt, { color: '#0F172A' }]}>All Reports</Text>
+                        </Pressable>
+                      </View>
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
+                    <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 16, marginTop: 12 }}>Unable to load report</Text>
+                    <Text style={{ color: '#64748B', fontSize: 13, textAlign: 'center', marginTop: 4, maxWidth: 360 }}>
+                      {reportError || 'Could not fetch statement data from server. Please check connection and retry.'}
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+                      <Pressable
+                        onPress={() => activeReportId && openReport(activeReportId)}
+                        style={[styles.btnAction, { backgroundColor: BLUE, paddingHorizontal: 16 }]}
+                      >
+                        <Ionicons name="refresh" size={16} color="#FFF" />
+                        <Text style={styles.btnActionTxt}>Retry / Reload</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setActiveReportId(null);
+                          setReportError(null);
+                        }}
+                        style={[styles.btnAction, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 16 }]}
+                      >
+                        <Ionicons name="arrow-back" size={16} color="#0F172A" />
+                        <Text style={[styles.btnActionTxt, { color: '#0F172A' }]}>All Reports</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                );
+              })()}
             </View>
           )}
         </View>

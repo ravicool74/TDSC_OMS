@@ -4211,6 +4211,15 @@ async def update_income(iid: str, payload: IncomeUpdateInput, current: User = De
     upd["updated_by"] = current.user_id
 
     await db.income.update_one({"id": iid}, {"$set": upd})
+
+    # Reconcile any linked invoices immediately
+    prev_vids = [lv.get("voucher_id") for lv in (existing.get("linked_vouchers") or []) if lv.get("voucher_id")]
+    new_vids = [lv.get("voucher_id") for lv in (upd.get("linked_vouchers") or []) if lv.get("voucher_id")]
+    for vid in set(prev_vids + new_vids):
+        sinv = await db.invoices.find_one({"id": vid})
+        if sinv:
+            await _reconcile_single_invoice_payments(sinv)
+
     d = await db.income.find_one({"id": iid}, {"_id": 0})
     return Income(**d)
 
@@ -4244,7 +4253,19 @@ async def get_income_pdf(iid: str, token: Optional[str] = None, authorization: O
 
 @api_router.delete("/income/{iid}")
 async def delete_income(iid: str, current: User = Depends(require_admin_or_manager)):
+    existing = await db.income.find_one({"id": iid})
     res = await db.income.delete_one({"id": iid})
+    if existing:
+        vids = [lv.get("voucher_id") for lv in (existing.get("linked_vouchers") or []) if lv.get("voucher_id")]
+        inv_no = existing.get("linked_voucher_no")
+        if inv_no:
+            matched_inv = await db.invoices.find_one({"invoice_no": inv_no})
+            if matched_inv:
+                vids.append(matched_inv.get("id"))
+        for vid in set(vids):
+            sinv = await db.invoices.find_one({"id": vid})
+            if sinv:
+                await _reconcile_single_invoice_payments(sinv)
     return {"deleted": res.deleted_count}
 
 
@@ -5427,6 +5448,9 @@ async def list_invoices(
     out = []
     for d in docs:
         try:
+            if float(d.get("balance") or 0.0) > 0 or not d.get("payments"):
+                d = await _reconcile_single_invoice_payments(d)
+
             c = cust_map.get(d.get("party_id"))
             if c:
                 if not d.get("party_mobile"): d["party_mobile"] = c.get("mobile")
@@ -5555,7 +5579,10 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
             if inc.get("linked_vouchers"):
                 for lv in inc["linked_vouchers"]:
                     if lv.get("voucher_id") == inv_id or lv.get("voucher_no") == inv_no:
-                        allocated = float(lv.get("allocated_amount") or inc_amt)
+                        alloc_val = float(lv.get("allocated_amount") or 0.0)
+                        if alloc_val <= 0:
+                            alloc_val = inc_amt
+                        allocated = alloc_val
                         matched_this_invoice = True
                         break
             elif inc.get("linked_voucher_no") == inv_no:
@@ -5912,6 +5939,39 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
 async def delete_invoice(iid: str, current: User = Depends(require_admin)):
     res = await db.invoices.delete_one({"id": iid})
     return {"deleted": res.deleted_count}
+
+
+@api_router.post("/accounting/reconcile-sales-payments")
+async def reconcile_sales_payments(current: User = Depends(require_admin_or_manager)):
+    """Reconciles all sale vouchers and payment-in vouchers across the system.
+    Ensures paid_amount, balance, payment arrays, and voucher statuses are 100% synchronized."""
+    invoices = await db.invoices.find({"invoice_type": "sale"}).to_list(1000)
+    reconciled_count = 0
+    updated_invoices = []
+    for inv in invoices:
+        orig_paid = float(inv.get("paid_amount") or 0.0)
+        orig_bal = float(inv.get("balance") or 0.0)
+        res = await _reconcile_single_invoice_payments(inv)
+        if (
+            abs(float(res.get("paid_amount") or 0.0) - orig_paid) > 0.01 or
+            abs(float(res.get("balance") or 0.0) - orig_bal) > 0.01
+        ):
+            reconciled_count += 1
+            updated_invoices.append({
+                "invoice_no": res.get("invoice_no"),
+                "total": res.get("total_amount"),
+                "paid": res.get("paid_amount"),
+                "balance": res.get("balance"),
+                "status": res.get("status")
+            })
+
+    return {
+        "status": "ok",
+        "total_invoices_checked": len(invoices),
+        "reconciled_count": reconciled_count,
+        "updated_invoices": updated_invoices,
+        "message": f"Successfully audited {len(invoices)} sale invoices. {reconciled_count} were synchronized."
+    }
 
 
 # ============ Voucher Attachments (generic: invoices / expenses / incomes) ============
