@@ -153,7 +153,20 @@ export default function NewInvoice() {
           setInvoiceNo(ex.invoice_no || 'EDIT');
           if (ex.invoice_type) setActualInvoiceType(ex.invoice_type);
           setPaymentType(ex.payment_type || 'credit');
-          if (Array.isArray(ex.payment_splits) && ex.payment_splits.length > 0) {
+          const splitsSum = (Array.isArray(ex.payment_splits) ? ex.payment_splits : []).reduce((acc: number, s: any) => acc + (parseFloat(s?.amount) || 0), 0);
+          const paymentsSum = (Array.isArray(ex.payments) ? ex.payments : []).reduce((acc: number, p: any) => acc + (parseFloat(p?.amount) || 0), 0);
+
+          if (Array.isArray(ex.payments) && ex.payments.length > 0 && (paymentsSum >= splitsSum || !ex.payment_splits || ex.payment_splits.length === 0)) {
+            setPaymentSplits(ex.payments.map((p: any, idx: number) => ({
+              id: `pay_${idx + 1}`,
+              mode: p.payment_mode || p.mode || 'cash',
+              amount: String(p.amount || ''),
+              reference: p.payment_no || p.reference || p.ref || '',
+              bank_id: p.bank_id || p.bank_account_id || ex.bank_id || '',
+              bank_name: p.bank_name || ex.bank_name || '',
+              account_no: p.account_no || ex.account_no || '',
+            })));
+          } else if (Array.isArray(ex.payment_splits) && ex.payment_splits.length > 0) {
             setPaymentSplits(ex.payment_splits.map((s: any, idx: number) => ({
               id: `pay_${idx + 1}`,
               mode: s.mode || s.payment_mode || 'cash',
@@ -166,9 +179,9 @@ export default function NewInvoice() {
           } else if (Array.isArray(ex.payments) && ex.payments.length > 0) {
             setPaymentSplits(ex.payments.map((p: any, idx: number) => ({
               id: `pay_${idx + 1}`,
-              mode: p.payment_mode || 'cash',
+              mode: p.payment_mode || p.mode || 'cash',
               amount: String(p.amount || ''),
-              reference: p.reference || p.ref || '',
+              reference: p.payment_no || p.reference || p.ref || '',
               bank_id: p.bank_id || p.bank_account_id || ex.bank_id || '',
               bank_name: p.bank_name || ex.bank_name || '',
               account_no: p.account_no || ex.account_no || '',

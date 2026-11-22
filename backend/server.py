@@ -5619,7 +5619,24 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
     new_bal = max(0.0, round(total_amount - running_paid, 2))
     new_status = "paid" if new_bal <= 0 and total_amount > 0 else ("partial" if running_paid > 0 else "unpaid")
 
-    if running_paid != float(d.get("paid_amount") or 0.0) or len(merged) != len(existing_payments) or new_bal != float(d.get("balance") or 0.0):
+    # Synchronize payment_splits as well so invoice views, PDF, and edit screens stay 100% matched
+    synced_splits = []
+    for p in merged:
+        synced_splits.append({
+            "mode": p.get("payment_mode") or "cash",
+            "amount": float(p.get("amount") or 0.0),
+            "reference": p.get("payment_no") or p.get("remarks") or "",
+            "bank_id": p.get("bank_id") or d.get("bank_id") or "",
+            "bank_name": p.get("bank_name") or d.get("bank_name") or "",
+            "account_no": p.get("account_no") or d.get("account_no") or "",
+        })
+
+    if (
+        running_paid != float(d.get("paid_amount") or 0.0) or
+        len(merged) != len(existing_payments) or
+        new_bal != float(d.get("balance") or 0.0) or
+        len(synced_splits) != len(d.get("payment_splits") or [])
+    ):
         await db.invoices.update_one(
             {"id": inv_id},
             {"$set": {
@@ -5627,12 +5644,14 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
                 "balance": new_bal,
                 "status": new_status,
                 "payments": merged,
+                "payment_splits": synced_splits,
             }}
         )
         d["paid_amount"] = running_paid
         d["balance"] = new_bal
         d["status"] = new_status
         d["payments"] = merged
+        d["payment_splits"] = synced_splits
 
     return d
 
@@ -5824,6 +5843,7 @@ async def get_invoice_pdf(iid: str, token: Optional[str] = None, authorization: 
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    d = await _reconcile_single_invoice_payments(d)
     # Fetch customer for address
     cust = await db.customers.find_one({"id": d.get("party_id")}, {"_id": 0}) if d.get("party_id") else None
     pdf_bytes = await run_in_threadpool(build_invoice_pdf, d, cust)
@@ -5928,6 +5948,8 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
     }
     await db.invoices.update_one({"id": iid}, {"$set": updates})
     d = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    if d:
+        d = await _reconcile_single_invoice_payments(d)
     items_d = d.get("items") or []
     for it in items_d:
         if isinstance(it, dict) and not it.get("name"):
