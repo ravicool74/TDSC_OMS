@@ -3766,10 +3766,23 @@ async def get_next_invoice_no(
 @api_router.get("/income/next-no")
 async def get_next_payment_in_no(
     date: Optional[str] = Query(None),
+    is_old_accounting: Optional[bool] = Query(None),
     current: User = Depends(get_current_user)
 ):
     today_kolkata = kolkata_date_str()
     effective_date = date or today_kolkata
+    if is_old_accounting:
+        count = await db.income.count_documents({"is_old_accounting": True})
+        next_no = f"OLD-PAYIN-{str(count + 1).zfill(4)}"
+        return {
+            "next_no": next_no,
+            "voucher_mode": "manual",
+            "start_seq": 1,
+            "date_start_from": None,
+            "server_date": today_kolkata,
+            "default_date": today_kolkata,
+            "prefix": "OLD-PAYIN",
+        }
     s = await _get_voucher_settings("payment_in")
     next_no = await _peek_next_voucher_no("payment_in", effective_date)
     return {

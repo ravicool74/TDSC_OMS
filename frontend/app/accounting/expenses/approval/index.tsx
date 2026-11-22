@@ -48,6 +48,12 @@ export default function ExpenseApprovalListScreen() {
   const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
   const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
 
+  useEffect(() => {
+    if (params?.accounting === 'old' || params?.is_old_accounting === 'true') {
+      setAccountingFilter('old');
+    }
+  }, [params?.accounting, params?.is_old_accounting]);
+
   const [vouchers, setVouchers] = useState<any[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
@@ -304,7 +310,7 @@ export default function ExpenseApprovalListScreen() {
           <Pressable
             testID="new-expense-approval-btn"
             style={styles.addBtn}
-            onPress={() => router.push('/accounting/expenses/approval/new' as any)}
+            onPress={() => router.push(accountingFilter === 'old' ? ('/accounting/expenses/approval/new?accounting=old' as any) : ('/accounting/expenses/approval/new' as any))}
           >
             <Ionicons name="add" size={22} color="#FFF" />
           </Pressable>
@@ -403,8 +409,8 @@ export default function ExpenseApprovalListScreen() {
           icon="document-text-outline"
           title="No vouchers found"
           subtitle={q ? 'No records matching search query' : 'Create your first expense approval claim voucher'}
-          actionLabel="+ New Expense Approval"
-          onAction={() => router.push('/accounting/expenses/approval/new' as any)}
+          actionLabel={accountingFilter === 'old' ? "+ Old Expences approval" : "+ New Expense Approval"}
+          onAction={() => router.push(accountingFilter === 'old' ? ('/accounting/expenses/approval/new?accounting=old' as any) : ('/accounting/expenses/approval/new' as any))}
         />
       ) : (
         <FlatList

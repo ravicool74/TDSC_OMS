@@ -111,16 +111,21 @@ def make_expense_approval_router(db, get_current_user, require_admin, log_audit=
         return await _next_voucher_no("new_expense_approval", date_str)
 
     @router.get("/next-no")
-    async def get_next_expense_approval_no(date: Optional[str] = Query(None), current: Any = Depends(get_current_user)):
+    async def get_next_expense_approval_no(
+        date: Optional[str] = Query(None),
+        is_old_accounting: Optional[bool] = Query(None),
+        current: Any = Depends(get_current_user)
+    ):
         from server import _get_voucher_settings, _peek_next_voucher_no
-        s = await _get_voucher_settings("new_expense_approval")
+        vtype = "old_expense_approval" if is_old_accounting else "new_expense_approval"
+        s = await _get_voucher_settings(vtype)
         effective_date = date or s.get("date_start_from")
-        next_no = await _peek_next_voucher_no("new_expense_approval", effective_date)
+        next_no = await _peek_next_voucher_no(vtype, effective_date)
         return {
             "next_no": next_no,
             "voucher_mode": s.get("voucher_mode", "auto"),
             "date_start_from": s.get("date_start_from"),
-            "prefix": s.get("prefix", "EXP-REQ"),
+            "prefix": s.get("prefix", "OLD-EXPAPP" if is_old_accounting else "EXP-REQ"),
             "start_seq": s.get("start_seq", 1),
         }
 

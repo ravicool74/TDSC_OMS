@@ -12,7 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius, font } from '@/src/theme';
 import { api } from '@/src/api';
@@ -44,6 +44,8 @@ interface ExpenseItem {
 export default function NewExpenseApprovalScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const params = useLocalSearchParams<{ accounting?: string; is_old_accounting?: string }>();
+  const isOldAccounting = params?.accounting === 'old' || params?.is_old_accounting === 'true';
 
   // Contractor Selection (Section 1)
   const [customers, setCustomers] = useState<any[]>([]);
@@ -68,9 +70,9 @@ export default function NewExpenseApprovalScreen() {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [voucherNo, setVoucherNo] = useState<string>('');
+  const [voucherNo, setVoucherNo] = useState<string>(isOldAccounting ? 'OLD-EXPAPP-0001' : '');
   const [voucherDate, setVoucherDate] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [isManual, setIsManual] = useState(false);
+  const [isManual, setIsManual] = useState(isOldAccounting);
 
   // Load customer directory & voucher settings on mount
   useEffect(() => {
@@ -78,17 +80,20 @@ export default function NewExpenseApprovalScreen() {
       try {
         const [custs, nextRes] = await Promise.all([
           api.get<any[]>('/customers').catch(() => []),
-          api.get<any>('/expense-approvals/next-no').catch(() => null),
+          api.get<any>(`/expense-approvals/next-no${isOldAccounting ? '?is_old_accounting=true' : ''}`).catch(() => null),
         ]);
         if (Array.isArray(custs)) setCustomers(custs);
         if (nextRes) {
           if (nextRes.date_start_from) setVoucherDate(nextRes.date_start_from);
-          if (nextRes.voucher_mode) setIsManual(nextRes.voucher_mode === 'manual');
+          if (nextRes.voucher_mode || isOldAccounting) setIsManual(isOldAccounting || nextRes.voucher_mode === 'manual');
           if (nextRes.next_no) setVoucherNo(nextRes.next_no);
+        } else if (isOldAccounting) {
+          setVoucherNo('OLD-EXPAPP-0001');
+          setIsManual(true);
         }
       } catch {}
     })();
-  }, []);
+  }, [isOldAccounting]);
 
   // Fetch sale vouchers whenever contractor is picked
   useEffect(() => {
@@ -102,7 +107,7 @@ export default function NewExpenseApprovalScreen() {
     (async () => {
       setLoadingSaleVouchers(true);
       try {
-        const svs = await api.getCustomerSaleVouchers(selectedCustomer.id);
+        const svs = await api.getCustomerSaleVouchers(selectedCustomer.id, isOldAccounting ? true : undefined);
         setSaleVouchers(Array.isArray(svs) ? svs : []);
       } catch {
         setSaleVouchers([]);
@@ -110,7 +115,7 @@ export default function NewExpenseApprovalScreen() {
         setLoadingSaleVouchers(false);
       }
     })();
-  }, [selectedCustomer]);
+  }, [selectedCustomer, isOldAccounting]);
 
   // Handle selecting a sale voucher and loading its passed-on items
   const handleSelectSaleVoucher = async (sv: any) => {
@@ -282,11 +287,12 @@ export default function NewExpenseApprovalScreen() {
         })),
         notes,
         status: asDraft ? 'draft' : 'submitted',
+        is_old_accounting: isOldAccounting,
       };
 
       const res: any = await api.createExpenseApproval(payload);
       notify('Success', `Expense Voucher ${res.voucher_no} created ✓`);
-      setTimeout(() => router.replace(`/accounting/expenses/approval/${res.id}` as any), 600);
+      setTimeout(() => router.replace(`/accounting/expenses/approval/${res.id}${isOldAccounting ? '?accounting=old' : ''}` as any), 600);
     } catch (e: any) {
       setErr(e?.message || 'Failed to submit expense voucher');
     } finally {
@@ -302,8 +308,10 @@ export default function NewExpenseApprovalScreen() {
           <Ionicons name="arrow-back" size={20} color="#0F172A" />
         </Pressable>
         <View style={{ flex: 1, marginLeft: 10 }}>
-          <Text style={styles.h1}>New Expense Approval</Text>
-          <Text style={styles.subTitle}>3-Section Pass-On Expense Claim Wizard</Text>
+          <Text style={styles.h1}>{isOldAccounting ? 'Old Expences approval' : 'New Expense Approval'}</Text>
+          <Text style={styles.subTitle}>
+            {isOldAccounting ? '📜 Old Accounting Stream • Pass-On Expense Claim' : '3-Section Pass-On Expense Claim Wizard'}
+          </Text>
         </View>
       </View>
 

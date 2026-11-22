@@ -84,6 +84,12 @@ export default function ExpensesList() {
   const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
   const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
 
+  useEffect(() => {
+    if (params?.accounting === 'old' || params?.is_old_accounting === 'true') {
+      setAccountingFilter('old');
+    }
+  }, [params?.accounting, params?.is_old_accounting]);
+
   const [list, setList] = useState<any[] | null>(null);
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -624,7 +630,7 @@ export default function ExpensesList() {
               <Text style={[styles.ledgerHeaderBtnTxt, { color: '#059669' }]}>Cash Ledger</Text>
             </Pressable>
             <Pressable
-              onPress={() => router.push(accountingFilter === 'old' ? { pathname: '/accounting/expenses/new', params: { accounting: 'old' } } as any : '/accounting/expenses/new' as any)}
+              onPress={() => router.push(accountingFilter === 'old' ? ('/accounting/expenses/new?accounting=old' as any) : ('/accounting/expenses/new' as any))}
               style={styles.addBtn}
               testID="new-expense-btn"
             >

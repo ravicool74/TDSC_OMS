@@ -280,7 +280,7 @@ export default function AccountingReportsHub() {
     setReportError(null);
     setTableSearch('');
     const dFilter = customDateFilter || dateFilter;
-    const effScope = accountingScopeOverride !== undefined ? accountingScopeOverride : (cleanRepId === 'old_day_book' ? 'old' : accountingScope);
+    const effScope = accountingScopeOverride !== undefined ? accountingScopeOverride : (cleanRepId.startsWith('old_') ? 'old' : accountingScope);
 
     let fromDate: string | undefined = undefined;
     let toDate: string | undefined = undefined;

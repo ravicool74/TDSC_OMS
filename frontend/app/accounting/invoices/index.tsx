@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo } from 'react';
+import React, { useCallback, useState, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, TextInput, Platform, Linking } from 'react-native';
 import { useFocusEffect, useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +20,12 @@ export default function InvoicesList() {
   const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
   const [list, setList] = useState<any[] | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (params?.accounting === 'old' || params?.is_old_accounting === 'true') {
+      setAccountingFilter('old');
+    }
+  }, [params?.accounting, params?.is_old_accounting]);
 
   const screenTitle = useMemo(() => {
     if (kind === 'purchase') return 'Purchase Bills';
@@ -94,7 +100,7 @@ export default function InvoicesList() {
         title={screenTitle}
         right={(
           <Pressable
-            onPress={() => router.push({ pathname: '/accounting/invoices/new', params: { type: kind, ...(accountingFilter === 'old' ? { accounting: 'old' } : {}) } } as any)}
+            onPress={() => router.push(`/accounting/invoices/new?type=${kind}${accountingFilter === 'old' ? '&accounting=old' : ''}` as any)}
             testID="new-invoice-btn"
             style={styles.newBtn}
           >

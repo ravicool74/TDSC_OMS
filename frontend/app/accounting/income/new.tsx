@@ -144,28 +144,31 @@ export default function NewPaymentIn() {
     (async () => {
       try {
         const [nextRes, m, b, e] = await Promise.all([
-          api.get<any>('/income/next-no').catch(() => null),
+          api.get<any>(`/income/next-no${isOldAccounting ? '?is_old_accounting=true' : ''}`).catch(() => null),
           api.get<any>('/accounting/meta').catch(() => null),
           api.get<any[]>('/bank-accounts').catch(() => []),
           api.get<any[]>('/employees').catch(() => []),
         ]);
         if (nextRes) {
           if (nextRes.next_no) {
-            setVoucherNo(nextRes.voucher_mode === 'manual' ? nextRes.next_no : `${nextRes.next_no} (preview)`);
+            setVoucherNo(nextRes.voucher_mode === 'manual' || isOldAccounting ? nextRes.next_no : `${nextRes.next_no} (preview)`);
           }
-          if (nextRes.voucher_mode) {
-            setIsManualVoucher(nextRes.voucher_mode === 'manual');
+          if (nextRes.voucher_mode || isOldAccounting) {
+            setIsManualVoucher(isOldAccounting || nextRes.voucher_mode === 'manual');
           }
           if (nextRes.date_start_from) {
             setDate(nextRes.date_start_from);
           }
+        } else if (isOldAccounting) {
+          setVoucherNo('OLD-PAYIN-0001');
+          setIsManualVoucher(true);
         }
         if (m) setMeta(m);
         if (b) setBanks(b);
         if (e) setEmployees(e);
       } catch {}
     })();
-  }, []);
+  }, [isOldAccounting]);
 
   // Fetch sale vouchers for selected customer
   const loadCustomerVouchers = async (partyId: string) => {

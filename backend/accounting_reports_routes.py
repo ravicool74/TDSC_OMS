@@ -316,6 +316,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
 
             return {
                 "report_type": report_type,
+                "title": "Old Sales Invoices Ledger",
                 "report_title": "Old Sales Invoices Ledger",
                 "category": cat_name,
                 "from_date": from_date,
@@ -383,6 +384,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
 
             return {
                 "report_type": report_type,
+                "title": "Old Payment-In Ledger",
                 "report_title": "Old Payment-In Ledger",
                 "category": cat_name,
                 "from_date": from_date,
@@ -448,6 +450,7 @@ def make_accounting_reports_router(db, get_current_user, require_admin, require_
 
             return {
                 "report_type": report_type,
+                "title": "Old Expenses Ledger",
                 "report_title": "Old Expenses Ledger",
                 "category": cat_name,
                 "from_date": from_date,

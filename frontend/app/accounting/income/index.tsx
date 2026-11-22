@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo } from 'react';
+import React, { useCallback, useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -42,6 +42,12 @@ export default function IncomeList() {
   const params = useLocalSearchParams<{ accounting?: string; is_old_accounting?: string }>();
   const isOldParam = params?.accounting === 'old' || params?.is_old_accounting === 'true';
   const [accountingFilter, setAccountingFilter] = useState<'all' | 'new' | 'old'>(isOldParam ? 'old' : 'all');
+
+  useEffect(() => {
+    if (params?.accounting === 'old' || params?.is_old_accounting === 'true') {
+      setAccountingFilter('old');
+    }
+  }, [params?.accounting, params?.is_old_accounting]);
 
   const [list, setList] = useState<any[] | null>(null);
   const [banks, setBanks] = useState<any[]>([]);
@@ -422,7 +428,7 @@ export default function IncomeList() {
               <Text style={[styles.ledgerHeaderBtnTxt, { color: '#059669' }]}>Cash</Text>
             </Pressable>
             <Pressable
-              onPress={() => router.push(accountingFilter === 'old' ? { pathname: '/accounting/income/new', params: { accounting: 'old' } } as any : '/accounting/income/new' as any)}
+              onPress={() => router.push(accountingFilter === 'old' ? ('/accounting/income/new?accounting=old' as any) : ('/accounting/income/new' as any))}
               style={styles.addBtn}
               testID="new-income-btn"
             >

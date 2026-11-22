@@ -69,13 +69,13 @@ const BUSINESS: Section[] = [
     title: 'OLD ACCOUNTING AND BILLING SECTION',
     defaultOpen: true,
     rows: [
-      { icon: 'receipt', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'Old Sales Invoices entry', route: '/accounting/invoices/new', params: { type: 'sale', accounting: 'old' } },
-      { icon: 'list', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: 'All Old Sale Invoices', route: '/accounting/invoices', params: { type: 'sale', accounting: 'old' } },
-      { icon: 'arrow-down-circle', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'Old Payment-In entry', route: '/accounting/income/new', params: { accounting: 'old' } },
-      { icon: 'list', iconColor: '#2563EB', iconBg: '#DBEAFE', label: 'All Old Payment-In Invoices', route: '/accounting/income', params: { accounting: 'old' } },
-      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'Add Old Expences entry', route: '/accounting/expenses/new', params: { accounting: 'old' } },
-      { icon: 'checkmark-done-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: 'Old Expences approval', route: '/accounting/expenses/approval', params: { accounting: 'old' } },
-      { icon: 'list', iconColor: '#EA580C', iconBg: '#FFEDD5', label: 'All Old Expences', route: '/accounting/expenses', params: { accounting: 'old' } },
+      { icon: 'receipt', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: '1. Old Sales Invoices entry', route: '/accounting/invoices/new', params: { type: 'sale', accounting: 'old' } },
+      { icon: 'list', iconColor: '#7C3AED', iconBg: '#EDE9FE', label: '2. All Old Sale Invoices', route: '/accounting/invoices', params: { type: 'sale', accounting: 'old' } },
+      { icon: 'arrow-down-circle', iconColor: '#2563EB', iconBg: '#DBEAFE', label: '3. Old Payment-In entry', route: '/accounting/income/new', params: { accounting: 'old' } },
+      { icon: 'list', iconColor: '#2563EB', iconBg: '#DBEAFE', label: '4. All Old Payment-In Invoices', route: '/accounting/income', params: { accounting: 'old' } },
+      { icon: 'wallet', iconColor: '#EA580C', iconBg: '#FFEDD5', label: '5. Add Old Expences entry', route: '/accounting/expenses/new', params: { accounting: 'old' } },
+      { icon: 'checkmark-done-circle', iconColor: '#059669', iconBg: '#DCFCE7', label: '6. Old Expences approval', route: '/accounting/expenses/approval', params: { accounting: 'old' } },
+      { icon: 'list', iconColor: '#EA580C', iconBg: '#FFEDD5', label: '7. All Old Expences', route: '/accounting/expenses', params: { accounting: 'old' } },
     ],
   },
 ];
@@ -271,7 +271,12 @@ export default function AccountingMenu() {
   const [reconciling, setReconciling] = useState(false);
 
   useEffect(() => {
-    if (searchParams?.tab === 'old') setTab('old');
+    if (searchParams?.tab) {
+      const target = String(searchParams.tab).toLowerCase();
+      if (['home', 'old', 'reports', 'bank', 'settings'].includes(target)) {
+        setTab(target as any);
+      }
+    }
   }, [searchParams?.tab]);
 
   useFocusEffect(useCallback(() => {
@@ -285,7 +290,18 @@ export default function AccountingMenu() {
   };
 
   const go = (r: Row) => {
-    if (r.route) router.push({ pathname: r.route, params: r.params } as any);
+    if (!r.route) return;
+    if (r.params && Object.keys(r.params).length > 0) {
+      const q = new URLSearchParams();
+      Object.entries(r.params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') q.append(k, String(v));
+      });
+      const qs = q.toString();
+      const sep = r.route.includes('?') ? '&' : '?';
+      router.push(`${r.route}${qs ? sep + qs : ''}` as any);
+    } else {
+      router.push(r.route as any);
+    }
   };
 
   const handleRunReconcile = async () => {
