@@ -136,6 +136,22 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
     async def list_bank_accounts(current: Any = Depends(get_current_user)):
         await _ensure_seed_records()
         banks = await db.bank_accounts.find({}, {"_id": 0}).to_list(100)
+        try:
+            from closing_balance_helper import calculate_closing_balances
+            cb_data = await calculate_closing_balances(db)
+            bank_map = cb_data.get("banks", {})
+            for b in banks:
+                bid = b.get("id")
+                if bid in bank_map:
+                    b["current_balance"] = bank_map[bid]
+                    b["latest_closing_balance"] = bank_map[bid]
+                    b["closing_balance"] = bank_map[bid]
+                else:
+                    b["current_balance"] = float(b.get("opening_balance") or 0.0)
+                    b["latest_closing_balance"] = b["current_balance"]
+                    b["closing_balance"] = b["current_balance"]
+        except Exception as e:
+            logger.warning(f"Error computing latest closing balances for banks in cash_bank_routes: {e}")
         return clean_doc(banks)
 
     # =========================================================================
@@ -539,6 +555,12 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
         total_inflow = base_opening + tot_sales_cash + tot_income_cash + cash_added_from_bank + cash_from_cheques
         total_outflow = tot_exp_cash + cash_deposited_to_bank
         net_cash_in_hand = round(total_inflow - total_outflow, 2)
+        try:
+            from closing_balance_helper import calculate_closing_balances
+            cb_data = await calculate_closing_balances(db)
+            net_cash_in_hand = cb_data.get("cash_in_hand", net_cash_in_hand)
+        except Exception:
+            pass
 
         # Merge all into one comprehensive chronological ledger
         all_cash_entries = cash_sale_entries + cash_income_entries + cash_exp_entries + contra_entries

@@ -41,6 +41,8 @@ interface BankAccount {
   account_no: string;
   ifsc?: string;
   opening_balance: number;
+  current_balance?: number;
+  latest_closing_balance?: number;
   is_clearing?: boolean;
 }
 
@@ -905,9 +907,11 @@ export default function CashBankScreen() {
     );
   }, [settlements, searchSettlements]);
 
-  // Total Bank Balances
+  // Total Bank Balances (Commercial Banks Latest Closing Balance)
   const totalBankBalance = useMemo(() => {
-    return banks.reduce((acc, b) => acc + Number(b.opening_balance || 0), 0);
+    return banks
+      .filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing')
+      .reduce((acc, b) => acc + Number(b.current_balance ?? b.latest_closing_balance ?? b.opening_balance ?? 0), 0);
   }, [banks]);
 
   return (
@@ -1117,10 +1121,11 @@ export default function CashBankScreen() {
                         {b.ifsc ? <Text style={styles.bankItemSub}>IFSC: {b.ifsc}</Text> : null}
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.bankItemBalLabel}>Current Balance</Text>
-                        <Text style={[styles.bankItemBal, { color: b.opening_balance >= 0 ? GREEN : RED }]}>
-                          {inr(b.opening_balance)}
+                        <Text style={styles.bankItemBalLabel}>Current Balance (Latest Closing)</Text>
+                        <Text style={[styles.bankItemBal, { color: (b.current_balance ?? b.latest_closing_balance ?? b.opening_balance) >= 0 ? GREEN : RED }]}>
+                          {inr(b.current_balance ?? b.latest_closing_balance ?? b.opening_balance)}
                         </Text>
+                        <Text style={{ fontSize: 10, color: colors.muted, marginTop: 1 }}>OB (17-11): {inr(b.opening_balance)}</Text>
                       </View>
                     </View>
                     <View style={styles.itemActionRow}>

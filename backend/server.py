@@ -805,6 +805,9 @@ class BankAccount(BaseModel):
     account_no: str
     ifsc: Optional[str] = None
     opening_balance: float = 0.0
+    current_balance: Optional[float] = None
+    latest_closing_balance: Optional[float] = None
+    is_clearing: Optional[bool] = False
     is_active: bool = True
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -2715,7 +2718,36 @@ async def delete_account(aid: str, current: User = Depends(require_admin)):
 @api_router.get("/bank-accounts", response_model=List[BankAccount])
 async def list_bank_accounts(current: User = Depends(get_current_user)):
     docs = await db.bank_accounts.find({}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    try:
+        from closing_balance_helper import calculate_closing_balances
+        cb_data = await calculate_closing_balances(db)
+        bank_map = cb_data.get("banks", {})
+        for d in docs:
+            bid = d.get("id")
+            if bid in bank_map:
+                d["current_balance"] = bank_map[bid]
+                d["latest_closing_balance"] = bank_map[bid]
+            else:
+                d["current_balance"] = float(d.get("opening_balance") or 0.0)
+                d["latest_closing_balance"] = d["current_balance"]
+    except Exception as e:
+        logger.warning(f"Error computing latest closing balances for bank accounts: {e}")
     return [BankAccount(**d) for d in docs]
+
+
+@api_router.get("/accounting/latest-closing-balances")
+async def get_latest_closing_balances_route(current: User = Depends(get_current_user)):
+    from closing_balance_helper import calculate_closing_balances
+    return await calculate_closing_balances(db)
+
+
+@api_router.get("/cash-bank/cash-in-hand")
+@api_router.get("/accounting/cash-bank/cash-in-hand")
+async def get_cash_in_hand_route(current: User = Depends(get_current_user)):
+    from closing_balance_helper import calculate_closing_balances
+    cb_data = await calculate_closing_balances(db)
+    val = cb_data.get("cash_in_hand", 0.0)
+    return {"cash_in_hand": val, "balance": val}
 
 
 @api_router.post("/bank-accounts", response_model=BankAccount)
@@ -6272,19 +6304,31 @@ async def accounting_dashboard(current: User = Depends(get_current_user)):
     all_inc = await db.income.find({}, {"_id": 0}).to_list(5000)
     all_exp = await db.expenses.find({"status": {"$in": ["verified", "approved", "pending"]}}, {"_id": 0}).to_list(5000)
 
-    cash_income = _sum([d for d in all_inc if d.get("payment_mode") == "cash"])
-    cash_expense = _sum([d for d in all_exp if d.get("payment_mode") == "cash"])
-    cash_in_hand = round(cash_income - cash_expense, 2)
+    # Compute accurate Golden Closing Balances matching Consolidated Bank Book
+    from closing_balance_helper import calculate_closing_balances
+    cb_data = await calculate_closing_balances(db)
+    cash_in_hand = cb_data.get("cash_in_hand", 0.0)
+    bank_closing_map = cb_data.get("banks", {})
 
     bank_accounts = await db.bank_accounts.find({}, {"_id": 0}).to_list(200)
     bank_balances = []
     total_bank = 0.0
     for b in bank_accounts:
-        cred = _sum([d for d in all_inc if d.get("bank_account_id") == b["id"]])
-        deb = _sum([d for d in all_exp if d.get("bank_account_id") == b["id"]])
-        bal = round(float(b.get("opening_balance") or 0) + cred - deb, 2)
+        if b.get("is_clearing") or b.get("id") == "acc_paytm_clearing":
+            continue
+        bid = b["id"]
+        bal = bank_closing_map.get(bid, float(b.get("opening_balance") or 0.0))
         total_bank += bal
-        bank_balances.append({"id": b["id"], "name": b["name"], "bank_name": b["bank_name"], "account_no": b["account_no"], "balance": bal})
+        bank_balances.append({
+            "id": bid,
+            "name": b["name"],
+            "bank_name": b["bank_name"],
+            "account_no": b["account_no"],
+            "balance": bal,
+            "current_balance": bal,
+            "latest_closing_balance": bal,
+            "opening_balance": float(b.get("opening_balance") or 0.0),
+        })
 
     tasks = await db.tasks.find({}, {"_id": 0, "dues_amount": 1, "created_at": 1}).to_list(5000)
     total_outstanding = round(sum(float(t.get("dues_amount") or 0) for t in tasks if (t.get("dues_amount") or 0) > 0), 2)
@@ -6323,8 +6367,14 @@ async def accounting_dashboard(current: User = Depends(get_current_user)):
     top_services = [{"name": k, "amount": round(v, 2)} for k, v in sorted(svc_map.items(), key=lambda x: -x[1])[:5]]
     top_employees = [{"name": k, "amount": round(v, 2)} for k, v in sorted(emp_map.items(), key=lambda x: -x[1])[:5]]
 
-    recent_collections = sorted(all_inc, key=lambda x: (x.get("date") or "", x.get("created_at") or ""), reverse=True)[:5]
-    recent_expenses = sorted(all_exp, key=lambda x: (x.get("date") or "", x.get("created_at") or ""), reverse=True)[:5]
+    def _safe_tx_key(x):
+        d = str(x.get("date") or "")
+        ca = x.get("created_at")
+        ca_str = ca.isoformat() if hasattr(ca, "isoformat") else str(ca or "")
+        return (d, ca_str)
+
+    recent_collections = sorted(all_inc, key=_safe_tx_key, reverse=True)[:5]
+    recent_expenses = sorted(all_exp, key=_safe_tx_key, reverse=True)[:5]
 
     return {
         "today_income": _sum(inc_today),

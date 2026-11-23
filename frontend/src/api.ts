@@ -783,6 +783,7 @@ export const api = {
   deleteInvoice: (id: string) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),
   deleteIncome: (id: string) => request<any>(`/income/${id}`, { method: 'DELETE' }),
   reconcileSalesPayments: () => request<any>('/accounting/reconcile-sales-payments', { method: 'POST' }),
+  getLatestClosingBalances: () => request<any>('/accounting/latest-closing-balances'),
   getCashBankAccounts: () => request<any[]>('/accounting/cash-bank/banks'),
   executeCashBankTransfer: (data: any) => request<any>('/accounting/cash-bank/transfer', { method: 'POST', body: JSON.stringify(data) }),
   getCashSummary: () => request<any>('/accounting/cash-bank/cash-summary'),

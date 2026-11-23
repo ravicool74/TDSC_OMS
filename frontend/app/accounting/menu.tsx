@@ -464,29 +464,42 @@ const BankPanel: React.FC = () => {
   const [banks, setBanks] = useState<any[] | null>(null);
   const [balances, setBalances] = useState<Record<string, number>>({});
   const [cashBalance, setCashBalance] = useState<number>(0);
+  const [closingData, setClosingData] = useState<any>(null);
 
   const load = useCallback(async () => {
     try {
-      const [b, dash, cashInfo] = await Promise.all([
+      const [b, dash, cashInfo, closingInfo] = await Promise.all([
         api.get<any[]>('/bank-accounts').catch(() => []),
         api.get<any>('/accounting/dashboard').catch(() => null),
         api.get<any>('/cash-bank/cash-in-hand').catch(() => null),
+        api.getLatestClosingBalances().catch(() => null),
       ]);
       const realBanks = (b || []).filter((x: any) => !x.is_clearing && x.id !== 'acc_paytm_clearing');
       setBanks(realBanks);
+      setClosingData(closingInfo);
+
       const map: Record<string, number> = {};
-      for (const x of realBanks) map[x.id] = Number(x.opening_balance || 0);
-      if (dash?.bank_balances) {
+      for (const x of realBanks) {
+        map[x.id] = Number(x.current_balance ?? x.latest_closing_balance ?? x.opening_balance ?? 0);
+      }
+      if (closingInfo?.banks) {
+        for (const [k, v] of Object.entries(closingInfo.banks)) {
+          map[k] = Number(v ?? 0);
+        }
+      } else if (dash?.bank_balances) {
         if (Array.isArray(dash.bank_balances)) {
           for (const item of dash.bank_balances) {
-            if (item?.id) map[item.id] = Number(item.balance || 0);
+            if (item?.id) map[item.id] = Number(item.balance ?? item.current_balance ?? item.opening_balance ?? 0);
           }
         } else {
           Object.assign(map, dash.bank_balances);
         }
       }
       setBalances(map);
-      if (cashInfo?.cash_in_hand !== undefined) {
+
+      if (closingInfo?.cash_in_hand !== undefined) {
+        setCashBalance(Number(closingInfo.cash_in_hand));
+      } else if (cashInfo?.cash_in_hand !== undefined) {
         setCashBalance(Number(cashInfo.cash_in_hand));
       } else if (dash?.cash_in_hand !== undefined) {
         setCashBalance(Number(dash.cash_in_hand));
@@ -558,7 +571,12 @@ const BankPanel: React.FC = () => {
                 </View>
               </View>
               <View style={styles.bankBody}>
-                <Text style={[styles.bankLbl, { color: '#047857' }]}>Current Cash Balance</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                  <Text style={[styles.bankLbl, { color: '#047857' }]}>Current Cash Balance (Latest Closing)</Text>
+                  <Text style={{ fontSize: 11, color: '#047857', fontWeight: '700' }}>
+                    OB (17-11): {inr(closingData?.fixed_opening_balances?.cash_in_hand ?? 10701)}
+                  </Text>
+                </View>
                 <Text style={[styles.bankBal, { color: cashBalance >= 0 ? '#059669' : '#DC2626' }]}>
                   {cashBalance < 0 ? '-' : ''}{inr(Math.abs(cashBalance))}
                 </Text>
@@ -607,7 +625,12 @@ const BankPanel: React.FC = () => {
                   </Pressable>
                 </View>
                 <View style={styles.bankBody}>
-                  <Text style={styles.bankLbl}>Current Balance</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                    <Text style={styles.bankLbl}>Current Balance (Latest Closing)</Text>
+                    <Text style={{ fontSize: 11, color: colors.muted, fontWeight: '700' }}>
+                      OB (17-11): {inr(item.opening_balance)}
+                    </Text>
+                  </View>
                   <Text style={[styles.bankBal, { color: pos ? '#059669' : '#DC2626' }]}>{pos ? '' : '-'}{inr(Math.abs(bal))}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 6, marginTop: 8 }}>
