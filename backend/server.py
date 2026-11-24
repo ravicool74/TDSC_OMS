@@ -5775,6 +5775,10 @@ async def create_invoice(payload: InvoiceInput, current: User = Depends(get_curr
     if payload.payment_splits:
         running_tot = 0.0
         for idx, ps in enumerate(payload.payment_splits):
+            p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+            # Do not re-record allocated Payment-In receipts as initial down payments
+            if p_ref.startswith("PAYIN-") or "PAYIN-" in p_ref:
+                continue
             p_amt = float(ps.get("amount") or 0)
             if p_amt > 0:
                 p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
@@ -5981,6 +5985,9 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
         pno = str(p.get("payment_no") or "").upper()
         ptype = str(p.get("payment_type") or "").lower()
         pid = str(p.get("payment_id") or "").lower()
+        pref = str(p.get("reference") or p.get("remarks") or "").strip()
+        if pno.startswith("PAYIN-") or pref.startswith("PAYIN-") or "PAYIN-" in pref:
+            continue
         if (
             "INITIAL" in pno or
             "initial" in ptype or
@@ -5995,10 +6002,12 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
     if not init_entries and d.get("payment_splits"):
         running_tot_splits = 0.0
         for idx, ps in enumerate(d.get("payment_splits") or []):
+            p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+            if p_ref.startswith("PAYIN-") or "PAYIN-" in p_ref:
+                continue
             p_amt = float(ps.get("amount") or 0)
             if p_amt > 0:
                 p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
-                p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
                 running_tot_splits = round(running_tot_splits + p_amt, 2)
                 init_entries.append({
                     "payment_id": f"init_{inv_no}_{idx+1}",
@@ -6358,6 +6367,10 @@ async def update_invoice(iid: str, payload: InvoiceInput, current: User = Depend
     if payload.payment_splits:
         running_tot = 0.0
         for idx, ps in enumerate(payload.payment_splits):
+            p_ref = str(ps.get("reference") or ps.get("ref") or "").strip()
+            # Do not re-record allocated Payment-In receipts as initial down payments
+            if p_ref.startswith("PAYIN-") or "PAYIN-" in p_ref:
+                continue
             p_amt = float(ps.get("amount") or 0)
             if p_amt > 0:
                 p_mode = str(ps.get("mode") or ps.get("payment_mode") or "cash").lower()
