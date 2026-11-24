@@ -656,24 +656,28 @@ export const api = {
     return request<any>(`/tender-mgmt/match/tender/${tid}`);
   },
   // Document Library & Forms and Rules
-  getDocFolders: async (category?: string, search?: string) => {
+  getDocFolders: async (category?: string, search?: string, parentId?: string) => {
     const sp = new URLSearchParams();
     if (category) sp.append('category', category);
     if (search) sp.append('search', search);
+    if (parentId !== undefined) sp.append('parent_id', parentId);
     const q = sp.toString();
     return request<any[]>(`/document-library/folders${q ? `?${q}` : ''}`);
   },
-  createDocFolder: async (data: { name: string; category?: string; description?: string; color?: string; icon?: string }) => {
+  createDocFolder: async (data: { name: string; category?: string; parent_id?: string; description?: string; color?: string; icon?: string }) => {
     return request<any>('/document-library/folders', { method: 'POST', body: JSON.stringify(data) });
   },
-  updateDocFolder: async (fid: string, data: { name?: string; description?: string; color?: string; icon?: string }) => {
+  updateDocFolder: async (fid: string, data: { name?: string; description?: string; color?: string; icon?: string; parent_id?: string }) => {
     return request<any>(`/document-library/folders/${fid}`, { method: 'PATCH', body: JSON.stringify(data) });
   },
   deleteDocFolder: async (fid: string) => {
     return request<any>(`/document-library/folders/${fid}`, { method: 'DELETE' });
   },
-  getFolderFiles: async (fid: string) => {
-    return request<{ folder: any; files: any[] }>(`/document-library/folders/${fid}/files`);
+  getFolderFiles: async (fid: string, search?: string) => {
+    const sp = new URLSearchParams();
+    if (search) sp.append('search', search);
+    const q = sp.toString();
+    return request<{ folder: any; files: any[]; subfolders: any[]; breadcrumbs: any[] }>(`/document-library/folders/${fid}/files${q ? `?${q}` : ''}`);
   },
   createDocFileRow: async (fid: string, data: { file_description: string; sl_no?: number; insert_after_id?: string }) => {
     return request<any>(`/document-library/folders/${fid}/files`, { method: 'POST', body: JSON.stringify(data) });
@@ -702,6 +706,39 @@ export const api = {
     const data = text ? JSON.parse(text) : null;
     if (!res.ok) throw new Error((data && data.detail) || `Upload failed (${res.status})`);
     return data;
+  },
+  batchUploadDocFiles: async (fid: string, files: Array<{ uri: string; name: string; type: string }>) => {
+    const token = await tokenStore.get();
+    const form = new FormData();
+    for (const file of files) {
+      if (Platform.OS === 'web') {
+        const blob = await (await fetch(file.uri)).blob();
+        form.append('files', blob, file.name);
+      } else {
+        form.append('files', { uri: file.uri, name: file.name, type: file.type } as any);
+      }
+    }
+    const res = await fetch(`${getBaseUrl()}/api/document-library/folders/${fid}/batch-upload`, {
+      method: 'POST',
+      body: form as any,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error((data && data.detail) || `Batch upload failed (${res.status})`);
+    return data;
+  },
+  moveDocFiles: async (fileIds: string[], targetFolderId: string) => {
+    return request<any>('/document-library/move-files', {
+      method: 'POST',
+      body: JSON.stringify({ file_ids: fileIds, target_folder_id: targetFolderId }),
+    });
+  },
+  getDocFoldersHierarchy: async (category?: string) => {
+    const sp = new URLSearchParams();
+    if (category && category !== 'all') sp.append('category', category);
+    const q = sp.toString();
+    return request<Array<{ id: string; name: string; category: string; parent_id?: string; depth: number; path_display: string }>>(`/document-library/folders-hierarchy${q ? `?${q}` : ''}`);
   },
   getDocUsersList: async () => {
     return request<any[]>('/document-library/users-list');
