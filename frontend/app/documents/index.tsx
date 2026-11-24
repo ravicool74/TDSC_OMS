@@ -12,6 +12,7 @@ import { Card, EmptyState, ScreenLoader, PrimaryButton, SecondaryButton, Avatar 
 import { ScreenHeader } from '@/src/ScreenHeader';
 import { useAuth } from '@/src/AuthContext';
 import { canWrite, canAction } from '@/src/rbac';
+import { confirm, notify } from '@/src/dialog';
 
 type SubMenu = 'general' | 'forms_and_rules';
 
@@ -94,7 +95,7 @@ export default function DocumentLibraryScreen() {
         setOpenFolder((prev: any) => (prev && prev.id === res.folder.id ? { ...prev, ...res.folder } : res.folder));
       }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to load folder files');
+      notify('Error', e?.message || 'Failed to load folder files');
       setFolderFiles([]);
     } finally {
       setLoadingFiles(false);
@@ -161,7 +162,7 @@ export default function DocumentLibraryScreen() {
           access_type: permAccessType,
           allowed_user_ids: permSelectedUsers,
         });
-        Alert.alert('Success', `Permissions updated for "${permTarget.title}".`);
+        notify('Success', `Permissions updated for "${permTarget.title}".`);
         await loadFolders();
         if (openFolder?.id === permTarget.id) {
           setOpenFolder((prev: any) => ({
@@ -177,13 +178,13 @@ export default function DocumentLibraryScreen() {
             access_type: permAccessType,
             allowed_user_ids: permSelectedUsers,
           });
-          Alert.alert('Success', 'Document permissions updated.');
+          notify('Success', 'Document permissions updated.');
           await loadFilesForFolder(openFolder.id);
         }
       }
       setPermModalVisible(false);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to update permissions.');
+      notify('Error', e?.message || 'Failed to update permissions.');
     } finally {
       setSavingPerms(false);
     }
@@ -259,7 +260,7 @@ export default function DocumentLibraryScreen() {
 
   const handleSaveFolder = async () => {
     if (!folderName.trim()) {
-      Alert.alert('Validation Error', 'Folder name is required.');
+      notify('Validation Error', 'Folder name is required.');
       return;
     }
     setSavingFolder(true);
@@ -270,7 +271,7 @@ export default function DocumentLibraryScreen() {
           description: folderDesc.trim() || undefined,
           color: folderColor,
         });
-        Alert.alert('Success', 'Folder renamed successfully.');
+        notify('Success', 'Folder renamed successfully.');
       } else {
         await api.createDocFolder({
           name: folderName.trim(),
@@ -278,38 +279,32 @@ export default function DocumentLibraryScreen() {
           description: folderDesc.trim() || undefined,
           color: folderColor,
         });
-        Alert.alert('Success', 'New folder created.');
+        notify('Success', 'New folder created.');
       }
       setFolderModalVisible(false);
       await loadFolders();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to save folder.');
+      notify('Error', e?.message || 'Failed to save folder.');
     } finally {
       setSavingFolder(false);
     }
   };
 
-  const handleDeleteFolder = (fld: any) => {
-    Alert.alert(
+  const handleDeleteFolder = async (fld: any) => {
+    const ok = await confirm(
       'Delete Folder?',
       `Are you sure you want to permanently delete "${fld.name}" and all files contained within it?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await api.deleteDocFolder(fld.id);
-              if (openFolder?.id === fld.id) setOpenFolder(null);
-              await loadFolders();
-            } catch (e: any) {
-              Alert.alert('Error', e?.message || 'Failed to delete folder.');
-            }
-          },
-        },
-      ]
+      { confirmText: 'Delete', destructive: true }
     );
+    if (!ok) return;
+    try {
+      await api.deleteDocFolder(fld.id);
+      if (openFolder?.id === fld.id) setOpenFolder(null);
+      await loadFolders();
+      notify('Success', `Folder "${fld.name}" deleted successfully.`);
+    } catch (e: any) {
+      notify('Error', e?.message || 'Failed to delete folder.');
+    }
   };
 
   // --- Line Table Actions inside Open Folder ---
@@ -328,7 +323,7 @@ export default function DocumentLibraryScreen() {
       setEditingRowId(res.id);
       setEditingDescription(res.file_description || '');
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to insert new row');
+      notify('Error', e?.message || 'Failed to insert new row');
     } finally {
       setAddingRowBelowId(null);
     }
@@ -350,32 +345,26 @@ export default function DocumentLibraryScreen() {
       setEditingRowId(null);
       await loadFilesForFolder(openFolder.id);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to update row');
+      notify('Error', e?.message || 'Failed to update row');
     }
   };
 
   // Delete Row Button
-  const handleDeleteRow = (file: any) => {
+  const handleDeleteRow = async (file: any) => {
     if (!openFolder) return;
-    Alert.alert(
+    const ok = await confirm(
       'Delete Row?',
       `Delete row Sl. No. ${file.sl_no} ("${file.file_description}")?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await api.deleteDocFileRow(openFolder.id, file.id);
-              await loadFilesForFolder(openFolder.id);
-            } catch (e: any) {
-              Alert.alert('Error', e?.message || 'Failed to delete row');
-            }
-          },
-        },
-      ]
+      { confirmText: 'Delete', destructive: true }
     );
+    if (!ok) return;
+    try {
+      await api.deleteDocFileRow(openFolder.id, file.id);
+      await loadFilesForFolder(openFolder.id);
+      notify('Success', 'Row deleted successfully.');
+    } catch (e: any) {
+      notify('Error', e?.message || 'Failed to delete row');
+    }
   };
 
   // Upload File Button
@@ -389,7 +378,7 @@ export default function DocumentLibraryScreen() {
       if (res.canceled || !res.assets?.length) return;
       const asset = res.assets[0];
       if (asset.size && asset.size > MAX_FILE_SIZE) {
-        Alert.alert('File Too Large', 'Maximum file size allowed is 50 MB.');
+        notify('File Too Large', 'Maximum file size allowed is 50 MB.');
         return;
       }
       setUploadingRowId(fileId);
@@ -399,9 +388,9 @@ export default function DocumentLibraryScreen() {
         type: asset.mimeType || 'application/octet-stream',
       });
       await loadFilesForFolder(openFolder.id);
-      Alert.alert('Uploaded', `"${asset.name}" attached successfully.`);
+      notify('Uploaded', `"${asset.name}" attached successfully.`);
     } catch (e: any) {
-      Alert.alert('Upload Error', e?.message || 'Failed to upload document');
+      notify('Upload Error', e?.message || 'Failed to upload document');
     } finally {
       setUploadingRowId(null);
     }
@@ -580,7 +569,10 @@ export default function DocumentLibraryScreen() {
                         <Pressable
                           testID={`folder-perms-${item.id}`}
                           style={[styles.folderActionIconBtn, { backgroundColor: '#f0fdf4' }]}
-                          onPress={() => openFolderPermissionsModal(item)}
+                          onPress={(e: any) => {
+                            e?.stopPropagation?.();
+                            openFolderPermissionsModal(item);
+                          }}
                           accessibilityLabel="Manage Access Permissions"
                         >
                           <Ionicons name="shield-checkmark" size={16} color="#16a34a" />
@@ -588,17 +580,25 @@ export default function DocumentLibraryScreen() {
                       )}
                       {canEdit && (
                         <Pressable
+                          testID={`folder-rename-${item.id}`}
                           style={styles.folderActionIconBtn}
-                          onPress={() => openRenameFolderModal(item)}
+                          onPress={(e: any) => {
+                            e?.stopPropagation?.();
+                            openRenameFolderModal(item);
+                          }}
                           accessibilityLabel="Rename Folder"
                         >
                           <Ionicons name="pencil" size={16} color={colors.brandPrimary} />
                         </Pressable>
                       )}
-                      {canEdit && (
+                      {(canEdit || canDelete) && (
                         <Pressable
-                          style={styles.folderActionIconBtn}
-                          onPress={() => handleDeleteFolder(item)}
+                          testID={`folder-delete-${item.id}`}
+                          style={[styles.folderActionIconBtn, { backgroundColor: '#fef2f2' }]}
+                          onPress={(e: any) => {
+                            e?.stopPropagation?.();
+                            handleDeleteFolder(item);
+                          }}
                           accessibilityLabel="Delete Folder"
                         >
                           <Ionicons name="trash-outline" size={16} color={colors.error} />
@@ -607,7 +607,10 @@ export default function DocumentLibraryScreen() {
                       <Pressable
                         testID={`folder-open-${item.id}`}
                         style={[styles.folderActionIconBtn, { backgroundColor: colors.brandPrimary + '15' }]}
-                        onPress={() => handleOpenFolder(item)}
+                        onPress={(e: any) => {
+                          e?.stopPropagation?.();
+                          handleOpenFolder(item);
+                        }}
                         accessibilityLabel="Open Folder"
                       >
                         <Ionicons name="arrow-forward" size={16} color={colors.brandPrimary} />
@@ -826,8 +829,12 @@ export default function DocumentLibraryScreen() {
                           )}
 
                           <Pressable
+                            testID={`row-delete-${item.id}`}
                             style={styles.deleteActionBtn}
-                            onPress={() => handleDeleteRow(item)}
+                            onPress={(e: any) => {
+                              e?.stopPropagation?.();
+                              handleDeleteRow(item);
+                            }}
                             accessibilityLabel="Delete"
                           >
                             <Ionicons name="trash-outline" size={13} color={colors.error} />
