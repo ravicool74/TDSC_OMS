@@ -576,6 +576,7 @@ class Task(BaseModel):
     source_id: Optional[str] = None
     request_no: Optional[str] = None
 
+    voucher_id: Optional[str] = None
     voucher_no: Optional[str] = None
     voucher_date: Optional[str] = None
     total_amount: Optional[float] = 0
@@ -644,10 +645,12 @@ class TaskInput(BaseModel):
     service_name: Optional[str] = None
     stages: Optional[List[dict]] = None   # optional initial stages [{name,color?}]
     sub_tasks: Optional[List[dict]] = None
+    voucher_id: Optional[str] = None
     voucher_no: Optional[str] = None
     voucher_date: Optional[str] = None
     total_amount: Optional[float] = 0
     paid_amount: Optional[float] = 0
+    dues_amount: Optional[float] = 0
     deadline: Optional[str] = None
     assignee_id: Optional[str] = None
     assignee_name: Optional[str] = None
@@ -683,10 +686,12 @@ class TaskUpdate(BaseModel):
     deadline: Optional[str] = None
     assignee_id: Optional[str] = None
     assignee_name: Optional[str] = None
+    voucher_id: Optional[str] = None
     voucher_no: Optional[str] = None
     voucher_date: Optional[str] = None
     total_amount: Optional[float] = None
     paid_amount: Optional[float] = None
+    dues_amount: Optional[float] = None
     sub_tasks: Optional[List[dict]] = None
     customer_id: Optional[str] = None
     customer_code: Optional[str] = None
@@ -2329,6 +2334,38 @@ def _order_stages(stages: List[dict]) -> List[dict]:
 
 @api_router.post("/tasks", response_model=Task)
 async def create_task(payload: TaskInput, current: User = Depends(get_current_user)):
+    total = float(payload.total_amount or 0)
+    paid = float(payload.paid_amount or 0)
+    dues = max(0.0, round(total - paid, 2))
+
+    # Link voucher and prevent duplicate task generation
+    v_id = payload.voucher_id
+    v_no = payload.voucher_no
+    if v_no and not v_id:
+        inv = await db.invoices.find_one({"invoice_no": v_no}, {"_id": 0})
+        if inv:
+            v_id = inv.get("id")
+            if total <= 0: total = float(inv.get("total_amount") or 0.0)
+            if paid <= 0: paid = float(inv.get("paid_amount") or 0.0)
+            dues = max(0.0, round(total - paid, 2))
+
+    target_cat = payload.task_category or ("payment_followup" if "Payment Follow-up" in payload.title or dues > 0 else "task_followup")
+
+    if v_id or v_no:
+        dup_conds = []
+        if v_id: dup_conds.append({"voucher_id": v_id, "task_category": target_cat})
+        if v_no: dup_conds.append({"voucher_no": v_no, "task_category": target_cat})
+        existing_task = await db.tasks.find_one({"$or": dup_conds}, {"_id": 0})
+        if existing_task:
+            upd = {k: v for k, v in payload.dict().items() if v is not None and k not in ("id", "task_no")}
+            upd["voucher_id"] = v_id or existing_task.get("voucher_id")
+            upd["total_amount"] = total
+            upd["paid_amount"] = paid
+            upd["dues_amount"] = dues
+            await db.tasks.update_one({"id": existing_task["id"]}, {"$set": upd})
+            updated_doc = await db.tasks.find_one({"id": existing_task["id"]}, {"_id": 0})
+            return Task(**updated_doc)
+
     # Auto task_no
     counter = await db.counters.find_one_and_update(
         {"_id": "task_no"},
@@ -2343,10 +2380,6 @@ async def create_task(payload: TaskInput, current: User = Depends(get_current_us
 
     stages = _order_stages(payload.stages or [])
     first = stages[0] if stages else None
-
-    total = float(payload.total_amount or 0)
-    paid = float(payload.paid_amount or 0)
-    dues = round(total - paid, 2)
 
     subs = _sub_tasks_with_ids(payload.sub_tasks or [])
 
@@ -2381,7 +2414,7 @@ async def create_task(payload: TaskInput, current: User = Depends(get_current_us
         description=payload.description,
         task_type_id=(tt or {}).get("id"),
         task_type_name=(tt or {}).get("name"),
-        task_category=payload.task_category or ("payment_followup" if "Payment Follow-up" in payload.title or dues > 0 else "task_followup"),
+        task_category=target_cat,
         chat_participants=participants,
         service_id=payload.service_id,
         service_name=svc_name,
@@ -2391,6 +2424,7 @@ async def create_task(payload: TaskInput, current: User = Depends(get_current_us
         current_stage_name=(first or {}).get("name") or (wf_stages[0]["name"] if wf_stages else None),
         stage_history=initial_history,
         sub_tasks=subs,
+        voucher_id=v_id,
         voucher_no=payload.voucher_no,
         voucher_date=payload.voucher_date,
         total_amount=total, paid_amount=paid, dues_amount=dues,
@@ -2404,6 +2438,16 @@ async def create_task(payload: TaskInput, current: User = Depends(get_current_us
     )
     await db.tasks.insert_one(t.dict())
     return t
+
+
+@api_router.post("/tasks/sync-vouchers")
+async def sync_all_voucher_tasks_endpoint(current: User = Depends(require_admin)):
+    """
+    Dedicated endpoint to clean up any duplicate voucher tasks and synchronize
+    all voucher tasks with the latest reconciled invoice numbers.
+    """
+    count = await _cleanup_and_sync_all_voucher_tasks()
+    return {"status": "ok", "synced_vouchers": count}
 
 
 @api_router.get("/tasks", response_model=List[Task])
@@ -2429,8 +2473,52 @@ async def list_tasks(
         ]}
 
     docs = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+    # Live amount sync from invoices for all voucher-linked tasks
+    v_ids = list({d["voucher_id"] for d in docs if d.get("voucher_id")})
+    v_nos = list({d["voucher_no"] for d in docs if d.get("voucher_no") and not d.get("voucher_id")})
+    inv_map = {}
+    if v_ids or v_nos:
+        inv_query = []
+        if v_ids: inv_query.append({"id": {"$in": v_ids}})
+        if v_nos: inv_query.append({"invoice_no": {"$in": v_nos}})
+        try:
+            inv_docs = await db.invoices.find({"$or": inv_query}, {"_id": 0, "id": 1, "invoice_no": 1, "total_amount": 1, "paid_amount": 1, "balance": 1}).to_list(1000)
+            for iv in inv_docs:
+                if iv.get("id"): inv_map[iv["id"]] = iv
+                if iv.get("invoice_no") and iv["invoice_no"] not in inv_map:
+                    inv_map[iv["invoice_no"]] = iv
+        except Exception:
+            pass
+
     out = []
     for d in docs:
+        # Live amount sync if linked to invoice
+        iv = inv_map.get(d.get("voucher_id")) or inv_map.get(d.get("voucher_no"))
+        if iv:
+            cur_tot = float(iv.get("total_amount") or 0.0)
+            cur_paid = float(iv.get("paid_amount") or 0.0)
+            cur_dues = max(0.0, round(cur_tot - cur_paid, 2))
+            if (
+                abs(float(d.get("total_amount") or 0.0) - cur_tot) > 0.01 or
+                abs(float(d.get("paid_amount") or 0.0) - cur_paid) > 0.01 or
+                abs(float(d.get("dues_amount") or 0.0) - cur_dues) > 0.01
+            ):
+                d["total_amount"] = cur_tot
+                d["paid_amount"] = cur_paid
+                d["dues_amount"] = cur_dues
+                if d.get("voucher_id") is None and iv.get("id"):
+                    d["voucher_id"] = iv["id"]
+                asyncio.create_task(db.tasks.update_one(
+                    {"id": d["id"]},
+                    {"$set": {
+                        "total_amount": cur_tot,
+                        "paid_amount": cur_paid,
+                        "dues_amount": cur_dues,
+                        "voucher_id": iv.get("id") or d.get("voucher_id"),
+                    }}
+                ))
+
         # Normalize category
         cat = d.get("task_category")
         if not cat:
@@ -2454,6 +2542,25 @@ async def get_task(tid: str, current: User = Depends(get_current_user)):
     d = await db.tasks.find_one({"id": tid}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
+    v_id = d.get("voucher_id")
+    v_no = d.get("voucher_no")
+    if v_id or v_no:
+        iv_q = []
+        if v_id: iv_q.append({"id": v_id})
+        if v_no: iv_q.append({"invoice_no": v_no})
+        try:
+            iv = await db.invoices.find_one({"$or": iv_q}, {"_id": 0})
+            if iv:
+                cur_tot = float(iv.get("total_amount") or 0.0)
+                cur_paid = float(iv.get("paid_amount") or 0.0)
+                cur_dues = max(0.0, round(cur_tot - cur_paid, 2))
+                d["total_amount"] = cur_tot
+                d["paid_amount"] = cur_paid
+                d["dues_amount"] = cur_dues
+                if not d.get("voucher_id") and iv.get("id"):
+                    d["voucher_id"] = iv["id"]
+        except Exception:
+            pass
     return Task(**d)
 
 
@@ -4196,6 +4303,10 @@ async def create_income(payload: IncomeInput, current: User = Depends(get_curren
                 }
             }
         )
+        try:
+            await _sync_tasks_for_invoice(sinv["id"])
+        except Exception as _st_err:
+            logger.warning(f"Failed to sync tasks in create_income for {sinv['id']}: {_st_err}")
 
     # Auto-update cash & bank ledgers
     try:
@@ -5256,9 +5367,205 @@ async def _get_global_auto_toggle() -> bool:
     return True if val is None else bool(val)
 
 
+async def _sync_tasks_for_invoice(inv_or_id, skip_reconcile: bool = False):
+    """
+    Synchronizes tasks linked to a voucher (sale invoice):
+    - Reconciles invoice payments (initial split payments + Payment-In receipts).
+    - Verifies how much payment was due, how much is paid now, and remaining dues.
+    - Strictly deduplicates tasks: ensures at most 1 'task_followup' and 1 'payment_followup' per voucher.
+      Surplus duplicate tasks are purged from db.tasks.
+    - Updates remaining tasks with live total_amount, paid_amount, dues_amount, and customer details.
+    - For payment_followup: updates live description with balance and marks priority (low if dues <= 0, else high).
+    """
+    try:
+        if not inv_or_id:
+            return None
+
+        if isinstance(inv_or_id, dict):
+            inv_doc = dict(inv_or_id)
+            inv_id = inv_doc.get("id")
+            inv_no = inv_doc.get("invoice_no")
+        elif isinstance(inv_or_id, str):
+            inv_id = inv_or_id
+            inv_doc = await db.invoices.find_one({"$or": [{"id": inv_id}, {"invoice_no": inv_id}]}, {"_id": 0})
+            if not inv_doc:
+                return None
+            inv_no = inv_doc.get("invoice_no")
+        else:
+            inv_id = getattr(inv_or_id, "id", None)
+            inv_no = getattr(inv_or_id, "invoice_no", None)
+            inv_doc = inv_or_id.dict() if hasattr(inv_or_id, "dict") else dict(inv_or_id)
+
+        if not skip_reconcile:
+            try:
+                inv_doc = await _reconcile_single_invoice_payments(inv_doc)
+            except Exception as _re:
+                logger.warning(f"Reconcile error in _sync_tasks_for_invoice for {inv_no}: {_re}")
+
+        inv_id = inv_doc.get("id") or inv_id
+        inv_no = inv_doc.get("invoice_no") or inv_no
+        total_amt = float(inv_doc.get("total_amount") or 0.0)
+        paid_amt = float(inv_doc.get("paid_amount") or 0.0)
+        dues_amt = max(0.0, round(total_amt - paid_amt, 2))
+        party_id = inv_doc.get("party_id")
+        party_name = inv_doc.get("party_name") or ""
+        party_mobile = inv_doc.get("party_mobile") or ""
+        party_pan = inv_doc.get("party_pan") or ""
+        party_code = inv_doc.get("party_code") or ""
+        party_address = inv_doc.get("party_address") or ""
+        v_date = inv_doc.get("date")
+
+        # Enrich customer details if missing
+        if party_id and (not party_pan or not party_code or not party_mobile):
+            cust = await db.customers.find_one({"id": party_id}, {"_id": 0})
+            if cust:
+                party_pan = party_pan or cust.get("pan")
+                party_code = party_code or cust.get("customer_code")
+                party_mobile = party_mobile or cust.get("mobile")
+                party_address = party_address or cust.get("address")
+
+        or_conds = []
+        if inv_id:
+            or_conds.append({"voucher_id": inv_id})
+        if inv_no:
+            if party_id:
+                or_conds.append({"voucher_no": inv_no, "customer_id": party_id})
+            if party_name:
+                or_conds.append({"voucher_no": inv_no, "customer_name": party_name})
+            or_conds.append({"voucher_no": inv_no, "voucher_id": None})
+            or_conds.append({"voucher_no": inv_no, "voucher_id": {"$exists": False}})
+
+        tasks = await db.tasks.find({"$or": or_conds}, {"_id": 0}).to_list(100) if or_conds else []
+        if not tasks and inv_no:
+            tasks = await db.tasks.find({"voucher_no": inv_no}, {"_id": 0}).to_list(100)
+
+        if not tasks:
+            return None
+
+        tf_tasks = []
+        pf_tasks = []
+        for t in tasks:
+            cat = t.get("task_category")
+            if not cat:
+                title = t.get("title") or ""
+                if "payment follow-up" in title.lower():
+                    cat = "payment_followup"
+                else:
+                    cat = "task_followup"
+            if cat == "payment_followup":
+                pf_tasks.append(t)
+            else:
+                tf_tasks.append(t)
+
+        def _score(t):
+            score = 0
+            if t.get("customer_id") == party_id:
+                score += 20
+            if t.get("customer_name") == party_name:
+                score += 10
+            if t.get("voucher_id") == inv_id:
+                score += 15
+            if t.get("workflow_history"):
+                score += len(t["workflow_history"])
+            if t.get("stage_history"):
+                score += len(t["stage_history"])
+            return score
+
+        def _pick_best(t_list):
+            if not t_list:
+                return None, []
+            sorted_t = sorted(t_list, key=_score, reverse=True)
+            return sorted_t[0], sorted_t[1:]
+
+        best_tf, dup_tf = _pick_best(tf_tasks)
+        best_pf, dup_pf = _pick_best(pf_tasks)
+
+        # Delete surplus duplicates from database
+        dup_ids = [t["id"] for t in (dup_tf + dup_pf) if t.get("id")]
+        if dup_ids:
+            await db.tasks.delete_many({"id": {"$in": dup_ids}})
+            logger.info(f"Cleaned up {len(dup_ids)} duplicate tasks for invoice {inv_no} ({inv_id}): {dup_ids}")
+
+        common_updates = {
+            "voucher_id": inv_id,
+            "voucher_no": inv_no,
+            "voucher_date": v_date,
+            "total_amount": total_amt,
+            "paid_amount": paid_amt,
+            "dues_amount": dues_amt,
+            "customer_id": party_id,
+            "customer_name": party_name,
+            "customer_mobile": party_mobile,
+            "customer_pan": party_pan,
+            "customer_code": party_code,
+            "customer_address": party_address,
+        }
+
+        if best_tf:
+            await db.tasks.update_one({"id": best_tf["id"]}, {"$set": common_updates})
+
+        if best_pf:
+            pf_updates = dict(common_updates)
+            pf_updates["title"] = f"Payment Follow-up — {party_name}"
+            pf_updates["description"] = f"Follow-up on {inv_no}. Balance: ₹{dues_amt:,.2f} (Total: ₹{total_amt:,.2f}, Paid: ₹{paid_amt:,.2f})"
+            pf_updates["priority"] = "low" if dues_amt <= 0 else "high"
+            await db.tasks.update_one({"id": best_pf["id"]}, {"$set": pf_updates})
+
+        return {"synced": True, "voucher_no": inv_no, "total": total_amt, "paid": paid_amt, "dues": dues_amt}
+    except Exception as e:
+        logger.exception("Error in _sync_tasks_for_invoice: %s", e)
+        return None
+
+
+async def _cleanup_and_sync_all_voucher_tasks():
+    """
+    Backfill and cleanup:
+    1. Iterates over all sale invoices and calls _sync_tasks_for_invoice.
+    2. Ensures exactly 1 Work Followup and 1 Payment Followup task per voucher.
+    """
+    try:
+        logger.info("Starting _cleanup_and_sync_all_voucher_tasks...")
+        inv_cursor = db.invoices.find({"invoice_type": {"$in": ["sale", None]}}, {"_id": 0})
+        invoices = await inv_cursor.to_list(10000)
+        synced_count = 0
+        for inv in invoices:
+            res = await _sync_tasks_for_invoice(inv)
+            if res and res.get("synced"):
+                synced_count += 1
+        logger.info(f"Completed _cleanup_and_sync_all_voucher_tasks: {synced_count} invoices synced.")
+        return synced_count
+    except Exception as e:
+        logger.exception("Error in _cleanup_and_sync_all_voucher_tasks: %s", e)
+        return 0
+
+
 async def _auto_create_tasks_for_invoice(inv, current: User):
     if not await _get_global_auto_toggle():
         return []
+
+    # 1. Check if tasks ALREADY exist for this invoice (strictly prevent duplicates)
+    inv_id = getattr(inv, "id", None) or (inv.get("id") if isinstance(inv, dict) else None)
+    inv_no = getattr(inv, "invoice_no", None) or (inv.get("invoice_no") if isinstance(inv, dict) else None)
+    party_id = getattr(inv, "party_id", None) or (inv.get("party_id") if isinstance(inv, dict) else None)
+    party_name = getattr(inv, "party_name", None) or (inv.get("party_name") if isinstance(inv, dict) else None)
+
+    or_conds = []
+    if inv_id:
+        or_conds.append({"voucher_id": inv_id})
+    if inv_no:
+        if party_id:
+            or_conds.append({"voucher_no": inv_no, "customer_id": party_id})
+        if party_name:
+            or_conds.append({"voucher_no": inv_no, "customer_name": party_name})
+        or_conds.append({"voucher_no": inv_no, "voucher_id": None})
+        or_conds.append({"voucher_no": inv_no, "voucher_id": {"$exists": False}})
+
+    existing = await db.tasks.find({"$or": or_conds}, {"_id": 0}).to_list(10) if or_conds else []
+    if existing:
+        # Already exists! Deduplicate and sync to latest numbers, never create duplicates
+        await _sync_tasks_for_invoice(inv)
+        return existing
+
     setting = await _match_service_setting(inv)
     if not setting or not setting.get("auto_task_enabled", True):
         return []
@@ -5281,14 +5588,19 @@ async def _auto_create_tasks_for_invoice(inv, current: User):
             base = datetime.utcnow()
         return (base + timedelta(days=days)).strftime("%Y-%m-%d")
 
+    tot_val = float(inv.total_amount or 0.0)
+    paid_val = float(inv.paid_amount or 0.0)
+    bal_val = max(0.0, round(tot_val - paid_val, 2))
+
     common_customer = dict(
         customer_id=inv.party_id, customer_code=cust_code, customer_name=inv.party_name,
         customer_mobile=inv.party_mobile, customer_pan=cust_pan, customer_address=cust_addr,
     )
     common_voucher = dict(
+        voucher_id=inv.id,
         voucher_no=inv.invoice_no, voucher_date=inv.date,
-        total_amount=inv.total_amount, paid_amount=inv.paid_amount,
-        dues_amount=round(inv.total_amount - inv.paid_amount, 2),
+        total_amount=tot_val, paid_amount=paid_val,
+        dues_amount=bal_val,
     )
 
     tasks_created = []
@@ -5322,7 +5634,7 @@ async def _auto_create_tasks_for_invoice(inv, current: User):
     followup_task = Task(
         task_no=await _next_no("task_no", "TSK"),
         title=f"Payment Follow-up — {inv.party_name}",
-        description=f"Follow-up on {inv.invoice_no}. Balance: ₹{round(inv.balance, 2)}",
+        description=f"Follow-up on {inv.invoice_no}. Balance: ₹{bal_val:,.2f} (Total: ₹{tot_val:,.2f}, Paid: ₹{paid_val:,.2f})",
         task_category="payment_followup",
         service_name="Payment Follow-up",
         workflow_stages=pay_stages,
@@ -5330,7 +5642,7 @@ async def _auto_create_tasks_for_invoice(inv, current: User):
         deadline=_add_days(inv.date, followup_days),
         assignee_id=assignee_id, assignee_name=assignee_name,
         chat_participants=[assignee_id] if assignee_id else [],
-        priority="medium" if inv.balance <= 0 else "high", status="todo",
+        priority="low" if bal_val <= 0 else "high", status="todo",
         created_by=current.user_id, created_by_name=current.name,
         **common_customer, **common_voucher,
     )
@@ -5819,6 +6131,12 @@ async def _reconcile_single_invoice_payments(d: dict) -> dict:
         d["status"] = new_status
         d["payments"] = merged
         d["payment_splits"] = synced_splits
+
+    # Always ensure linked tasks stay synchronized with up-to-date payments & dues
+    try:
+        await _sync_tasks_for_invoice(d, skip_reconcile=True)
+    except Exception as _ste:
+        logger.warning(f"Error syncing tasks in _reconcile_single_invoice_payments for {inv_no}: {_ste}")
 
     return d
 
@@ -7125,6 +7443,12 @@ async def startup():
             await init_customer_portal_indexes(db)
         except Exception as _ie:
             logger.warning(f"Indexes init: {_ie}")
+
+        # Deduplicate & sync voucher tasks on startup in background
+        try:
+            asyncio.create_task(_cleanup_and_sync_all_voucher_tasks())
+        except Exception as _ce:
+            logger.warning(f"Failed to launch _cleanup_and_sync_all_voucher_tasks at startup: {_ce}")
     except Exception as e:
         logger.error(f"Startup error: {e}")
 
