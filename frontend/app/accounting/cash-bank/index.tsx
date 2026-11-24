@@ -12,6 +12,7 @@ import {
   Alert,
   TextInput,
   Image,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -132,6 +133,21 @@ export default function CashBankScreen() {
   });
   const [settlementBusy, setSettlementBusy] = useState(false);
   const [settlementErr, setSettlementErr] = useState<string | null>(null);
+
+  // Edit Settlement Modal state
+  const [editingSettlement, setEditingSettlement] = useState<any | null>(null);
+  const [editSettlementForm, setEditSettlementForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    settlement_ref: '',
+    utr_no: '',
+    bank_account_id: '',
+    gross_amount: '',
+    settlement_charges: '',
+    tax_amount: '',
+    notes: '',
+  });
+  const [editSettlementBusy, setEditSettlementBusy] = useState(false);
+  const [editSettlementErr, setEditSettlementErr] = useState<string | null>(null);
 
   // Editing IDs
   const [editingBankId, setEditingBankId] = useState<string | null>(null);
@@ -401,6 +417,213 @@ export default function CashBankScreen() {
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to rollback settlement');
     }
+  };
+
+  const handleOpenEditSettlement = (s: any) => {
+    setEditingSettlement(s);
+    setEditSettlementErr(null);
+    setEditSettlementForm({
+      date: s.date || new Date().toISOString().split('T')[0],
+      settlement_ref: s.settlement_ref || '',
+      utr_no: s.utr_no || '',
+      bank_account_id: s.bank_account_id || '',
+      gross_amount: String(s.gross_amount ?? ''),
+      settlement_charges: String(s.settlement_charges ?? ''),
+      tax_amount: String(s.tax_amount ?? '0'),
+      notes: s.notes || '',
+    });
+  };
+
+  const handleUpdateSettlement = async () => {
+    if (!editingSettlement) return;
+    const gross = parseFloat(editSettlementForm.gross_amount);
+    const charges = parseFloat(editSettlementForm.settlement_charges || '0');
+    const tax = parseFloat(editSettlementForm.tax_amount || '0');
+
+    if (isNaN(gross) || gross <= 0) {
+      setEditSettlementErr('Please enter a valid gross collection amount (> 0).');
+      return;
+    }
+    if (!editSettlementForm.settlement_ref.trim()) {
+      setEditSettlementErr('Please enter the settlement batch / reference #.');
+      return;
+    }
+    if (!editSettlementForm.bank_account_id) {
+      setEditSettlementErr('Please select the commercial bank account.');
+      return;
+    }
+    if (charges + tax > gross) {
+      setEditSettlementErr('Settlement charges cannot exceed gross collections.');
+      return;
+    }
+
+    setEditSettlementBusy(true);
+    setEditSettlementErr(null);
+    try {
+      await api.updateSettlement(editingSettlement.id, {
+        date: editSettlementForm.date,
+        settlement_ref: editSettlementForm.settlement_ref.trim(),
+        utr_no: editSettlementForm.utr_no.trim(),
+        bank_account_id: editSettlementForm.bank_account_id,
+        gross_amount: gross,
+        settlement_charges: charges,
+        tax_amount: tax,
+        notes: editSettlementForm.notes.trim(),
+      });
+      notify('Settlement Updated', 'Settlement updated and journal posting refreshed successfully.');
+      setEditingSettlement(null);
+      loadData();
+    } catch (err: any) {
+      setEditSettlementErr(err?.message || 'Failed to update settlement');
+    } finally {
+      setEditSettlementBusy(false);
+    }
+  };
+
+  const handlePrintSettlement = (s: any) => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') {
+      const summaryMsg = `TDSC • PAYMENT GATEWAY SETTLEMENT VOUCHER\nVoucher #: ${s.settlement_no || s.id}\nDate: ${s.date}\nBank: ${s.bank_name}\nGross Collection: ${inr(s.gross_amount)}\nCharges Deducted: ${inr(s.total_charges)}\nNet Bank Credit: ${inr(s.net_amount)}\nBatch Ref: ${s.settlement_ref}\nUTR: ${s.utr_no || 'N/A'}`;
+      try { Share.share({ message: summaryMsg }); } catch {}
+      return;
+    }
+
+    const j = s.journal_entry || {};
+    const dr_b = j.dr_bank || {};
+    const dr_e = j.dr_expense || {};
+    const cr_c = j.cr_clearing || {};
+
+    const printWin = window.open('', '_blank');
+    if (!printWin) {
+      notify('Popup Blocked', 'Please allow popups to print the settlement voucher.');
+      return;
+    }
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Payment Gateway Settlement Voucher - ${s.settlement_no || s.id}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 30px; color: #0F172A; }
+    .header { text-align: center; border-bottom: 2px solid #0284C7; padding-bottom: 15px; margin-bottom: 20px; }
+    .title { font-size: 22px; font-weight: 800; color: #00104A; text-transform: uppercase; margin: 0; }
+    .sub { font-size: 13px; color: #64748B; margin-top: 4px; }
+    .badge { display: inline-block; background: #DCFCE7; color: #059669; font-weight: 800; font-size: 12px; padding: 4px 12px; border-radius: 20px; margin-top: 8px; }
+    .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    .meta-table td { padding: 8px 12px; border: 1px solid #E2E8F0; font-size: 13px; }
+    .meta-table .label { background: #F8FAFC; font-weight: 700; color: #475569; width: 25%; }
+    .meta-table .val { font-weight: 600; }
+    .box-grid { display: flex; gap: 15px; margin-bottom: 25px; }
+    .stat-box { flex: 1; border: 1.5px solid #E2E8F0; border-radius: 8px; padding: 12px; text-align: center; }
+    .stat-lbl { font-size: 11px; font-weight: 700; color: #64748B; text-transform: uppercase; }
+    .stat-val { font-size: 18px; font-weight: 800; margin-top: 4px; }
+    .j-table { width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 25px; }
+    .j-table th { background: #00104A; color: #FFF; padding: 10px; font-size: 12px; text-align: left; }
+    .j-table td { padding: 10px; border: 1px solid #CBD5E1; font-size: 13px; }
+    .footer { margin-top: 40px; display: flex; justify-content: space-between; border-top: 1px dashed #CBD5E1; padding-top: 20px; }
+    .sig-block { text-align: center; font-size: 12px; color: #475569; width: 200px; }
+    .sig-line { border-top: 1px solid #0F172A; margin-top: 40px; padding-top: 4px; font-weight: 700; }
+    @media print {
+      button { display: none; }
+      body { margin: 15mm; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Triveni DSC & E-Tender Service Pvt. Ltd.</div>
+    <div class="sub">PAYMENT GATEWAY SETTLEMENT & JOURNAL VOUCHER</div>
+    <div class="badge">SETTLED & AUDITED RECONCILIATION</div>
+  </div>
+
+  <table class="meta-table">
+    <tr>
+      <td class="label">Settlement Voucher #</td>
+      <td class="val">${s.settlement_no || s.id}</td>
+      <td class="label">Settlement Date</td>
+      <td class="val">${s.date}</td>
+    </tr>
+    <tr>
+      <td class="label">Gateway Provider</td>
+      <td class="val">Paytm Payment Gateway</td>
+      <td class="label">Batch / Settlement Ref</td>
+      <td class="val">${s.settlement_ref}</td>
+    </tr>
+    <tr>
+      <td class="label">Target Credited Bank</td>
+      <td class="val"><strong>${s.bank_name}</strong></td>
+      <td class="label">Bank Transfer UTR No</td>
+      <td class="val">${s.utr_no || 'N/A'}</td>
+    </tr>
+    ${s.notes ? `<tr><td class="label">Internal Notes</td><td colspan="3" class="val">${s.notes}</td></tr>` : ''}
+  </table>
+
+  <div class="box-grid">
+    <div class="stat-box" style="border-color: #BAE6FD; background: #F0F9FF;">
+      <div class="stat-lbl" style="color: #0284C7;">Gross Collection (Cr. Clearing)</div>
+      <div class="stat-val" style="color: #0284C7;">₹${Number(s.gross_amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+    </div>
+    <div class="stat-box" style="border-color: #FECACA; background: #FEF2F2;">
+      <div class="stat-lbl" style="color: #DC2626;">Paytm Charges Deducted (Dr. Exp)</div>
+      <div class="stat-val" style="color: #DC2626;">₹${Number(s.total_charges || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+    </div>
+    <div class="stat-box" style="border-color: #BBF7D0; background: #F0FDF4;">
+      <div class="stat-lbl" style="color: #059669;">Net Amount Credited to Bank (Dr. Bank)</div>
+      <div class="stat-val" style="color: #059669;">₹${Number(s.net_amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+    </div>
+  </div>
+
+  <h4 style="margin-bottom: 6px; font-size: 14px; text-transform: uppercase; color: #1E293B;">Double-Entry Ledger Posting Breakdown:</h4>
+  <table class="j-table">
+    <thead>
+      <tr>
+        <th>Particulars / Ledger Head</th>
+        <th style="text-align: right; width: 140px;">Debit (₹)</th>
+        <th style="text-align: right; width: 140px;">Credit (₹)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Dr. ${dr_b.account_name || s.bank_name}</strong> (Commercial Bank Inflow)</td>
+        <td style="text-align: right; font-weight: 700; color: #059669;">₹${Number(dr_b.amount || s.net_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+        <td style="text-align: right; color: #94A3B8;">—</td>
+      </tr>
+      <tr>
+        <td><strong>Dr. Paytm Settlement Charges Expense</strong> (Bank Charges / General Business Expenses)</td>
+        <td style="text-align: right; font-weight: 700; color: #DC2626;">₹${Number(dr_e.amount || s.total_charges || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+        <td style="text-align: right; color: #94A3B8;">—</td>
+      </tr>
+      <tr>
+        <td><strong>Cr. Paytm Clearing Account</strong> (Transit Clearing Clearance)</td>
+        <td style="text-align: right; color: #94A3B8;">—</td>
+        <td style="text-align: right; font-weight: 700; color: #0F172A;">₹${Number(cr_c.amount || s.gross_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      </tr>
+      <tr style="background: #F8FAFC; font-weight: 800;">
+        <td>TOTAL JOURNAL ENTRY (BALANCED)</td>
+        <td style="text-align: right; color: #059669;">₹${Number(s.gross_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+        <td style="text-align: right; color: #059669;">₹${Number(s.gross_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <div class="sig-block">
+      <div class="sig-line">Prepared By (Staff)</div>
+    </div>
+    <div class="sig-block">
+      <div class="sig-line">Verified By (Accounts)</div>
+    </div>
+    <div class="sig-block">
+      <div class="sig-line">Authorized Signatory</div>
+    </div>
+  </div>
+  <script>window.onload = function() { window.print(); };</script>
+</body>
+</html>`;
+
+    printWin.document.open();
+    printWin.document.write(html);
+    printWin.document.close();
   };
 
   // Open Deposit/Withdraw Modal
@@ -1564,15 +1787,49 @@ export default function CashBankScreen() {
                         <Text style={{ fontSize: 12, color: '#475569', fontWeight: '600' }}>• Cr. Paytm Clearing Account {inr(cr_c.amount || s.gross_amount)}</Text>
                       </View>
 
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Text style={{ fontSize: 11, color: colors.muted }}>UTR: {s.utr_no || 'N/A'}</Text>
-                        <Pressable
-                          onPress={() => setViewingJournalModal(s)}
-                          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }}
-                        >
-                          <Ionicons name="receipt-outline" size={14} color="#1E40AF" />
-                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E40AF' }}>View Voucher</Text>
-                        </Pressable>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#E2E8F0', flexWrap: 'wrap', gap: 6 }}>
+                        <Text style={{ fontSize: 11, color: colors.muted, fontWeight: '600' }}>UTR: {s.utr_no || 'N/A'}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          {/* 1. View Button */}
+                          <Pressable
+                            onPress={() => setViewingJournalModal(s)}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }}
+                            testID={`btn-view-settlement-${s.id}`}
+                          >
+                            <Ionicons name="eye-outline" size={13} color="#1E40AF" />
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: '#1E40AF' }}>View</Text>
+                          </Pressable>
+
+                          {/* 2. Print Button */}
+                          <Pressable
+                            onPress={() => handlePrintSettlement(s)}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E1' }}
+                            testID={`btn-print-settlement-${s.id}`}
+                          >
+                            <Ionicons name="print-outline" size={13} color="#334155" />
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: '#334155' }}>Print</Text>
+                          </Pressable>
+
+                          {/* 3. Edit Button */}
+                          <Pressable
+                            onPress={() => handleOpenEditSettlement(s)}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FDE68A' }}
+                            testID={`btn-edit-settlement-${s.id}`}
+                          >
+                            <Ionicons name="pencil-outline" size={13} color="#B45309" />
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: '#B45309' }}>Edit</Text>
+                          </Pressable>
+
+                          {/* 4. Delete Button */}
+                          <Pressable
+                            onPress={() => handleDeleteSettlement(s.id, s.settlement_ref)}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FECACA' }}
+                            testID={`btn-delete-settlement-${s.id}`}
+                          >
+                            <Ionicons name="trash-outline" size={13} color="#DC2626" />
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>Delete</Text>
+                          </Pressable>
+                        </View>
                       </View>
                     </View>
                   );
@@ -2877,13 +3134,31 @@ export default function CashBankScreen() {
                   testID="in-settle-notes"
                 />
 
-                <View style={{ marginTop: 8, marginBottom: 16 }}>
-                  <PrimaryButton
-                    label="Post Settlement & Journal"
-                    onPress={handleCreateSettlement}
-                    loading={settlementBusy}
-                    testID="submit-settlement"
-                  />
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, marginBottom: 16 }}>
+                  <Pressable
+                    onPress={() => setShowNewSettlementModal(false)}
+                    style={{
+                      flex: 1,
+                      backgroundColor: '#F1F5F9',
+                      borderWidth: 1.5,
+                      borderColor: '#CBD5E1',
+                      borderRadius: 10,
+                      paddingVertical: 14,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    testID="close-new-settlement-modal"
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#475569' }}>Close</Text>
+                  </Pressable>
+                  <View style={{ flex: 2 }}>
+                    <PrimaryButton
+                      label="Post Settlement & Journal"
+                      onPress={handleCreateSettlement}
+                      loading={settlementBusy}
+                      testID="submit-settlement"
+                    />
+                  </View>
                 </View>
               </ScrollView>
             </View>
@@ -2944,15 +3219,203 @@ export default function CashBankScreen() {
                   </View>
                 </View>
 
-                <Pressable
-                  onPress={() => setViewingJournalModal(null)}
-                  style={[styles.primaryBtn, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignSelf: 'center', paddingHorizontal: 24 }]}
-                >
-                  <Text style={[styles.primaryBtnTxt, { color: '#0F172A' }]}>Close Voucher</Text>
-                </Pressable>
+                <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'center', marginTop: 14 }}>
+                  <Pressable
+                    onPress={() => handlePrintSettlement(viewingJournalModal)}
+                    style={[styles.primaryBtn, { backgroundColor: '#0284C7', paddingHorizontal: 18 }]}
+                    testID="btn-modal-print-voucher"
+                  >
+                    <Ionicons name="print-outline" size={16} color="#FFF" />
+                    <Text style={styles.primaryBtnTxt}>Print Voucher</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setViewingJournalModal(null)}
+                    style={[styles.primaryBtn, { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 18 }]}
+                    testID="btn-modal-close-voucher"
+                  >
+                    <Text style={[styles.primaryBtnTxt, { color: '#0F172A' }]}>Close Voucher</Text>
+                  </Pressable>
+                </View>
               </View>
             )}
           </View>
+        </View>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL: EDIT PG SETTLEMENT */}
+      {/* ========================================================================= */}
+      <Modal transparent visible={!!editingSettlement} animationType="slide" onRequestClose={() => setEditingSettlement(null)}>
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxWidth: 540 }}>
+            <View style={[styles.modalCard, { maxHeight: '90%' }]}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>Edit Paytm Settlement</Text>
+                  <Text style={[styles.modalSub, { color: colors.muted }]}>
+                    {editingSettlement?.settlement_no || editingSettlement?.id} • Update details & refresh journal
+                  </Text>
+                </View>
+                <Pressable onPress={() => setEditingSettlement(null)} hitSlop={8} testID="close-edit-settlement-icon">
+                  <Ionicons name="close" size={22} color={colors.muted} />
+                </Pressable>
+              </View>
+
+              <ScrollView style={{ padding: 16 }}>
+                {editSettlementErr && (
+                  <View style={{ backgroundColor: '#FEE2E2', padding: 10, borderRadius: 8, marginBottom: 12 }}>
+                    <Text style={{ color: RED, fontSize: 12, fontWeight: '600' }}>{editSettlementErr}</Text>
+                  </View>
+                )}
+
+                <FormInput
+                  label="Settlement Date *"
+                  value={editSettlementForm.date}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, date: v }))}
+                  placeholder="YYYY-MM-DD"
+                  testID="in-edit-settle-date"
+                />
+
+                <FormInput
+                  label="Paytm Settlement Ref / Batch # *"
+                  value={editSettlementForm.settlement_ref}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, settlement_ref: v }))}
+                  placeholder="e.g. PAYTM-BATCH-20261122-01"
+                  testID="in-edit-settle-ref"
+                />
+
+                <Text style={{ fontSize: 13, fontWeight: '600', color: '#0F172A', marginBottom: 6 }}>
+                  Target Commercial Bank (Credited Net Amount) *
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  {banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing').map(b => {
+                    const isSel = editSettlementForm.bank_account_id === b.id;
+                    return (
+                      <Pressable
+                        key={b.id}
+                        onPress={() => setEditSettlementForm(p => ({ ...p, bank_account_id: b.id }))}
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1.5,
+                          borderColor: isSel ? BLUE : '#CBD5E1',
+                          backgroundColor: isSel ? '#EFF6FF' : '#F8FAFC',
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: isSel ? BLUE : '#334155' }}>
+                          {b.name} ({b.bank_name})
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <FormInput
+                  label="Gross Collections Settled (₹) *"
+                  value={editSettlementForm.gross_amount}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, gross_amount: v }))}
+                  placeholder="10000.00"
+                  keyboardType="numeric"
+                  testID="in-edit-settle-gross"
+                />
+
+                <FormInput
+                  label="Settlement Charges Deducted by Paytm (₹) *"
+                  value={editSettlementForm.settlement_charges}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, settlement_charges: v }))}
+                  placeholder="153.87"
+                  keyboardType="numeric"
+                  testID="in-edit-settle-charges"
+                />
+
+                <FormInput
+                  label="Applicable Taxes / GST on Fee (₹)"
+                  value={editSettlementForm.tax_amount}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, tax_amount: v }))}
+                  placeholder="0.00"
+                  keyboardType="numeric"
+                  testID="in-edit-settle-tax"
+                />
+
+                {/* Net calculation & Live Journal preview */}
+                {(() => {
+                  const gross = parseFloat(editSettlementForm.gross_amount) || 0;
+                  const charges = parseFloat(editSettlementForm.settlement_charges) || 0;
+                  const tax = parseFloat(editSettlementForm.tax_amount) || 0;
+                  const net = Math.max(0, gross - charges - tax);
+                  const selBank = banks.find(b => b.id === editSettlementForm.bank_account_id);
+                  const selBankName = selBank?.name || 'Selected Bank Account';
+
+                  return (
+                    <View style={{ backgroundColor: '#F0FDF4', borderColor: '#BBF7D0', borderWidth: 1.5, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: '#065F46', marginBottom: 4 }}>
+                        UPDATED NET BANK CREDIT:
+                      </Text>
+                      <Text style={{ fontSize: 20, fontWeight: '800', color: GREEN, marginBottom: 8 }}>
+                        {inr(net)}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#047857', marginBottom: 4 }}>
+                        UPDATED JOURNAL ENTRY:
+                      </Text>
+                      <Text style={{ fontSize: 12, color: GREEN, fontWeight: '700' }}>
+                        • Dr. {selBankName} {inr(net)}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: RED, fontWeight: '700' }}>
+                        • Dr. Paytm Settlement Charges Expense (Bank Charges) {inr(charges + tax)}
+                      </Text>
+                      <Text style={{ fontSize: 12, color: '#047857', fontWeight: '700' }}>
+                        • Cr. Paytm Clearing Account {inr(gross)}
+                      </Text>
+                    </View>
+                  );
+                })()}
+
+                <FormInput
+                  label="Bank Transfer UTR No"
+                  value={editSettlementForm.utr_no}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, utr_no: v }))}
+                  placeholder="e.g. UTR123456789"
+                  testID="in-edit-settle-utr"
+                />
+
+                <FormInput
+                  label="Internal Notes"
+                  value={editSettlementForm.notes}
+                  onChangeText={v => setEditSettlementForm(p => ({ ...p, notes: v }))}
+                  placeholder="Optional settlement notes"
+                  testID="in-edit-settle-notes"
+                />
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, marginBottom: 16 }}>
+                  <Pressable
+                    onPress={() => setEditingSettlement(null)}
+                    style={{
+                      flex: 1,
+                      backgroundColor: '#F1F5F9',
+                      borderWidth: 1.5,
+                      borderColor: '#CBD5E1',
+                      borderRadius: 10,
+                      paddingVertical: 14,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    testID="close-edit-settlement-modal"
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#475569' }}>Close</Text>
+                  </Pressable>
+                  <View style={{ flex: 2 }}>
+                    <PrimaryButton
+                      label="Update Settlement & Journal"
+                      onPress={handleUpdateSettlement}
+                      loading={editSettlementBusy}
+                      testID="submit-edit-settlement"
+                    />
+                  </View>
+                </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </View>

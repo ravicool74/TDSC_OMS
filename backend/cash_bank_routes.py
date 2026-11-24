@@ -1235,6 +1235,126 @@ def make_cash_bank_router(db, get_current_user, require_admin, require_admin_or_
 
         return clean_doc(doc)
 
+    @router.patch("/settlements/{settlement_id}")
+    async def update_settlement(settlement_id: str, payload: SettlementPayload, current: Any = Depends(require_admin_or_manager)):
+        old_settlement = await db.pg_settlements.find_one({"id": settlement_id}, {"_id": 0})
+        if not old_settlement:
+            raise HTTPException(status_code=404, detail="Settlement record not found")
+
+        old_net = float(old_settlement.get("net_amount") or 0.0)
+        old_gross = float(old_settlement.get("gross_amount") or 0.0)
+        old_bank_id = old_settlement.get("bank_account_id")
+
+        # 1. Reverse previous financial impact
+        if old_bank_id:
+            await db.bank_accounts.update_one({"id": old_bank_id}, {"$inc": {"opening_balance": -old_net}})
+        await db.bank_accounts.update_one({"id": "acc_paytm_clearing"}, {"$inc": {"opening_balance": old_gross}})
+
+        # 2. Compute updated figures
+        new_gross = round(float(payload.gross_amount or old_gross), 2)
+        new_charges = round(float(payload.settlement_charges or 0.0), 2)
+        new_tax = round(float(payload.tax_amount or 0.0), 2)
+        new_total_charges = round(new_charges + new_tax, 2)
+        new_net = round(max(0.0, new_gross - new_total_charges), 2)
+        new_bank_id = payload.bank_account_id or old_bank_id
+
+        # Validate target commercial bank
+        bank = await db.bank_accounts.find_one({"id": new_bank_id}, {"_id": 0})
+        if not bank:
+            raise HTTPException(status_code=400, detail="Target commercial bank not found")
+        bank_name = f"{bank.get('name')} ({bank.get('bank_name')})"
+
+        # 3. Apply new financial impact
+        await db.bank_accounts.update_one({"id": new_bank_id}, {"$inc": {"opening_balance": new_net}})
+        await db.bank_accounts.update_one({"id": "acc_paytm_clearing"}, {"$inc": {"opening_balance": -new_gross}})
+
+        # 4. Update linked bank transactions
+        ref_text = payload.settlement_ref or old_settlement.get("settlement_ref", "")
+        tx_bank_desc = f"Paytm Gateway Settlement - Batch Ref: {ref_text} (Net: ₹{new_net:,.2f})"
+        await db.bank_transactions.update_many(
+            {"settlement_id": settlement_id, "transfer_type": "pg_settlement"},
+            {"$set": {
+                "deposit_to": new_bank_id,
+                "deposit_to_name": bank_name,
+                "amount": new_net,
+                "transfer_date": payload.date or old_settlement.get("date"),
+                "description": tx_bank_desc,
+            }}
+        )
+        tx_clearing_desc = f"Paytm Settlement Payout to {bank_name} (Gross: ₹{new_gross:,.2f})"
+        await db.bank_transactions.update_many(
+            {"settlement_id": settlement_id, "transfer_type": "pg_settlement_clearing"},
+            {"$set": {
+                "amount": new_gross,
+                "transfer_date": payload.date or old_settlement.get("date"),
+                "description": tx_clearing_desc,
+            }}
+        )
+
+        # 5. Update linked expense
+        if new_total_charges > 0:
+            exp_desc = f"Paytm Gateway Settlement Fee & Charges - Ref: {ref_text}"
+            await db.expenses.update_many(
+                {"linked_settlement_id": settlement_id},
+                {"$set": {
+                    "amount": new_total_charges,
+                    "date": payload.date or old_settlement.get("date"),
+                    "description": exp_desc,
+                    "notes": payload.notes or f"Fee: {new_charges}, Tax: {new_tax}",
+                }}
+            )
+        else:
+            await db.expenses.delete_many({"linked_settlement_id": settlement_id})
+
+        # 6. Recalculate Journal Entry
+        journal = {
+            "dr_bank": {
+                "account_id": new_bank_id,
+                "account_name": bank.get("name"),
+                "amount": new_net,
+                "label": f"Dr. {bank.get('name')}"
+            },
+            "dr_expense": {
+                "account_name": "Paytm Settlement Charges Expense (Bank Charges)",
+                "amount": new_total_charges,
+                "charges": new_charges,
+                "tax": new_tax,
+                "label": "Dr. Paytm Settlement Charges Expense"
+            },
+            "cr_clearing": {
+                "account_id": "acc_paytm_clearing",
+                "account_name": "Paytm Clearing Account",
+                "amount": new_gross,
+                "label": "Cr. Paytm Clearing Account"
+            }
+        }
+
+        # 7. Update settlement doc
+        now_iso = now_utc().isoformat()
+        update_fields = {
+            "date": payload.date or old_settlement.get("date"),
+            "settlement_ref": ref_text,
+            "utr_no": payload.utr_no.strip() if payload.utr_no else old_settlement.get("utr_no", ""),
+            "bank_account_id": new_bank_id,
+            "bank_name": bank_name,
+            "gross_amount": new_gross,
+            "settlement_charges": new_charges,
+            "tax_amount": new_tax,
+            "total_charges": new_total_charges,
+            "net_amount": new_net,
+            "journal_entry": journal,
+            "notes": payload.notes if payload.notes is not None else old_settlement.get("notes", ""),
+            "updated_at": now_iso,
+            "updated_by": current.user_id,
+        }
+        await db.pg_settlements.update_one({"id": settlement_id}, {"$set": update_fields})
+        updated = await db.pg_settlements.find_one({"id": settlement_id}, {"_id": 0})
+
+        if log_audit:
+            await log_audit(db, current, "pg_settlement", "update", settlement_id, old_settlement, updated)
+
+        return clean_doc(updated)
+
     @router.delete("/settlements/{settlement_id}")
     async def delete_settlement(settlement_id: str, current: Any = Depends(require_admin_or_manager)):
         settlement = await db.pg_settlements.find_one({"id": settlement_id}, {"_id": 0})

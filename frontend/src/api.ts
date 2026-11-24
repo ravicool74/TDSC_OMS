@@ -803,6 +803,7 @@ export const api = {
   deleteContraTransaction: (txId: string) => request<any>(`/accounting/cash-bank/contra/${txId}`, { method: 'DELETE' }),
   getSettlements: () => request<any[]>('/accounting/cash-bank/settlements'),
   createSettlement: (data: any) => request<any>('/accounting/cash-bank/settlements', { method: 'POST', body: JSON.stringify(data) }),
+  updateSettlement: (id: string, data: any) => request<any>(`/accounting/cash-bank/settlements/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteSettlement: (id: string) => request<any>(`/accounting/cash-bank/settlements/${id}`, { method: 'DELETE' }),
   getNextSettlementNo: () => request<{ next_no: string }>('/accounting/cash-bank/settlements/next-no'),
   getSettlementReconciliation: () => request<any>('/accounting/cash-bank/settlements/reconciliation'),
