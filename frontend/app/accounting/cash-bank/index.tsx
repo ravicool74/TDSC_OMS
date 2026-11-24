@@ -347,40 +347,77 @@ export default function CashBankScreen() {
   };
 
   // PG Settlement Handlers
+  const handleOpenNewSettlement = async () => {
+    setSettlementErr(null);
+    const commBanks = banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing');
+    const defaultBankId = settlementForm.bank_account_id || (commBanks.length > 0 ? commBanks[0].id : '');
+    const todayStr = new Date().toISOString().split('T')[0];
+    const dateFormatted = todayStr.replace(/-/g, '');
+    let defaultRef = `PAYTM-BATCH-${dateFormatted}-01`;
+
+    try {
+      const nextData: any = await api.get('/accounting/cash-bank/settlements/next-no');
+      if (nextData?.suggested_ref) {
+        defaultRef = nextData.suggested_ref;
+      }
+    } catch {}
+
+    setSettlementForm(prev => ({
+      ...prev,
+      date: prev.date || todayStr,
+      settlement_ref: prev.settlement_ref || defaultRef,
+      bank_account_id: defaultBankId,
+    }));
+    setShowNewSettlementModal(true);
+  };
+
   const handleCreateSettlement = async () => {
     try {
       setSettlementErr(null);
       const gross = parseFloat(settlementForm.gross_amount);
       const charges = parseFloat(settlementForm.settlement_charges || '0');
       const tax = parseFloat(settlementForm.tax_amount || '0');
-      if (!settlementForm.settlement_ref.trim()) {
-        setSettlementErr('Settlement Reference / Batch # is required');
-        return;
+
+      let refVal = settlementForm.settlement_ref.trim();
+      if (!refVal) {
+        const todayStr = settlementForm.date ? settlementForm.date.replace(/-/g, '') : new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        refVal = `PAYTM-BATCH-${todayStr}-${Math.floor(100 + Math.random() * 900)}`;
       }
-      if (!settlementForm.bank_account_id) {
-        setSettlementErr('Please select the target commercial bank account');
+
+      const commBanks = banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing');
+      const bankId = settlementForm.bank_account_id || (commBanks.length > 0 ? commBanks[0].id : '');
+
+      if (!bankId) {
+        const msg = 'Please select the target commercial bank account.';
+        setSettlementErr(msg);
+        notify('Missing Bank Account', msg);
         return;
       }
       if (isNaN(gross) || gross <= 0) {
-        setSettlementErr('Gross collection amount must be greater than 0');
+        const msg = 'Please enter a valid Gross collection amount (> 0).';
+        setSettlementErr(msg);
+        notify('Missing Gross Amount', msg);
         return;
       }
       if (gross - charges - tax <= 0) {
-        setSettlementErr('Net bank credit must be greater than 0 (charges cannot exceed gross)');
+        const msg = 'Net bank credit must be greater than 0 (charges cannot exceed gross).';
+        setSettlementErr(msg);
+        notify('Invalid Amounts', msg);
         return;
       }
+
       setSettlementBusy(true);
       await api.createSettlement({
         gateway: 'paytm',
-        date: settlementForm.date,
-        settlement_ref: settlementForm.settlement_ref.trim(),
-        utr_no: settlementForm.utr_no.trim(),
-        bank_account_id: settlementForm.bank_account_id,
+        date: settlementForm.date || new Date().toISOString().split('T')[0],
+        settlement_ref: refVal,
+        utr_no: (settlementForm.utr_no || '').trim(),
+        bank_account_id: bankId,
         gross_amount: gross,
         settlement_charges: charges,
         tax_amount: tax,
-        notes: settlementForm.notes.trim(),
-        linked_receipt_ids: settlementForm.linked_receipt_ids,
+        notes: (settlementForm.notes || '').trim(),
+        linked_receipt_ids: settlementForm.linked_receipt_ids || [],
       });
       notify('Settlement Recorded', 'Paytm Settlement recorded successfully and journal posted.');
       setShowNewSettlementModal(false);
@@ -388,7 +425,7 @@ export default function CashBankScreen() {
         date: new Date().toISOString().split('T')[0],
         settlement_ref: '',
         utr_no: '',
-        bank_account_id: '',
+        bank_account_id: bankId,
         gross_amount: '',
         settlement_charges: '',
         tax_amount: '',
@@ -397,7 +434,10 @@ export default function CashBankScreen() {
       });
       loadData();
     } catch (err: any) {
-      setSettlementErr(err?.message || 'Failed to record settlement');
+      console.error('Failed to record settlement', err);
+      const errMsg = err?.message || 'Failed to record settlement';
+      setSettlementErr(errMsg);
+      notify('Settlement Error', errMsg);
     } finally {
       setSettlementBusy(false);
     }
@@ -441,19 +481,25 @@ export default function CashBankScreen() {
     const tax = parseFloat(editSettlementForm.tax_amount || '0');
 
     if (isNaN(gross) || gross <= 0) {
-      setEditSettlementErr('Please enter a valid gross collection amount (> 0).');
+      const msg = 'Please enter a valid gross collection amount (> 0).';
+      setEditSettlementErr(msg);
+      notify('Missing Amount', msg);
       return;
     }
-    if (!editSettlementForm.settlement_ref.trim()) {
-      setEditSettlementErr('Please enter the settlement batch / reference #.');
+    const commBanks = banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing');
+    const bankId = editSettlementForm.bank_account_id || editingSettlement.bank_account_id || (commBanks.length > 0 ? commBanks[0].id : '');
+    const refVal = editSettlementForm.settlement_ref.trim() || editingSettlement.settlement_ref;
+
+    if (!bankId) {
+      const msg = 'Please select the commercial bank account.';
+      setEditSettlementErr(msg);
+      notify('Missing Bank', msg);
       return;
     }
-    if (!editSettlementForm.bank_account_id) {
-      setEditSettlementErr('Please select the commercial bank account.');
-      return;
-    }
-    if (charges + tax > gross) {
-      setEditSettlementErr('Settlement charges cannot exceed gross collections.');
+    if (charges + tax >= gross) {
+      const msg = 'Settlement charges cannot exceed gross collections.';
+      setEditSettlementErr(msg);
+      notify('Invalid Amount', msg);
       return;
     }
 
@@ -462,9 +508,9 @@ export default function CashBankScreen() {
     try {
       await api.updateSettlement(editingSettlement.id, {
         date: editSettlementForm.date,
-        settlement_ref: editSettlementForm.settlement_ref.trim(),
+        settlement_ref: refVal,
         utr_no: editSettlementForm.utr_no.trim(),
-        bank_account_id: editSettlementForm.bank_account_id,
+        bank_account_id: bankId,
         gross_amount: gross,
         settlement_charges: charges,
         tax_amount: tax,
@@ -474,7 +520,9 @@ export default function CashBankScreen() {
       setEditingSettlement(null);
       loadData();
     } catch (err: any) {
-      setEditSettlementErr(err?.message || 'Failed to update settlement');
+      const errMsg = err?.message || 'Failed to update settlement';
+      setEditSettlementErr(errMsg);
+      notify('Update Failed', errMsg);
     } finally {
       setEditSettlementBusy(false);
     }
@@ -1666,10 +1714,7 @@ export default function CashBankScreen() {
                 </View>
                 <Pressable
                   testID="btn-new-settlement"
-                  onPress={() => {
-                    setSettlementErr(null);
-                    setShowNewSettlementModal(true);
-                  }}
+                  onPress={handleOpenNewSettlement}
                   style={[styles.primaryBtn, { backgroundColor: '#0284C7', paddingHorizontal: 14 }]}
                 >
                   <Ionicons name="add" size={16} color="#FFF" />
@@ -1720,10 +1765,7 @@ export default function CashBankScreen() {
                     {searchSettlements ? 'No matching settlements found.' : 'No Payment Gateway settlements recorded yet.'}
                   </Text>
                   <Pressable
-                    onPress={() => {
-                      setSettlementErr(null);
-                      setShowNewSettlementModal(true);
-                    }}
+                    onPress={handleOpenNewSettlement}
                     style={[styles.primaryBtn, { backgroundColor: '#0284C7', marginTop: 12, alignSelf: 'center' }]}
                   >
                     <Ionicons name="add" size={16} color="#FFF" />
@@ -3008,10 +3050,10 @@ export default function CashBankScreen() {
                 </Pressable>
               </View>
 
-              <ScrollView style={{ padding: 16 }}>
+              <ScrollView style={{ padding: 16 }} keyboardShouldPersistTaps="handled">
                 {settlementErr && (
-                  <View style={{ backgroundColor: '#FEE2E2', padding: 10, borderRadius: 8, marginBottom: 12 }}>
-                    <Text style={{ color: RED, fontSize: 12, fontWeight: '600' }}>{settlementErr}</Text>
+                  <View style={{ backgroundColor: '#FEE2E2', borderColor: '#FECACA', borderWidth: 1, padding: 10, borderRadius: 8, marginBottom: 12 }}>
+                    <Text style={{ color: RED, fontSize: 12, fontWeight: '700' }}>⚠️ {settlementErr}</Text>
                   </View>
                 )}
 
@@ -3036,7 +3078,9 @@ export default function CashBankScreen() {
                 </Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                   {banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing').map(b => {
-                    const isSel = settlementForm.bank_account_id === b.id;
+                    const comm = banks.filter(x => !x.is_clearing && x.id !== 'acc_paytm_clearing');
+                    const activeId = settlementForm.bank_account_id || (comm[0]?.id || '');
+                    const isSel = activeId === b.id;
                     return (
                       <Pressable
                         key={b.id}
@@ -3051,15 +3095,34 @@ export default function CashBankScreen() {
                         }}
                       >
                         <Text style={{ fontSize: 12, fontWeight: '700', color: isSel ? BLUE : '#334155' }}>
-                          {b.name} ({b.bank_name})
+                          {isSel ? '✓ ' : ''}{b.name} ({b.bank_name})
                         </Text>
                       </Pressable>
                     );
                   })}
                 </View>
 
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#0F172A' }}>
+                    Gross Collections Settled (₹) *
+                  </Text>
+                  <Pressable
+                    onPress={() => {
+                      setSettlementForm(p => ({
+                        ...p,
+                        gross_amount: '10000.00',
+                        settlement_charges: '153.87',
+                        tax_amount: '0.00',
+                      }));
+                    }}
+                    style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#1E40AF' }}>⚡ Auto-Fill ₹10,000 / ₹153.87</Text>
+                  </Pressable>
+                </View>
+
                 <FormInput
-                  label="Gross Collections Settled (₹) *"
+                  label=""
                   value={settlementForm.gross_amount}
                   onChangeText={v => setSettlementForm(p => ({ ...p, gross_amount: v }))}
                   placeholder="10000.00"
@@ -3091,7 +3154,9 @@ export default function CashBankScreen() {
                   const charges = parseFloat(settlementForm.settlement_charges) || 0;
                   const tax = parseFloat(settlementForm.tax_amount) || 0;
                   const net = Math.max(0, gross - charges - tax);
-                  const selBank = banks.find(b => b.id === settlementForm.bank_account_id);
+                  const comm = banks.filter(b => !b.is_clearing && b.id !== 'acc_paytm_clearing');
+                  const activeId = settlementForm.bank_account_id || (comm[0]?.id || '');
+                  const selBank = banks.find(b => b.id === activeId);
                   const selBankName = selBank?.name || 'Selected Bank Account';
 
                   return (
@@ -3133,6 +3198,12 @@ export default function CashBankScreen() {
                   placeholder="Optional settlement notes"
                   testID="in-settle-notes"
                 />
+
+                {settlementErr && (
+                  <View style={{ backgroundColor: '#FEE2E2', borderColor: '#FECACA', borderWidth: 1.5, padding: 12, borderRadius: 8, marginTop: 8, marginBottom: 10 }}>
+                    <Text style={{ color: RED, fontSize: 13, fontWeight: '700' }}>⚠️ {settlementErr}</Text>
+                  </View>
+                )}
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, marginBottom: 16 }}>
                   <Pressable
@@ -3261,10 +3332,10 @@ export default function CashBankScreen() {
                 </Pressable>
               </View>
 
-              <ScrollView style={{ padding: 16 }}>
+              <ScrollView style={{ padding: 16 }} keyboardShouldPersistTaps="handled">
                 {editSettlementErr && (
                   <View style={{ backgroundColor: '#FEE2E2', padding: 10, borderRadius: 8, marginBottom: 12 }}>
-                    <Text style={{ color: RED, fontSize: 12, fontWeight: '600' }}>{editSettlementErr}</Text>
+                    <Text style={{ color: RED, fontSize: 12, fontWeight: '700' }}>⚠️ {editSettlementErr}</Text>
                   </View>
                 )}
 
@@ -3386,6 +3457,12 @@ export default function CashBankScreen() {
                   placeholder="Optional settlement notes"
                   testID="in-edit-settle-notes"
                 />
+
+                {editSettlementErr && (
+                  <View style={{ backgroundColor: '#FEE2E2', borderColor: '#FECACA', borderWidth: 1.5, padding: 12, borderRadius: 8, marginTop: 8, marginBottom: 10 }}>
+                    <Text style={{ color: RED, fontSize: 13, fontWeight: '700' }}>⚠️ {editSettlementErr}</Text>
+                  </View>
+                )}
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, marginBottom: 16 }}>
                   <Pressable
